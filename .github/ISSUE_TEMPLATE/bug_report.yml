@@ -1,0 +1,42 @@
+name: Bug Report
+description: Report a bug or unexpected behaviour
+labels: ["bug"]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      placeholder: "0.3.0"
+    validations:
+      required: true
+
+  - type: input
+    id: hardware
+    attributes:
+      label: Hardware
+      description: SBC model and PartyBox model
+      placeholder: "Raspberry Pi 3 B+ / JBL PartyBox 520"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What happened? What did you expect?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to Reproduce
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant Logs
+      description: Run with `--log-level DEBUG` and paste relevant output
+      render: text

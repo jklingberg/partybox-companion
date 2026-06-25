@@ -1,0 +1,36 @@
+# partybox-companion configuration
+# Copy to /etc/partybox-companion/partybox-companion.toml and edit.
+# All values can also be set via environment variables prefixed with PBX_:
+#   PBX_BLUETOOTH__ADDRESS=AA:BB:CC:DD:EE:FF
+
+[bluetooth]
+# Bluetooth MAC address of the PartyBox speaker.
+# Find it with: pbx scan
+address = "AA:BB:CC:DD:EE:FF"
+
+[server]
+# The daemon serves both the Web UI and the REST API on this port.
+# Access via http://partybox.local:8080 (mDNS) or http://<ip>:8080
+host = "0.0.0.0"
+port = 8080
+
+[server.auth]
+# API key required in the X-API-Key header for all API requests.
+# Generate a key with: pbx generate-key
+# Leave empty to disable authentication (trusted networks only — not recommended).
+api_key = ""
+
+[services.spotify]
+# Spotify Connect via librespot (must be installed separately).
+enabled = false
+# binary = "/usr/local/bin/librespot"
+
+[services.airplay]
+# AirPlay via shairport-sync (must be installed separately).
+enabled = false
+# binary = "/usr/local/bin/shairport-sync"
+
+[logging]
+level = "INFO"
+# format: "console" (human-readable) or "json" (for log aggregators)
+format = "console"

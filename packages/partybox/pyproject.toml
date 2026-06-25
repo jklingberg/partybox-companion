@@ -1,0 +1,52 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "partybox"
+version = "0.1.0-dev"
+description = "Python SDK for controlling PartyBox speakers over Bluetooth"
+readme = "README.md"
+license = { file = "../../LICENSE" }
+authors = [{ name = "Jonathan Klingberg" }]
+requires-python = ">=3.11"
+keywords = ["partybox", "bluetooth", "speaker", "sdk"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries",
+    "Typing :: Typed",
+]
+
+# Zero runtime dependencies. Uses Python's built-in socket module for Bluetooth RFCOMM.
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=5.0",
+    "mypy>=1.10",
+    "ruff>=0.4",
+]
+
+[project.urls]
+Repository = "https://github.com/jklingberg/partybox-companion"
+
+# NOTE: The PyPI name "partybox" may be taken. Verify availability before publishing.
+# Alternative names if needed: partybox-sdk, partybox-py, partybox-speaker
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/partybox"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["--cov=partybox"]
+
+[tool.mypy]
+mypy_path = "src"

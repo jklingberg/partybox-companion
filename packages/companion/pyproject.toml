@@ -1,0 +1,66 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "partybox-companion"
+version = "0.1.0-dev"
+description = "Turn any PartyBox into a true WiFi speaker — full appliance package"
+readme = "README.md"
+license = { file = "../../LICENSE" }
+authors = [{ name = "Jonathan Klingberg" }]
+requires-python = ">=3.11"
+keywords = ["partybox", "smart-speaker", "spotify", "airplay", "appliance", "raspberry-pi"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Environment :: No Input/Output (Daemon)",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Home Automation",
+    "Topic :: Multimedia :: Sound/Audio",
+    "Typing :: Typed",
+]
+
+dependencies = [
+    # Daemon (workspace dependency)
+    "partyboxd",
+    # CLI
+    "typer>=0.12",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=5.0",
+    "httpx>=0.27",
+    "mypy>=1.10",
+    "ruff>=0.4",
+]
+
+[project.scripts]
+# Full appliance entry point (starts daemon + companion services)
+partybox-companion = "companion.__main__:main"
+# CLI client (talks to the running daemon over HTTP)
+partybox = "companion.cli.main:app"
+
+[project.urls]
+Homepage = "https://github.com/jklingberg/partybox-companion"
+Repository = "https://github.com/jklingberg/partybox-companion"
+Issues = "https://github.com/jklingberg/partybox-companion/issues"
+Changelog = "https://github.com/jklingberg/partybox-companion/blob/main/CHANGELOG.md"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/companion"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["--cov=companion"]
+
+[tool.mypy]
+mypy_path = "src"

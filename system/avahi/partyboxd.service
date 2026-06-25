@@ -1,0 +1,19 @@
+<?xml version="1.0" standalone='no'?>
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+
+<!--
+  Avahi mDNS service announcement for partyboxd.
+  Install to: /etc/avahi/services/partyboxd.service
+  This announces the daemon on the local network so users can reach it at
+  http://partybox.local (or http://<hostname>.local if hostname differs).
+-->
+<service-group>
+  <name replace-wildcards="yes">PartyBox Companion (%h)</name>
+
+  <service>
+    <type>_http._tcp</type>
+    <port>8080</port>
+    <txt-record>path=/</txt-record>
+    <txt-record>version=0.1.0-dev</txt-record>
+  </service>
+</service-group>
