@@ -28,37 +28,37 @@ The Portal is not an optional feature that adds polish after the real work is do
 
 Applied to the roadmap:
 
-### M6 — Companion Portal MVP (moved from M10)
+### M7 — Companion Portal MVP (moved from M11)
 
-The Portal is introduced as M6 — immediately after the daemon — because it is the primary onboarding surface, not a finishing touch.
+The Portal is introduced as M7 — immediately after the daemon — because it is the primary onboarding surface, not a finishing touch.
 
-M5 already exposes a minimal status endpoint (`GET /api/v1/status`). The Portal MVP is built against that endpoint and does not depend on the full REST API. This is the earliest a browser interface is meaningful (the daemon must exist) and the correct position given that the user journey starts at the browser, not the terminal.
+M6 already exposes a minimal status endpoint (`GET /api/v1/status`). The Portal MVP is built against that endpoint and does not depend on the full REST API. This is the earliest a browser interface is meaningful (the daemon must exist) and the correct position given that the user journey starts at the browser, not the terminal.
 
-The M6 Portal covers the minimum needed to onboard a user:
+The M7 Portal covers the minimum needed to onboard a user:
 - First-boot setup wizard (Bluetooth verification, speaker pairing, basic configuration)
 - Status view (speaker connection, power, battery, firmware, daemon health)
 - Basic configuration (device name, service preferences)
 - Spotify Connect and AirPlay sections as placeholders ("not yet active")
 
-The MVP is intentionally read-heavy. Control actions (power on/off from the browser) require the full REST API, which arrives in M7. This is an acceptable constraint for an early milestone.
+The MVP is intentionally read-heavy. Control actions (power on/off from the browser) require the full REST API, which arrives in M8. This is an acceptable constraint for an early milestone.
 
-The placeholders establish the Portal's structure before the services exist and activate automatically when M8 and M9 land — no additional Portal work is needed at those milestones.
+The placeholders establish the Portal's structure before the services exist and activate automatically when M9 and M10 land — no additional Portal work is needed at those milestones.
 
-### M7 — REST API & CLI (merged, follows Portal MVP)
+### M8 — REST API & CLI (merged, follows Portal MVP)
 
-The full REST API and CLI are developed together in M7. The CLI is a REST API consumer; developing them in the same milestone ensures the REST API is exercised immediately.
+The full REST API and CLI are developed together in M8. The CLI is a REST API consumer; developing them in the same milestone ensures the REST API is exercised immediately.
 
-The Portal's control actions (power on/off from the browser) also become available once M7 is complete.
+The Portal's control actions (power on/off from the browser) also become available once M8 is complete.
 
-### M8, M9 — Spotify Connect and AirPlay (unchanged position)
+### M9, M10 — Spotify Connect and AirPlay (unchanged relative position)
 
-No change in position. The Portal placeholder sections from M6 activate when these milestones complete.
+No change in relative position. The Portal placeholder sections from M7 activate when these milestones complete.
 
-### M10 — Companion Portal: Complete (split from old M10)
+### M11 — Companion Portal: Complete (split from old M11)
 
 The Portal is completed after streaming services exist. This milestone adds Spotify/AirPlay configuration flows, full diagnostics, and log download — things that only make sense once the services are running.
 
-Splitting the Portal into M6 (MVP) and M10 (Complete) rather than a single milestone was the key design choice. A single Portal milestone at M10 would have left a terminal-only product for four milestones after streaming was working. A single milestone at M6 would have required implementing Spotify/AirPlay configuration before those services existed.
+Splitting the Portal into M7 (MVP) and M11 (Complete) rather than a single milestone was the key design choice. A single Portal milestone at M11 would have left a terminal-only product for four milestones after streaming was working. A single milestone at M7 would have required implementing Spotify/AirPlay configuration before those services existed.
 
 ### v1.0 — User outcome, not feature checklist
 
@@ -71,16 +71,16 @@ A feature checklist describes what was built. A user outcome describes whether i
 ## Consequences
 
 **Benefits:**
-- The Portal is present from M6 onwards — before streaming services, before the full REST API. The onboarding path exists at the earliest viable point.
+- The Portal is present from M7 onwards — before streaming services, before the full REST API. The onboarding path exists at the earliest viable point.
 - The v1.0 outcome is testable: hand the image to a non-technical user and observe whether they can complete setup without a terminal.
-- The Portal MVP builds against the M5 status endpoint, which already exists. No new backend work is required to unblock the Portal.
-- Merging CLI and REST API into M7 removes an ordering anomaly (CLI before its own API) without delaying the Portal.
-- The Portal placeholder pattern means M8 and M9 do not need additional frontend work — the Portal structure is already in place.
+- The Portal MVP builds against the M6 status endpoint, which already exists. No new backend work is required to unblock the Portal.
+- Merging CLI and REST API into M8 removes an ordering anomaly (CLI before its own API) without delaying the Portal.
+- The Portal placeholder pattern means M9 and M10 do not need additional frontend work — the Portal structure is already in place.
 
 **Accepted trade-offs:**
-- The M6 Portal is read-heavy: it can show status but cannot control the speaker (power on/off) until M7's full REST API lands. This is an intentional scope boundary for the MVP, not a gap.
+- The M7 Portal is read-heavy: it can show status but cannot control the speaker (power on/off) until M8's full REST API lands. This is an intentional scope boundary for the MVP, not a gap.
 - The WiFi prerequisite is not solved in-Portal. The Portal assumes network connectivity. For v1.0, this is addressed by writing WiFi credentials to the SD card before first boot (Raspberry Pi OS boot-partition `wpa_supplicant.conf`). A hotspot/captive-portal mode is post-v1.0. This is a real constraint for users who cannot edit the SD card (e.g. corporate-managed machines) — accepted as a v1.0 scope boundary.
-- Splitting the Portal into M6 (MVP) and M10 (Complete) means Portal work is distributed across the milestone sequence. Contributors need to know which milestone their Portal work targets.
+- Splitting the Portal into M7 (MVP) and M11 (Complete) means Portal work is distributed across the milestone sequence. Contributors need to know which milestone their Portal work targets.
 
 **Relationship to other decisions:**
 - See [ADR-011](011-companion-portal.md) for the Portal's scope and the rationale for its name.

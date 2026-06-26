@@ -64,3 +64,4 @@ research/logs/*
 !research/logs/README.md
 research/scripts/*
 !research/scripts/README.md
+.claude/settings.local.json

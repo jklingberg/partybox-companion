@@ -43,6 +43,9 @@ dev = [
     "ruff>=0.4",
 ]
 
+[tool.uv.sources]
+partyboxd = { workspace = true }
+
 [project.scripts]
 # Full appliance entry point (starts daemon + companion services)
 partybox-companion = "companion.__main__:main"

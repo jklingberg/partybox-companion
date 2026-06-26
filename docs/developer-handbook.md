@@ -6,31 +6,69 @@ For the why behind the architecture, see [architecture.md](architecture.md) and 
 
 ---
 
-## Prerequisites
+## Development environment
 
-- Linux or macOS (Linux required for hardware testing)
-- Python 3.11+
-- [uv](https://docs.astral.sh/uv/) — dependency and workspace manager
-- A Bluetooth adapter (for hardware tests only)
+### Option A — Dev container (recommended)
+
+The repository ships a [dev container](../.devcontainer/devcontainer.json) that provides a complete, pre-configured environment. No manual installation required.
+
+**Prerequisites:** [VS Code](https://code.visualstudio.com/) and the [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers).
+
+```
+1. Clone the repository
+2. Open the folder in VS Code
+3. When prompted, click "Reopen in Container"
+   (or: Command Palette → "Dev Containers: Reopen in Container")
+4. Wait ~2 minutes for the first build
+```
+
+The container runs `postCreateCommand` automatically on first open:
+
+```bash
+uv sync --all-extras       # install all workspace packages and dev deps
+uv tool install pre-commit # install pre-commit as an isolated tool
+pre-commit install         # wire up git hooks
+npm install -g @anthropic-ai/claude-code
+```
+
+After that, the terminal is ready. `uv run pytest`, `uv run ruff`, and `uv run mypy` all work immediately.
+
+**What the container includes:**
+
+| Tool | Source |
+|---|---|
+| Python 3.12 | `mcr.microsoft.com/devcontainers/python:3.12-bookworm` |
+| uv | `ghcr.io/astral-sh/uv:latest` (copied at build time) |
+| GitHub CLI (`gh`) | devcontainer feature |
+| Node.js LTS | devcontainer feature (Claude Code dependency) |
+| Claude Code | `npm install -g @anthropic-ai/claude-code` (post-create) |
+| pre-commit | `uv tool install pre-commit` (post-create) |
+| ruff, mypy, pytest | installed via `uv sync --all-extras` |
+
+**Base image:** Debian 12 Bookworm — the same base as Raspberry Pi OS 64-bit. Package names and system library versions are intentionally close to the production target.
+
+**What the container does not do:** Bluetooth passthrough, BlueZ, D-Bus, or A2DP. Hardware integration tests require a native Linux environment or the Pi itself. See [Hardware testing](#hardware-testing) below.
+
+---
+
+### Option B — Native setup
+
+Use this when working on hardware integration, running tests against a real PartyBox, or if you prefer not to use Docker.
+
+**Prerequisites:** Linux or macOS, Python 3.11+, [uv](https://docs.astral.sh/uv/).
 
 ```bash
 # Install uv
 curl -LsSf https://astral.sh/uv/install.sh | sh
-```
 
----
-
-## Setup
-
-```bash
+# Clone and install
 git clone https://github.com/jklingberg/partybox-companion
 cd partybox-companion
-
-# Install all packages + dev dependencies
 uv sync --all-extras
 
-# Install pre-commit hooks (lint + format run on every commit)
-uv run pre-commit install
+# Install pre-commit hooks
+uv tool install pre-commit
+pre-commit install
 ```
 
 ---
@@ -113,9 +151,9 @@ Follow this sequence every time a new command is added:
    - Protocol unit test with the validated capture bytes as a fixture (so CI runs without hardware)
    - Capability unit test using `MockBackend`
 
-8. **Expose via REST endpoint.** (from M7 onwards)
+8. **Expose via REST endpoint.** (from M8 onwards)
 
-9. **Expose via CLI.** (from M6 onwards)
+9. **Expose via CLI.** (from M8 onwards)
 
 ---
 
