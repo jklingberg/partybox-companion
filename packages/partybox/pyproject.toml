@@ -23,8 +23,8 @@ classifiers = [
     "Typing :: Typed",
 ]
 
-# Zero runtime dependencies. Uses Python's built-in socket module for Bluetooth RFCOMM.
-dependencies = []
+# Speaker control runs over BLE GATT (see ADR-015); bleak is the transport.
+dependencies = ["bleak>=0.22"]
 
 [project.optional-dependencies]
 dev = [
@@ -47,6 +47,9 @@ packages = ["src/partybox"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = ["--cov=partybox"]
+# This package-level config shadows the root [tool.pytest.ini_options] when
+# pytest runs from here, so asyncio_mode must be repeated. The SDK is async.
+asyncio_mode = "auto"
 
 [tool.mypy]
 mypy_path = "src"
