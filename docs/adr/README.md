@@ -23,3 +23,4 @@ New ADRs should be added when a significant design decision is made. Superseded 
 | [011](011-companion-portal.md) | Companion Portal — Product Name and Scope | Accepted |
 | [012](012-interoperability-positioning.md) | Interoperability Positioning and Legal Hygiene | Accepted |
 | [013](013-user-journey-milestone-ordering.md) | Milestone Ordering — User Journey First | Accepted |
+| [014](014-audio-transport-viability.md) | Audio Transport Viability Spike | Accepted |

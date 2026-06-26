@@ -40,7 +40,38 @@ Getting the transport right matters more than getting it fast. The `MockBackend`
 
 ---
 
-### M3 — Protocol Foundation
+### M3 — Audio Transport Viability
+
+A technical viability spike. This milestone answers the most critical architectural question before any higher-level features are built:
+
+> *Can a Raspberry Pi reliably stream music to a JBL PartyBox over Bluetooth A2DP while simultaneously maintaining the BLE control connection?*
+
+This is not an architecture milestone. The goal is to produce evidence, not production code. No daemon abstractions, no REST API, no configuration system — only the minimum needed to answer the question.
+
+**What this milestone validates:**
+
+- BlueZ pairs with the PartyBox as an A2DP sink
+- PipeWire routes librespot output to the A2DP connection reliably
+- Audio is delivered at acceptable quality with no audible dropouts
+- The BLE control connection (from M2) remains stable while A2DP is active
+- Power-on/off commands work while audio is playing
+- Automatic reconnection works after standby
+- The combination is stable over long-running sessions (30+ minutes)
+
+**Scope:**
+- Minimal script to establish BLE control + A2DP connections simultaneously
+- librespot running in PipeWire output mode, routed to the Bluetooth device
+- Extended playback test: continuous session of 30+ minutes
+
+**Not in scope:** daemon architecture, REST API, Portal, configuration system, subprocess abstractions.
+
+**Done when:** Music plays through the PartyBox from Spotify Connect via the Pi for 30+ minutes without audible dropouts. The BLE control connection remains active throughout. Power-on/off works while audio is playing. Reconnection after standby works.
+
+**If this milestone fails:** The overall architecture must be reconsidered before investing further in the appliance design.
+
+---
+
+### M4 — Protocol Foundation
 
 **Package:** `partybox`
 
@@ -54,7 +85,7 @@ Message coverage is extended incrementally in later milestones as capabilities a
 
 ---
 
-### M4 — Core Device Capabilities
+### M5 — Core Device Capabilities
 
 **Package:** `partybox`
 
@@ -68,13 +99,13 @@ Message coverage is extended incrementally in later milestones as capabilities a
 
 Event stream (`device.events()`) for daemon integration.
 
-**Out of scope for M4:** volume, input source, lights, EQ, microphone. These do not contribute to the WiFi speaker MVP.
+**Out of scope for M5:** volume, input source, lights, EQ, microphone. These do not contribute to the WiFi speaker MVP.
 
 **Done when:** `await speaker.power.turn_on()`, `await speaker.device_info.firmware_version()`, and (on supported models) `await speaker.battery.level()` work against a real device. `device.events()` yields typed events.
 
 ---
 
-### M5 — Daemon
+### M6 — Daemon
 
 **Package:** `partyboxd`
 
@@ -84,13 +115,13 @@ Internal event bus, daemon lifecycle, and a minimal HTTP skeleton. The daemon ow
 
 ---
 
-### M6 — Companion Portal MVP
+### M7 — Companion Portal MVP
 
 **Package:** `companion`
 
 The Portal is introduced here — immediately after the daemon — because it is the primary onboarding surface, not a finishing touch. A user who has just booted the device should be able to verify their speaker connection and configure the appliance from a browser. See [ADR-011](adr/011-companion-portal.md) and [ADR-013](adr/013-user-journey-milestone-ordering.md).
 
-M5 already exposes a minimal status endpoint (`GET /api/v1/status`). The Portal MVP is built against that endpoint — it does not need the full REST API.
+M6 already exposes a minimal status endpoint (`GET /api/v1/status`). The Portal MVP is built against that endpoint — it does not need the full REST API.
 
 **This milestone covers:**
 - First-boot setup wizard: Bluetooth verification, speaker pairing, basic service configuration
@@ -98,7 +129,7 @@ M5 already exposes a minimal status endpoint (`GET /api/v1/status`). The Portal 
 - Basic configuration: device name, service preferences (written to config file)
 - Spotify Connect and AirPlay sections present but showing "not yet active"
 
-The Portal MVP is intentionally read-heavy. Control actions (power on/off from the browser) require the full REST API, which arrives in M7.
+The Portal MVP is intentionally read-heavy. Control actions (power on/off from the browser) require the full REST API, which arrives in M8.
 
 **Network prerequisite:** The Portal assumes the Pi already has network connectivity. For v1.0, WiFi is configured by writing credentials to the SD card before first boot — Raspberry Pi OS supports `wpa_supplicant.conf` on the boot partition, requiring only a file editor and no terminal on the Pi itself. A hotspot/captive-portal mode is post-v1.0.
 
@@ -108,11 +139,11 @@ The Companion Portal does **not** include media playback controls.
 
 ---
 
-### M7 — REST API & CLI
+### M8 — REST API & CLI
 
 **Packages:** `partyboxd` (REST API) · `companion` (CLI)
 
-Full REST API for the M4 capabilities, WebSocket event stream, and API key authentication. The `partybox` CLI binary. The Portal's control actions (power on/off, etc.) become available once the REST API is in place.
+Full REST API for the M5 capabilities, WebSocket event stream, and API key authentication. The `partybox` CLI binary. The Portal's control actions (power on/off, etc.) become available once the REST API is in place.
 
 ```
 partybox status           # power state, battery, firmware
@@ -124,27 +155,27 @@ partybox watch            # stream device events
 
 ---
 
-### M8 — Spotify Connect
+### M9 — Spotify Connect
 
 **Package:** `companion`
 
-librespot subprocess manager. Start on boot, restart on crash, stop on Bluetooth disconnect. The Portal's Spotify section (introduced in M6 as a placeholder) becomes active.
+librespot subprocess manager. Start on boot, restart on crash, stop on Bluetooth disconnect. The Portal's Spotify section (introduced in M7 as a placeholder) becomes active.
 
 **Done when:** A Spotify client sees the PartyBox as a Connect device; playback starts and stops correctly; the daemon event stream reflects playback state; Portal shows Spotify as active.
 
 ---
 
-### M9 — AirPlay
+### M10 — AirPlay
 
 **Package:** `companion`
 
-shairport-sync subprocess manager. The Portal's AirPlay section (introduced in M6 as a placeholder) becomes active.
+shairport-sync subprocess manager. The Portal's AirPlay section (introduced in M7 as a placeholder) becomes active.
 
 **Done when:** An Apple device sees the PartyBox as an AirPlay receiver; Portal shows AirPlay as active.
 
 ---
 
-### M10 — Companion Portal: Complete
+### M11 — Companion Portal: Complete
 
 **Package:** `companion`
 

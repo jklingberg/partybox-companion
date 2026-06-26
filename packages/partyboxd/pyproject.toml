@@ -47,6 +47,9 @@ dev = [
     "ruff>=0.4",
 ]
 
+[tool.uv.sources]
+partybox = { workspace = true }
+
 [project.scripts]
 partyboxd = "partyboxd.__main__:main"
 

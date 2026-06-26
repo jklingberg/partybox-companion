@@ -1,0 +1,86 @@
+{
+  "name": "partybox-companion",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+
+  // GitHub CLI and Node.js (for Claude Code)
+  "features": {
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "24",
+      "nodeGypDependencies": false
+    }
+  },
+
+  // UV_LINK_MODE=copy avoids hardlink failures when the uv cache is on a
+  // different filesystem than the workspace (common with volume mounts).
+  "containerEnv": {
+    "UV_LINK_MODE": "copy"
+  },
+
+  // uv tool installs land in ~/.local/bin — add it to PATH so pre-commit
+  // is available to git hooks without a full shell reload.
+  //
+  // CLAUDE_CONFIG_DIR relocates Claude Code's credentials, config, and session
+  // history into the persistent volume mounted below, so logins and resumable
+  // sessions survive container rebuilds.
+  //
+  // GH_TOKEN is sourced from the host so the gh CLI can reach the GitHub API
+  // (the forwarded SSH agent only covers git-over-SSH, not the API). Set it on
+  // the host with: export GH_TOKEN=$(gh auth token). Empty if unset on host.
+  "remoteEnv": {
+    "PATH": "${containerEnv:PATH}:/home/vscode/.local/bin",
+    "CLAUDE_CONFIG_DIR": "/home/vscode/.claude",
+    "GH_TOKEN": "${localEnv:GH_TOKEN}"
+  },
+
+  // Named volume keeps Claude Code state (OAuth credentials, .claude.json,
+  // projects/<session>.jsonl history) across container rebuilds.
+  "mounts": [
+    "source=partybox-claude-config,target=/home/vscode/.claude,type=volume"
+  ],
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "charliermarsh.ruff",
+        "ms-python.mypy-type-checker",
+        "tamasfe.even-better-toml",
+        "eamodio.gitlens",
+        "GitHub.vscode-pull-request-github",
+        "Anthropic.claude-code"
+      ],
+      "settings": {
+        // Point VS Code at the uv-managed virtual environment
+        "python.defaultInterpreterPath": "${containerWorkspaceFolder}/.venv/bin/python",
+
+        // Disable Pylance type checking — mypy extension handles this
+        "python.analysis.typeCheckingMode": "off",
+
+        // Ruff handles both formatting and linting
+        "[python]": {
+          "editor.defaultFormatter": "charliermarsh.ruff",
+          "editor.formatOnSave": true
+        },
+        "ruff.enable": true,
+
+        // mypy reads config from the workspace root pyproject.toml
+        "mypy-type-checker.args": [
+          "--config-file=${containerWorkspaceFolder}/pyproject.toml"
+        ],
+
+        // Ruler at 100 columns — matches ruff line-length in pyproject.toml
+        "editor.rulers": [100]
+      }
+    }
+  },
+
+  // Runs once after the container is first created. See post-create.sh for the
+  // individual steps (volume chown, workspace install, git hooks, Claude Code).
+  "postCreateCommand": "./.devcontainer/post-create.sh",
+
+  "remoteUser": "vscode"
+}
