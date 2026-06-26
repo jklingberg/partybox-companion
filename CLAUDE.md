@@ -29,8 +29,8 @@ uv run pytest packages/companion/ -m "not hardware"
 # Run a single test
 uv run pytest packages/partybox/tests/unit/test_parser.py::test_power_response -v
 
-# Run hardware tests (real PartyBox required)
-PARTYBOX_ADDRESS=AA:BB:CC:DD:EE:FF uv run pytest packages/partybox/ -m hardware -v
+# Run hardware tests (real PartyBox required; discovers by BLE name)
+uv run pytest packages/partybox/ -m hardware -v
 ```
 
 mypy is configured `strict` in the root `pyproject.toml`. All packages must pass `mypy --strict` — no exceptions.
@@ -40,7 +40,7 @@ mypy is configured `strict` in the root `pyproject.toml`. All packages must pass
 Four layers, strict one-way dependency:
 
 ```
-partybox   (SDK, zero deps)
+partybox   (SDK, BLE GATT via bleak)
     ↑
 partyboxd  (daemon: HTTP API + WebSocket)
     ↑
@@ -62,11 +62,13 @@ Running `partyboxd` gives the headless API. Running `partybox-companion` gives t
 
 ## SDK boundaries
 
-`partybox` has **zero runtime dependencies**. It must never contain:
+`partybox` depends only on **`bleak`** (BLE GATT transport — see [ADR-015](docs/adr/015-bluetooth-control-transport.md)). It must never contain:
 - Networking beyond Bluetooth (no HTTP, WebSockets)
 - Subprocess management
 - Configuration loading
 - Knowledge of the daemon, REST API, Portal, Spotify, or AirPlay
+
+Speaker control is **BLE GATT**, not Bluetooth Classic SPP/RFCOMM (an earlier assumption, since disproven on hardware). Commands are written to a vendor GATT characteristic; responses arrive as notifications. Bluetooth Classic carries only A2DP audio and AVRCP.
 
 The SDK exposes only hardware-unique capabilities that Spotify Connect, AirPlay, and AVRCP cannot provide. Volume, play/pause, and skip are **not** in the SDK — librespot and shairport-sync handle those natively.
 
@@ -94,7 +96,7 @@ def test_parse_power_on_response() -> None:
     assert isinstance(msg, PowerStateNotification)
 ```
 
-`MockBackend` simulates the transport for all non-hardware tests. It can be configured to simulate connection drops and canned responses. Tests marked `@pytest.mark.hardware` never run in CI.
+`MockTransport` simulates the transport for all non-hardware tests. It can be configured to simulate connection drops and canned responses. Tests marked `@pytest.mark.hardware` never run in CI.
 
 ## Protocol work
 

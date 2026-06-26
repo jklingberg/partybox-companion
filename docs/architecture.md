@@ -12,7 +12,7 @@ partybox-companion is an appliance. It turns a JBL PartyBox into a smart WiFi sp
 Four layers, each independently useful:
 
 ```
-partybox           Bluetooth SDK. Pure Python. Zero dependencies.
+partybox           Bluetooth SDK. BLE GATT via bleak.
     ↑
 partyboxd          Headless daemon. HTTP API + WebSocket.
     ↑
@@ -65,7 +65,7 @@ partybox-companion/
 
 The most reusable part of the project. A standalone Python library for communicating with PartyBox speakers.
 
-Zero runtime dependencies. Uses Python's built-in `socket` module for Bluetooth RFCOMM.
+Speaker control runs over **BLE GATT**, using `bleak` as the transport (see [ADR-015](adr/015-bluetooth-control-transport.md)). `bleak` is the only runtime dependency.
 
 Published independently on PyPI so that developers can build tools on top of the protocol without installing the daemon.
 
@@ -106,12 +106,14 @@ Binaries: `partybox-companion` (starts everything), `partybox` (CLI client)
 
 | File | Purpose |
 |---|---|
-| `backend.py` | `BluetoothBackend` ABC: `connect`, `disconnect`, `read`, `write` |
-| `bluez.py` | `BlueZBackend` — Linux BlueZ RFCOMM via `socket`; owns reconnect |
-| `mock.py` | `MockBackend` — in-process fake; simulates drops, errors, canned responses |
-| `scanner.py` | Discover nearby Bluetooth Classic devices |
+| `transport.py` | `ControlTransport` ABC: `connect`, `disconnect`, `write`, `receive` |
+| `bleak_transport.py` | `BleakTransport` — BLE GATT client via `bleak`; control service write + notify |
+| `mock.py` | `MockTransport` — in-process fake; simulates drops, errors, canned responses |
+| `scanner.py` | `Scanner` — discover PartyBoxes over BLE, returning `PartyBoxCandidate` |
 
-`BlueZBackend` and `MockBackend` are never imported outside `bluetooth/` and test fixtures. Callers depend only on `BluetoothBackend`.
+`BleakTransport` and `MockTransport` are never imported outside `bluetooth/` and test fixtures. Callers depend only on `ControlTransport` and the domain types (`Scanner`, `PartyBoxCandidate`) — no `bleak` type is exposed. Discovery hides the speaker's rotating BLE address: a `PartyBoxCandidate` carries the live device handle and `await candidate.connect()` returns a connected `ControlTransport`.
+
+The control transport is message-oriented: `write(data)` sends a command frame to the TX characteristic; `receive()` returns the next notification payload from the RX characteristic.
 
 ### `protocol/`
 
@@ -254,7 +256,7 @@ Running `partyboxd` gives you the headless API. Running `partybox-companion` giv
 ### State changes (outbound)
 
 ```
-BluetoothBackend → protocol.parser → PartyBoxDevice
+ControlTransport → protocol.parser → PartyBoxDevice
     │ device.events() async generator
     ▼
 partyboxd event bus
@@ -271,7 +273,7 @@ HTTP client (Companion Portal / partybox CLI / HA / script)
 partyboxd route handler
     │ await device.power.turn_on()
     ▼
-PartyBoxDevice → protocol.serializer → BluetoothBackend → speaker
+PartyBoxDevice → protocol.serializer → ControlTransport → speaker
 ```
 
 ---
@@ -297,8 +299,8 @@ API key auth via `X-API-Key` header. Generate with `partybox generate-key`. Opti
 | Package | Module | Approach |
 |---|---|---|
 | `partybox` | `protocol/` | Pure unit tests; real BT captures as byte fixtures |
-| `partybox` | `bluetooth/` | `MockBackend` with simulated drops and errors |
-| `partybox` | `device/` | `MockBackend`; assert state and yielded events |
+| `partybox` | `bluetooth/` | `MockTransport` with simulated drops and errors |
+| `partybox` | `device/` | `MockTransport`; assert state and yielded events |
 | `partybox` | `capabilities/` | Unit tests per capability; mock device responses |
 | `partyboxd` | `api/` | FastAPI async test client (httpx); mock `Device` |
 | `companion` | `cli/` | Typer `CliRunner`; mock HTTP responses |
