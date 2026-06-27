@@ -2,9 +2,11 @@
 
 ## Current status
 
-**M1 — Foundation** is complete. The repository scaffold, tooling, CI, and architecture documentation are in place.
+**M1 — Foundation** and **M2 — Bluetooth Transport** are complete. The BLE GATT
+control transport, LE scanner, and mock are in place, with the public connect +
+power-on path verified end-to-end against a real PartyBox 520.
 
-Work is beginning on **M2 — Bluetooth Transport**.
+Work is beginning on **M3 — Audio Transport Viability**.
 
 ---
 
@@ -28,15 +30,17 @@ Repository scaffold, monorepo structure, CI pipeline, shared tooling (ruff, mypy
 
 ---
 
-### M2 — Bluetooth Transport
+### M2 — Bluetooth Transport ✅
 
 **Package:** `partybox`
 
-`BluetoothBackend` ABC, `BlueZBackend` (Linux RFCOMM), `MockBackend` for testing, and `scanner.py` for device discovery.
+`ControlTransport` ABC, `BleakTransport` (BLE GATT via bleak), `MockTransport` for testing, and `scanner.py` for LE device discovery.
 
-Getting the transport right matters more than getting it fast. The `MockBackend` must be good enough that the entire protocol and device layers can be developed and tested without real hardware.
+> **Transport correction (see [ADR-015](adr/015-bluetooth-control-transport.md)):** M2 originally assumed Bluetooth Classic SPP/RFCOMM. Hardware verification showed speaker control is **BLE GATT** — there is no RFCOMM service. The backend uses `bleak`; discovery scans LE.
 
-**Done when:** A real PartyBox can be discovered and connected to from a Python script; a `MockBackend` allows the same code path to be exercised in CI.
+Getting the transport right matters more than getting it fast. The `MockTransport` must be good enough that the entire protocol and device layers can be developed and tested without real hardware.
+
+**Done when:** A real PartyBox can be discovered and connected to from a Python script; a `MockTransport` allows the same code path to be exercised in CI.
 
 ---
 

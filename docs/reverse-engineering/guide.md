@@ -8,7 +8,16 @@ This is developer documentation for contributors extending the protocol implemen
 
 ## Overview
 
-The JBL PartyBox communicates over Bluetooth Classic using RFCOMM (Serial Port Profile). The approach used to develop the independent implementation is:
+> **Transport correction (2026-06-26):** Hardware verification showed speaker
+> **control runs over BLE GATT**, not Bluetooth Classic RFCOMM — the speaker
+> advertises no SPP/RFCOMM service. Classic carries only A2DP audio and AVRCP.
+> The RFCOMM/SPP references below are historical; control commands are written
+> to a vendor GATT characteristic and responses arrive as notifications. See
+> [ADR-015](../adr/015-bluetooth-control-transport.md), [protocol.md](protocol.md),
+> and [discoveries.md](discoveries.md). The `bleak`-based interactive approach
+> below is the correct one.
+
+The JBL PartyBox uses Bluetooth Classic for audio (A2DP) and BLE GATT for control. The approach used to develop the independent implementation is:
 
 1. Analyse the official Android app structure using **JADX** to understand the protocol's message types and opcodes
 2. Capture HCI traffic on Android using **nRF Connect** while triggering actions in the JBL app to validate the analysis

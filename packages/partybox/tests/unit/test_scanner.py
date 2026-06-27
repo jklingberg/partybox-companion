@@ -1,0 +1,132 @@
+"""CI-safe unit tests for the BLE scanner.
+
+These mock ``BleakScanner.discover`` so PartyBox filtering, sorting, candidate
+mapping, and error handling can be tested without a Bluetooth adapter. A real
+scan/connect is covered by the hardware-marked integration tests.
+"""
+
+from types import SimpleNamespace
+
+import partybox.bluetooth as bt
+import pytest
+from bleak import BleakScanner
+from bleak.exc import BleakError
+from partybox.bluetooth import (
+    ControlTransport,
+    DiscoveryError,
+    PartyBoxCandidate,
+    Scanner,
+)
+from partybox.bluetooth import bleak_transport as bleak_mod
+
+
+def _device(address: str, name: str | None) -> SimpleNamespace:
+    return SimpleNamespace(address=address, name=name)
+
+
+def _adv(local_name: str | None = None, rssi: int | None = None) -> SimpleNamespace:
+    return SimpleNamespace(local_name=local_name, rssi=rssi)
+
+
+def _patch_discover(monkeypatch: pytest.MonkeyPatch, result: object) -> None:
+    async def fake_discover(**_kwargs: object) -> object:
+        return result
+
+    monkeypatch.setattr(BleakScanner, "discover", staticmethod(fake_discover))
+
+
+async def test_discover_returns_only_partyboxes(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_discover(
+        monkeypatch,
+        {
+            "a": (_device("AA", "JBL PartyBox 520"), _adv(rssi=-50)),
+            "b": (_device("BB", "Some Phone"), _adv(rssi=-40)),
+            "c": (_device("CC", None), _adv(local_name="JBL PartyBox 310", rssi=-60)),
+        },
+    )
+    candidates = await Scanner.discover()
+    assert [c.name for c in candidates] == ["JBL PartyBox 520", "JBL PartyBox 310"]
+    assert all(isinstance(c, PartyBoxCandidate) for c in candidates)
+
+
+async def test_discover_sorts_strongest_first(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_discover(
+        monkeypatch,
+        {
+            "a": (_device("AA", "JBL PartyBox weak"), _adv(rssi=-90)),
+            "b": (_device("BB", "JBL PartyBox strong"), _adv(rssi=-40)),
+            "c": (_device("CC", "JBL PartyBox unknown"), _adv(rssi=None)),
+        },
+    )
+    rssis = [c.rssi for c in await Scanner.discover()]
+    assert rssis == [-40, -90, None]
+
+
+async def test_candidate_exposes_domain_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_discover(
+        monkeypatch,
+        {"a": (_device("AA:BB:CC:DD:EE:FF", "JBL PartyBox 520"), _adv(rssi=-55))},
+    )
+    (candidate,) = await Scanner.discover()
+    assert candidate.name == "JBL PartyBox 520"
+    assert candidate.address == "AA:BB:CC:DD:EE:FF"
+    assert candidate.rssi == -55
+
+
+async def test_find_returns_strongest(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_discover(
+        monkeypatch,
+        {
+            "a": (_device("AA", "JBL PartyBox far"), _adv(rssi=-80)),
+            "b": (_device("BB", "JBL PartyBox near"), _adv(rssi=-30)),
+        },
+    )
+    found = await Scanner.find()
+    assert found is not None
+    assert found.name == "JBL PartyBox near"
+
+
+async def test_find_returns_none_when_no_partybox(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_discover(monkeypatch, {"a": (_device("AA", "Laptop"), _adv(rssi=-40))})
+    assert await Scanner.find() is None
+
+
+async def test_discover_wraps_bleak_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def boom(**_kwargs: object) -> object:
+        raise BleakError("no adapter")
+
+    monkeypatch.setattr(BleakScanner, "discover", staticmethod(boom))
+    with pytest.raises(DiscoveryError):
+        await Scanner.discover()
+
+
+async def test_candidate_connect_opens_a_control_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Bind a candidate to a fake live device, stub the actual BLE connect, and
+    # confirm we get back a connected ControlTransport — no adapter needed.
+    connected: list[bool] = []
+
+    async def fake_connect(self: object) -> None:
+        connected.append(True)
+
+    monkeypatch.setattr(bleak_mod.BleakTransport, "connect", fake_connect)
+
+    candidate = PartyBoxCandidate(
+        name="JBL PartyBox 520",
+        address="AA:BB:CC:DD:EE:FF",
+        rssi=-50,
+        device=_device("AA:BB:CC:DD:EE:FF", "JBL PartyBox 520"),  # type: ignore[arg-type]
+    )
+    transport = await candidate.connect()
+    assert isinstance(transport, ControlTransport)
+    assert transport.address == "AA:BB:CC:DD:EE:FF"
+    assert connected == [True]
+
+
+def test_public_api_exposes_no_bleak_types() -> None:
+    # Every exported symbol must be a partybox type, never a bleak library type.
+    for name in bt.__all__:
+        obj = getattr(bt, name)
+        module = getattr(obj, "__module__", "")
+        assert not module.startswith("bleak"), f"{name} leaks a bleak type from {module}"

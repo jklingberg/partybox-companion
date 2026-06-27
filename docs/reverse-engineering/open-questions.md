@@ -20,10 +20,13 @@ Research threads and known unknowns. Move entries here when a question is identi
 ## Connection
 
 - Does the speaker disconnect clients after a timeout?
-- Is there a keep-alive mechanism?
-- Can multiple RFCOMM connections be held simultaneously?
+- Is there a keep-alive mechanism (does the RX characteristic emit periodic notifications)?
+- **BLE address rotation / bonding (M3).** The PartyBox advertises with rapidly-rotating resolvable private addresses — three distinct addresses for one speaker were seen within a single 10 s scan. Connecting by a stale address string drops the link immediately; an unbonded connection is unstable. The fix is to **bond** the speaker once, after which BlueZ resolves any RPA to the stable identity address (`48:00:57:62:76:66` on the test unit) and `BleakTransport(identity_address)` should connect reliably. Open: confirm bonded reconnect is stable across standby cycles; decide where the appliance performs the one-time bond (M3/M7 setup flow). Bonding requires the speaker awake and in pairing mode — it refuses new bonds in standby.
+- How is the speaker woken from standby? It stops accepting new BLE bonds in standby; does it still accept a control connection from an already-bonded host to receive the power-on frame, or is a separate wake path needed?
+- Can multiple control (GATT) connections be held simultaneously?
 
 ## Features
 
 - Is there a way to query supported capabilities from the device rather than probing?
-- Are Auracast group commands sent over the same RFCOMM channel?
+- The GATT table exposes several other vendor services (e.g. `00001100-d102-…`, `0000eb10-d102-…`, `0000fe2c-…`) alongside the excelpoint control service. Which carry battery, device info, lights, etc.?
+- Are Auracast group commands sent over the same control characteristic?

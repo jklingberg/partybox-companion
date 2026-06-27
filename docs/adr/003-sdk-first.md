@@ -1,6 +1,12 @@
 # ADR-003: SDK-First Architecture
 
-**Status:** Accepted
+**Status:** Accepted (zero-dependency constraint amended by [ADR-015](015-bluetooth-control-transport.md))
+
+> **Amendment (ADR-015):** The "no runtime dependencies" constraint below was
+> premised on speaker control running over Bluetooth Classic SPP/RFCOMM, which
+> the standard library can drive directly. Hardware verification disproved that
+> — control is BLE GATT, which has no stdlib client — so the SDK now depends on
+> `bleak`. All other constraints in this ADR stand. See ADR-015.
 
 ---
 

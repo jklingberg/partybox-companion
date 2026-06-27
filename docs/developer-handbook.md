@@ -149,7 +149,7 @@ Follow this sequence every time a new command is added:
 
 7. **Add tests.**
    - Protocol unit test with the validated capture bytes as a fixture (so CI runs without hardware)
-   - Capability unit test using `MockBackend`
+   - Capability unit test using `MockTransport`
 
 8. **Expose via REST endpoint.** (from M8 onwards)
 
@@ -223,7 +223,7 @@ partybox-companion/
 ├── packages/
 │   ├── partybox/          ← Bluetooth SDK
 │   │   └── src/partybox/
-│   │       ├── bluetooth/ ← transport (BlueZBackend, MockBackend)
+│   │       ├── bluetooth/ ← transport (BleakTransport, MockTransport)
 │   │       ├── protocol/  ← codec (parser, serializer, messages)
 │   │       └── device/    ← Device ABC, capabilities, events
 │   │
@@ -257,7 +257,7 @@ Follow [Conventional Commits](https://www.conventionalcommits.org/):
 feat(protocol): add EQ band command
 fix(bluetooth): handle reconnect race condition
 docs(protocol): document volume response format
-test(device): add MockBackend reconnect scenario
+test(device): add MockTransport reconnect scenario
 ```
 
 Scopes: `bluetooth`, `protocol`, `device`, `capabilities`, `api`, `cli`, `services`, `config`, `webui`, `docs`, `ci`
