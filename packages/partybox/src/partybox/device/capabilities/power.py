@@ -10,9 +10,10 @@ from partybox.protocol.messages import PowerCommand, PowerState
 class PowerCapability:
     """Controls the speaker's power state.
 
-    Commands are fire-and-forget: the PartyBox does not send a notification
-    response to power commands (confirmed during M3 hardware testing). The
-    GATT write-with-response at the transport layer confirms delivery.
+    Commands are fire-and-forget at the SDK level: the speaker does send an
+    ACK notification and a state update on the RX characteristic, but the SDK
+    does not wait for or consume them. The GATT write-with-response at the
+    transport layer confirms delivery.
     """
 
     def __init__(self, transport: ControlTransport) -> None:

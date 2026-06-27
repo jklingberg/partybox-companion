@@ -21,6 +21,7 @@ Typical usage::
 
 __version__ = "0.1.0-dev"
 
+from partybox.bluetooth.scanner import DiscoveryError
 from partybox.bluetooth.transport import (
     BluetoothError,
     ConnectionFailedError,
@@ -41,6 +42,7 @@ __all__ = [
     "ConnectionFailedError",
     "ConnectionLostError",
     "DeviceInfoCapability",
+    "DiscoveryError",
     "NotConnectedError",
     "PartyBoxDevice",
     "PowerCapability",

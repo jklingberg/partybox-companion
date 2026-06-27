@@ -18,6 +18,6 @@ class BatteryCapability:
         self._transport = transport
 
     async def level(self) -> int:
-        """Return the battery charge level as an integer from 0 to 100."""
+        """Return the battery charge level as a percentage (0-100)."""
         data = await self._transport.read(BATTERY_LEVEL_CHAR_UUID)
         return data[0]

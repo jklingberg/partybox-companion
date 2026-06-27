@@ -78,11 +78,16 @@ class PartyBoxDevice:
     async def disconnect(self) -> None:
         """Disconnect from the speaker cleanly.
 
-        Calling this when not connected is a no-op.
+        Calling this when not connected is a no-op. After disconnecting,
+        capability properties raise :class:`~partybox.NotConnectedError`
+        until :meth:`connect` is called again.
         """
         if self._transport is not None:
             await self._transport.disconnect()
             self._transport = None
+            self._power = None
+            self._device_info = None
+            self._battery = None
 
     @property
     def is_connected(self) -> bool:
@@ -113,14 +118,17 @@ class PartyBoxDevice:
 
     @property
     def battery(self) -> BatteryCapability | None:
-        """Battery level, or ``None`` on mains-powered models.
+        """Battery capability, or ``None`` on mains-powered models.
 
-        The PartyBox 520 is mains-powered and returns ``None``. Portable models
-        (110, 310, …) expose the BLE Battery Service and return a
-        :class:`~partybox.device.capabilities.BatteryCapability`.
+        The PartyBox 520 is mains-powered and returns ``None`` after connecting.
+        Portable models (110, 310, …) expose the BLE Battery Service and return
+        a :class:`~partybox.device.capabilities.BatteryCapability`.
 
-        Returns ``None`` also if :meth:`connect` has not been called.
+        Raises:
+            NotConnectedError: if :meth:`connect` has not been called.
         """
+        if self._transport is None:
+            raise NotConnectedError("call connect() before accessing capabilities")
         return self._battery
 
     async def __aenter__(self) -> PartyBoxDevice:

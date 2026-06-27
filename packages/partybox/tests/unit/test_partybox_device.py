@@ -68,15 +68,44 @@ async def test_device_info_is_accessible_through_device() -> None:
         assert isinstance(device.device_info, DeviceInfoCapability)
 
 
-async def test_power_before_connect_raises() -> None:
+def _unconnected_device() -> PartyBoxDevice:
+    """A PartyBoxDevice that has never been connected."""
     device = PartyBoxDevice.__new__(PartyBoxDevice)
     device._candidate = None
     device._transport = None
     device._power = None
     device._device_info = None
     device._battery = None
+    return device
+
+
+async def test_power_before_connect_raises() -> None:
+    with pytest.raises(NotConnectedError):
+        _ = _unconnected_device().power
+
+
+async def test_device_info_before_connect_raises() -> None:
+    with pytest.raises(NotConnectedError):
+        _ = _unconnected_device().device_info
+
+
+async def test_battery_before_connect_raises() -> None:
+    with pytest.raises(NotConnectedError):
+        _ = _unconnected_device().battery
+
+
+async def test_capabilities_cleared_after_disconnect() -> None:
+    transport = _connected_transport()
+    await transport.connect()
+    device = PartyBoxDevice._from_transport(transport)
+    assert isinstance(device.power, PowerCapability)
+    await device.disconnect()
     with pytest.raises(NotConnectedError):
         _ = device.power
+    with pytest.raises(NotConnectedError):
+        _ = device.device_info
+    with pytest.raises(NotConnectedError):
+        _ = device.battery
 
 
 async def test_context_manager_disconnects_on_exit() -> None:
