@@ -137,6 +137,14 @@ class BleakTransport(ControlTransport):
             raise ConnectionFailedError(f"could not connect to {self._address}: {exc}") from exc
 
         self._client = client
+        # BlueZ fires spurious _on_disconnect callbacks for stale device-cache
+        # entries while resolving a rotating private address to the identity
+        # address during connect(). Those callbacks queue None sentinels in
+        # _inbox and set _lost=True even though the connection we just made
+        # is live. Drain the sentinels now (preserving any real notifications
+        # that arrived after start_notify) and clear the lost flag.
+        _drain_inbox_sentinels(self._inbox)
+        self._lost = False
 
     async def disconnect(self) -> None:
         client, self._client = self._client, None
@@ -157,6 +165,22 @@ class BleakTransport(ControlTransport):
             await client.write_gatt_char(self._tx_uuid, data, response=True)
         except _TRANSPORT_ERRORS as exc:
             raise ConnectionLostError(f"write to {self._address} failed: {exc}") from exc
+
+    async def read(self, uuid: str) -> bytes:
+        client = self._require_connected()
+        try:
+            return bytes(await client.read_gatt_char(uuid))
+        except _TRANSPORT_ERRORS as exc:
+            raise ConnectionLostError(f"read from {self._address} failed: {exc}") from exc
+
+    def has_service(self, uuid: str) -> bool:
+        if self._client is None:
+            return False
+        needle = uuid.lower()
+        for service in self._client.services:
+            if service.uuid.lower() == needle:
+                return True
+        return False
 
     async def receive(self) -> bytes:
         self._require_connected()
@@ -204,6 +228,26 @@ class BleakTransport(ControlTransport):
         if self._client is None:
             raise NotConnectedError(f"not connected to {self._address}")
         return self._client
+
+
+def _drain_inbox_sentinels(inbox: asyncio.Queue[bytes | None]) -> None:
+    """Remove None sentinels from inbox without discarding real notification bytes.
+
+    Called after a successful connect() to flush the spurious None sentinels
+    that BlueZ's disconnect callbacks queued while resolving a rotating private
+    address. Any real notification bytes that arrived after start_notify are
+    re-queued so they are not lost.
+    """
+    real: list[bytes] = []
+    while not inbox.empty():
+        try:
+            item = inbox.get_nowait()
+        except asyncio.QueueEmpty:
+            break
+        if item is not None:
+            real.append(item)
+    for item in real:
+        inbox.put_nowait(item)
 
 
 class _suppress_transport_errors:

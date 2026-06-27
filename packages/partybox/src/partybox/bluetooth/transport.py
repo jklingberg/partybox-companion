@@ -116,6 +116,32 @@ class ControlTransport(ABC):
             ConnectionLostError: if the connection drops while waiting.
         """
 
+    @abstractmethod
+    async def read(self, uuid: str) -> bytes:
+        """Read a GATT characteristic by UUID and return its value.
+
+        Used for standard BLE profiles (Battery Service, Device Information)
+        where the value is fetched with a direct ATT read rather than a
+        write-then-notify exchange on the vendor control channel.
+
+        Raises:
+            NotConnectedError: if the transport is not connected.
+            ConnectionLostError: if the connection drops during the read.
+        """
+
+    @abstractmethod
+    def has_service(self, uuid: str) -> bool:
+        """Whether the connected device exposes the given GATT service.
+
+        Used at connect time to detect optional capabilities (e.g. Battery
+        Service on portable models). Always returns ``False`` before the
+        transport is connected.
+
+        Args:
+            uuid: lowercase 128-bit UUID string, e.g.
+                ``"0000180f-0000-1000-8000-00805f9b34fb"``.
+        """
+
     async def __aenter__(self) -> ControlTransport:
         await self.connect()
         return self

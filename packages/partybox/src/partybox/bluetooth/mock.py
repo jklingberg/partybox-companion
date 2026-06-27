@@ -49,6 +49,7 @@ class MockTransport(ControlTransport):
         address: str = DEFAULT_ADDRESS,
         *,
         fail_on_connect: bool = False,
+        services: frozenset[str] = frozenset(),
     ) -> None:
         self._address = address
         self.fail_on_connect = fail_on_connect
@@ -63,6 +64,8 @@ class MockTransport(ControlTransport):
         self._inbox: asyncio.Queue[bytes | None] = asyncio.Queue()
 
         self._stubs: dict[bytes, bytes] = {}
+        self._read_stubs: dict[str, bytes] = {}
+        self._services: frozenset[str] = frozenset(s.lower() for s in services)
         #: Every payload passed to :meth:`write`, in order.
         self.writes: list[bytes] = []
 
@@ -100,6 +103,18 @@ class MockTransport(ControlTransport):
         if response is not None:
             self.feed(response)
 
+    async def read(self, uuid: str) -> bytes:
+        self._check_alive()
+        value = self._read_stubs.get(uuid.lower())
+        if value is None:
+            raise RuntimeError(
+                f"MockTransport: no read stub for {uuid!r} — call stub_read() in your test"
+            )
+        return value
+
+    def has_service(self, uuid: str) -> bool:
+        return uuid.lower() in self._services
+
     async def receive(self) -> bytes:
         self._check_alive()
         item = await self._inbox.get()
@@ -123,6 +138,14 @@ class MockTransport(ControlTransport):
         command replaces it.
         """
         self._stubs[bytes(command)] = bytes(response)
+
+    def stub_read(self, uuid: str, value: bytes) -> None:
+        """Register a canned value for :meth:`read`.
+
+        When :meth:`read` is called with ``uuid``, it returns ``value`` without
+        going to the transport. Re-registering the same UUID replaces it.
+        """
+        self._read_stubs[uuid.lower()] = bytes(value)
 
     def drop(self) -> None:
         """Simulate an unexpected connection drop.

@@ -2,17 +2,21 @@
 
 ## Current status
 
-**M1 — Foundation** and **M2 — Bluetooth Transport** are complete. The BLE GATT
-control transport, LE scanner, and mock are in place, with the public connect +
-power-on path verified end-to-end against a real PartyBox 520.
+**M1 — Foundation**, **M2 — Bluetooth Transport**, and **M3 — Audio Transport Viability** are complete.
 
-**M3 — Audio Transport Viability** has reached its verdict: **viable.** A single
-Pi sources A2DP audio (SBC, zero xruns) *and* controls the speaker over BLE. The
-audio path is production-grade; BLE control is proven possible but fragile in a
-way that is software-addressable (LE bonding + connection management, deferred to
-M6). No architecture change is warranted. Full writeup:
-[docs/validation/m3-findings.md](validation/m3-findings.md); the spike toolkit is
-in [`spike/m3-audio/`](../spike/m3-audio/). Work can proceed to **M4**.
+**M4 (Protocol Foundation) and M5 (Core Device Capabilities) are complete** — delivered as a single milestone. The `partybox` SDK now has a typed protocol layer (frame codec, message dataclasses, encode/decode), `PartyBoxDevice` with three capabilities, and a clean public API verified end-to-end on a real PartyBox 520:
+
+- `await speaker.power.turn_on()` / `turn_off()` — confirmed opcode `AA 03 01 05/04`
+- `await speaker.device_info.manufacturer()` → `"JBL"`
+- `await speaker.device_info.firmware_version()` → `"26.2.10"` — confirmed opcode `AA 21 00` on hardware
+- `speaker.battery` → `None` on the mains-powered 520; `BatteryCapability` present on portable models
+- `device.events()` is deferred to **M6** (daemon integration)
+
+Protocol work also confirmed: the excelpoint vendor protocol uses `AA [opcode] [length] [payload]` with no checksum; state notifications are opcode-`0x12` TLV packets; a `_drain_inbox_sentinels` fix in `BleakTransport` resolves spurious BlueZ disconnect callbacks during RPA resolution.
+
+One intentional gap: `device_info.model()` and `serial_number()` raise `NotImplementedError` — the model/serial string appears only in the power-off TLV state dump (tag `0x40`) and no direct request opcode was found despite systematic probing. Documented in `open-questions.md`; the xfail hardware test tracks it.
+
+Work proceeds to **M6 — Daemon**.
 
 ---
 
@@ -73,37 +77,35 @@ To keep the spike minimal we validated with **local audio first** (a generated t
 
 ---
 
-### M4 — Protocol Foundation
+### M4 — Protocol Foundation + Core Device Capabilities ✅
 
 **Package:** `partybox`
 
-Frame codec, message dataclasses, parser, and serializer. Initial message coverage is intentionally narrow: **power commands and device information only**.
+> M4 (Protocol Foundation) and M5 (Core Device Capabilities) were delivered together.
 
-The protocol layer is stateless and pure. Every message type is a dataclass; the parser and serializer are pure functions. No I/O at this layer.
+Frame codec, message dataclasses, encoder and decoder. `PartyBoxDevice` with capability API, `Scanner` top-level entry point. Capability coverage:
 
-Message coverage is extended incrementally in later milestones as capabilities are added. Do not preemptively implement messages that no milestone yet needs.
+| Capability | Always present | Status |
+|---|---|---|
+| `PowerCapability` | yes | ✅ confirmed opcodes `AA 03 01 05/04` |
+| `DeviceInfoCapability` | yes | ✅ `manufacturer()` + `firmware_version()` (opcode `AA 21 00`); `model()` / `serial_number()` deferred (opcode not found) |
+| `BatteryCapability` | no (portable models only) | ✅ implemented; `None` on mains-powered 520 |
 
-**Done when:** A power-on command can be encoded and sent; a device info response can be decoded into a typed message. Protocol bytes are captured as test fixtures so CI runs without hardware.
+**Protocol layer:** stateless and pure — no I/O, no async. Every message type is a frozen dataclass. Bytes confirmed from real hardware captures serve as test fixtures so CI runs without hardware.
+
+**BleakTransport fix:** `_drain_inbox_sentinels` resolves spurious BlueZ disconnect callbacks that fire during `client.connect()` while resolving rotating private addresses.
+
+**Known gap:** `device_info.model()` and `serial_number()` raise `NotImplementedError`. The model/serial string (tag `0x40`) appears only in the power-off TLV state dump; no direct request opcode was found despite systematic probing of 50+ opcodes. Tracked in `open-questions.md`; hardware test is `xfail(strict=True)`.
+
+**Event stream** (`device.events()`) deferred to M6 (daemon integration).
+
+**Done:** power on/off, firmware version, and battery presence detection work end-to-end against a real PartyBox 520. 68 unit tests pass in CI; 8 hardware tests pass / 1 xfailed on the Pi.
 
 ---
 
-### M5 — Core Device Capabilities
+### M5 — Core Device Capabilities ✅
 
-**Package:** `partybox`
-
-`Device` ABC, `PartyBoxDevice` implementation, and the **three capabilities needed for the WiFi speaker MVP**:
-
-| Capability | Always present | Justification |
-|---|---|---|
-| `PowerCapability` | yes | power on/off is hardware-unique |
-| `DeviceInfoCapability` | yes | firmware version, model name |
-| `BatteryCapability` | no (portable models only) | battery status is hardware-unique |
-
-Event stream (`device.events()`) for daemon integration.
-
-**Out of scope for M5:** volume, input source, lights, EQ, microphone. These do not contribute to the WiFi speaker MVP.
-
-**Done when:** `await speaker.power.turn_on()`, `await speaker.device_info.firmware_version()`, and (on supported models) `await speaker.battery.level()` work against a real device. `device.events()` yields typed events.
+Delivered as part of M4 — see above.
 
 ---
 

@@ -23,8 +23,6 @@ select = [
     "RUF", # ruff-specific
 ]
 ignore = [
-    "ANN101",
-    "ANN102",
     "S101",
 ]
 

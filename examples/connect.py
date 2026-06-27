@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Find a PartyBox and open a control connection.
+"""Find a PartyBox, connect, and print basic device info.
 
 uv run python examples/connect.py
 """
 
 import asyncio
 
-from partybox.bluetooth import Scanner
+from partybox import Scanner
 
 
 async def main() -> None:
@@ -15,12 +15,19 @@ async def main() -> None:
         print("No PartyBox found. Is it powered on and in range?")
         return
 
-    print(f"Connecting to {speaker.name} ...")
-    transport = await speaker.connect()
-    try:
-        print(f"Connected: {transport.is_connected}")
-    finally:
-        await transport.disconnect()
+    async with speaker:
+        print(f"Connected: {speaker.is_connected}")
+        try:
+            print(f"Model    : {await speaker.device_info.model()}")
+            print(f"Firmware : {await speaker.device_info.firmware_version()}")
+        except NotImplementedError:
+            print("Device info: not yet implemented (vendor opcode TBD)")
+        battery = speaker.battery
+        if battery is None:
+            print("Battery  : not supported")
+        else:
+            print(f"Battery  : {await battery.level()}%")
+
     print("Disconnected.")
 
 
