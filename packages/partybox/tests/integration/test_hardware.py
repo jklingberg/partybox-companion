@@ -99,6 +99,6 @@ async def test_battery_none_on_mains_powered_model() -> None:
         # This assertion is model-specific. On a portable model (110/310),
         # battery will not be None — adjust the test accordingly.
         # On the PartyBox 520 (primary test device) battery is expected to be None.
-        assert (
-            device.battery is None
-        ), "PartyBox 520 is mains-powered — update this assertion for a portable model"
+        assert device.battery is None, (
+            "PartyBox 520 is mains-powered — update this assertion for a portable model"
+        )
