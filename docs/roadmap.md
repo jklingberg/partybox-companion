@@ -2,9 +2,11 @@
 
 ## Current status
 
-**M1 — Foundation** is complete. The repository scaffold, tooling, CI, and architecture documentation are in place.
+**M1 — Foundation** and **M2 — Bluetooth Transport** are complete. The BLE GATT
+control transport, LE scanner, and mock are in place, with the public connect +
+power-on path verified end-to-end against a real PartyBox 520.
 
-Work is beginning on **M2 — Bluetooth Transport**.
+Work is beginning on **M3 — Audio Transport Viability**.
 
 ---
 
@@ -28,7 +30,7 @@ Repository scaffold, monorepo structure, CI pipeline, shared tooling (ruff, mypy
 
 ---
 
-### M2 — Bluetooth Transport
+### M2 — Bluetooth Transport ✅
 
 **Package:** `partybox`
 
