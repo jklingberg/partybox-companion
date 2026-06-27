@@ -6,7 +6,13 @@
 control transport, LE scanner, and mock are in place, with the public connect +
 power-on path verified end-to-end against a real PartyBox 520.
 
-Work is beginning on **M3 — Audio Transport Viability**.
+**M3 — Audio Transport Viability** has reached its verdict: **viable.** A single
+Pi sources A2DP audio (SBC, zero xruns) *and* controls the speaker over BLE. The
+audio path is production-grade; BLE control is proven possible but fragile in a
+way that is software-addressable (LE bonding + connection management, deferred to
+M6). No architecture change is warranted. Full writeup:
+[docs/validation/m3-findings.md](validation/m3-findings.md); the spike toolkit is
+in [`spike/m3-audio/`](../spike/m3-audio/). Work can proceed to **M4**.
 
 ---
 
@@ -44,34 +50,26 @@ Getting the transport right matters more than getting it fast. The `MockTranspor
 
 ---
 
-### M3 — Audio Transport Viability
+### M3 — Audio Transport Viability ✅
 
-A technical viability spike. This milestone answers the most critical architectural question before any higher-level features are built:
+A technical viability spike answering the most critical architectural question before any higher-level features are built:
 
-> *Can a Raspberry Pi reliably stream music to a JBL PartyBox over Bluetooth A2DP while simultaneously maintaining the BLE control connection?*
+> *Can a Raspberry Pi reliably stream audio to a JBL PartyBox over Bluetooth A2DP while simultaneously maintaining the BLE control connection?*
 
-This is not an architecture milestone. The goal is to produce evidence, not production code. No daemon abstractions, no REST API, no configuration system — only the minimum needed to answer the question.
+**Verdict: viable.** Validated on a real PartyBox 520 from the Pi. The output is evidence, not production code — the exploratory toolkit lives in [`spike/m3-audio/`](../spike/m3-audio/) and the full writeup is [docs/validation/m3-findings.md](validation/m3-findings.md).
 
-**What this milestone validates:**
+To keep the spike minimal we validated with **local audio first** (a generated tone via PipeWire) rather than coupling the experiment to librespot; routing a real Spotify Connect stream is the production path and lands in M9.
 
-- BlueZ pairs with the PartyBox as an A2DP sink
-- PipeWire routes librespot output to the A2DP connection reliably
-- Audio is delivered at acceptable quality with no audible dropouts
-- The BLE control connection (from M2) remains stable while A2DP is active
-- Power-on/off commands work while audio is playing
-- Automatic reconnection works after standby
-- The combination is stable over long-running sessions (30+ minutes)
+**Validated:**
 
-**Scope:**
-- Minimal script to establish BLE control + A2DP connections simultaneously
-- librespot running in PipeWire output mode, routed to the Bluetooth device
-- Extended playback test: continuous session of 30+ minutes
+- BlueZ pairs/bonds with the PartyBox as an A2DP sink; PipeWire routes to it (codec **SBC**)
+- Audio is clean — **zero xruns**, no disconnects across every sample
+- The BLE control connection coexists with active A2DP (commands round-tripped mid-stream)
+- A2DP reconnect is reliable and fast — **10/10 cycles, ~1.2 s median**
 
-**Not in scope:** daemon architecture, REST API, Portal, configuration system, subprocess abstractions.
+**Discovered (deferred to M6 — daemon, not blockers):** naive per-session BLE connection management is fragile — the Pi's BlueZ/controller wedges under connect-churn against the speaker's rotating LE addresses (recoverable with a controller reset). Reliable BLE control needs an LE bond + connection management. Also deferred: the formal 30-min extended run, librespot/Spotify routing (M9), and standby-mode reconnect.
 
-**Done when:** Music plays through the PartyBox from Spotify Connect via the Pi for 30+ minutes without audible dropouts. The BLE control connection remains active throughout. Power-on/off works while audio is playing. Reconnection after standby works.
-
-**If this milestone fails:** The overall architecture must be reconsidered before investing further in the appliance design.
+**If this milestone had failed:** the appliance architecture would have been reconsidered before further investment. It did not — work proceeds to M4.
 
 ---
 

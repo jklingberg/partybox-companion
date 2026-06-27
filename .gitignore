@@ -65,3 +65,9 @@ research/logs/*
 research/scripts/*
 !research/scripts/README.md
 .claude/settings.local.json
+
+# M3 spike — run outputs and generated assets (the findings doc is the durable
+# record; raw evidence is local-only). Keep the directory itself tracked.
+spike/m3-audio/evidence/*
+!spike/m3-audio/evidence/.gitkeep
+spike/m3-audio/venv/
