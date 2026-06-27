@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Power on a PartyBox.
+"""Power off a PartyBox.
 
-uv run python examples/power_on.py
+uv run python examples/power_off.py
 """
 
 import asyncio
@@ -16,8 +16,8 @@ async def main() -> None:
         return
 
     async with speaker:
-        await speaker.power.turn_on()
-        print("Powered on.")
+        await speaker.power.turn_off()
+        print("Powered off.")
 
 
 if __name__ == "__main__":

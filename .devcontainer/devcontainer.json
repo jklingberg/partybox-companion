@@ -51,7 +51,9 @@
         "tamasfe.even-better-toml",
         "eamodio.gitlens",
         "GitHub.vscode-pull-request-github",
-        "Anthropic.claude-code"
+        "Anthropic.claude-code",
+        "SingularityInc.claude-notifier",
+        "github.vscode-github-actions"
       ],
       "settings": {
         // Point VS Code at the uv-managed virtual environment

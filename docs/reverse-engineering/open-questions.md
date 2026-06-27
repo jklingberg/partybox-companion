@@ -28,5 +28,7 @@ Research threads and known unknowns. Move entries here when a question is identi
 ## Features
 
 - Is there a way to query supported capabilities from the device rather than probing?
-- The GATT table exposes several other vendor services (e.g. `00001100-d102-…`, `0000eb10-d102-…`, `0000fe2c-…`) alongside the excelpoint control service. Which carry battery, device info, lights, etc.?
+- **Model / serial number opcode.** The full device identifier string `"GG1389-DP0020672"` appears in the opcode-`0x12` TLV state dump (tag `0x40`) that the speaker pushes during power-off shutdown. No direct request opcode was found: probing `AA 40 00` and nearby opcodes (0x3d–0x45) returned no responses. The string may only be available during a power-state transition. The `DeviceInfoCapability.model()` and `serial_number()` methods raise `NotImplementedError` until the opcode is confirmed. Possible paths: APK analysis in JADX, or capturing traffic from the JBL PartyBox iOS/Android app during a session that shows device info.
+- **Battery opcode.** The PartyBox 520 is mains-powered (no battery). A portable model (110/310) is needed to discover and confirm the battery level opcode.
+- The `0000eb10-d102-11e1-9b23-00025b00a5a5` vendor service (Qualcomm?) has a readable characteristic (`eb12`) that hangs on GATT read without bonding. Does it expose useful data after bonding?
 - Are Auracast group commands sent over the same control characteristic?
