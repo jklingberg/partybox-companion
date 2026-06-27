@@ -1,8 +1,10 @@
 """Unit tests for PartyBoxDevice using MockTransport."""
 
+import asyncio
+
 import pytest
 from partybox.bluetooth.mock import MockTransport
-from partybox.bluetooth.transport import NotConnectedError
+from partybox.bluetooth.transport import ConnectionLostError, NotConnectedError
 from partybox.device.capabilities.battery import BatteryCapability
 from partybox.device.capabilities.device_info import DeviceInfoCapability
 from partybox.device.capabilities.power import PowerCapability
@@ -115,3 +117,89 @@ async def test_context_manager_disconnects_on_exit() -> None:
     async with device:
         assert device.is_connected
     assert not transport.is_connected
+
+
+# ---------------------------------------------------------------------------
+# address property
+# ---------------------------------------------------------------------------
+
+
+async def test_address_returns_transport_address_when_connected() -> None:
+    transport = MockTransport(address="AA:BB:CC:DD:EE:FF")
+    async with transport:
+        device = PartyBoxDevice._from_transport(transport)
+        assert device.address == "AA:BB:CC:DD:EE:FF"
+
+
+async def test_address_is_none_when_not_connected() -> None:
+    device = _unconnected_device()
+    assert device.address is None
+
+
+async def test_address_is_none_after_disconnect() -> None:
+    transport = _connected_transport()
+    await transport.connect()
+    device = PartyBoxDevice._from_transport(transport)
+    await device.disconnect()
+    assert device.address is None
+
+
+# ---------------------------------------------------------------------------
+# drain_until_disconnect
+# ---------------------------------------------------------------------------
+
+
+async def test_drain_until_disconnect_raises_not_connected_when_not_connected() -> None:
+    device = _unconnected_device()
+    with pytest.raises(NotConnectedError):
+        await device.drain_until_disconnect()
+
+
+async def test_drain_until_disconnect_raises_connection_lost_on_drop() -> None:
+    transport = _connected_transport()
+    async with transport:
+        device = PartyBoxDevice._from_transport(transport)
+        transport.drop()
+        with pytest.raises(ConnectionLostError):
+            await device.drain_until_disconnect()
+
+
+async def test_drain_until_disconnect_raises_not_connected_on_clean_disconnect() -> None:
+    transport = _connected_transport()
+    async with transport:
+        device = PartyBoxDevice._from_transport(transport)
+
+        async def _disconnect_soon() -> None:
+            await asyncio.sleep(0)
+            await device.disconnect()
+
+        task = asyncio.create_task(_disconnect_soon())
+        with pytest.raises(NotConnectedError):
+            await device.drain_until_disconnect()
+        await task
+
+
+async def test_drain_until_disconnect_discards_unsolicited_notifications() -> None:
+    transport = _connected_transport()
+    async with transport:
+        device = PartyBoxDevice._from_transport(transport)
+        # Feed two unsolicited notifications, then simulate a drop.
+        transport.feed(b"\xaa\x00\x00")
+        transport.feed(b"\xaa\x00\x00")
+        transport.drop()
+        with pytest.raises(ConnectionLostError):
+            await device.drain_until_disconnect()
+
+
+# ---------------------------------------------------------------------------
+# connect() reconnect after ConnectionLostError
+# ---------------------------------------------------------------------------
+
+
+async def test_connect_noop_when_already_connected() -> None:
+    transport = _connected_transport()
+    async with transport:
+        device = PartyBoxDevice._from_transport(transport)
+        # Second call should be a no-op (no error, still connected).
+        await device.connect()
+        assert device.is_connected

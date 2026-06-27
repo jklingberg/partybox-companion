@@ -109,13 +109,22 @@ Delivered as part of M4 — see above.
 
 ---
 
-### M6 — Daemon
+### M6 — Daemon ✅
 
 **Package:** `partyboxd`
 
-Internal event bus, daemon lifecycle, and a minimal HTTP skeleton. The daemon owns the Bluetooth connection and re-emits device events to registered handlers.
+Daemon lifecycle, connection management, and a minimal HTTP API. The daemon owns the speaker connection — scanning, connecting, maintaining, and reconnecting — and exposes current state over HTTP.
 
-**Done when:** `partyboxd --config ...` starts, connects to a real PartyBox, and serves `GET /api/v1/status` returning power state, battery (if available), and firmware version as JSON.
+**Done when:** `partyboxd` starts, connects to a real PartyBox, maintains the connection, and serves `GET /api/v1/status` returning connection status, firmware version, and battery level (if available) as JSON. Power state is intentionally absent — no confirmed query opcode exists; it will be revisited in M8 once the protocol is better understood.
+
+**Validated on hardware (JBL PartyBox 520, 2026-06-27):**
+
+- `partyboxd` starts, connects in ~12 s, and serves `GET /api/v1/status`
+- `connected: true`, `address` populated, `battery: null` (mains-powered, correct)
+- Graceful SIGTERM shutdown confirmed
+- `firmware: null` — the `AA 21 00` opcode no longer elicits `AA 22` on this unit; the speaker replies instead with `AA 12 04 00 53 01 00` (state dump, opcode `0x12`). Cause unknown — possible protocol behaviour change; tracked in `open-questions.md`. The daemon degrades gracefully.
+
+**SDK additions (partybox):** `PartyBoxDevice.address`, `PartyBoxDevice.drain_until_disconnect()`, and a fix to `connect()` to handle reconnection after `ConnectionLostError`.
 
 ---
 

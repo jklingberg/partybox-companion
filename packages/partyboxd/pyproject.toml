@@ -64,6 +64,7 @@ packages = ["src/partyboxd"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+asyncio_mode = "auto"
 addopts = ["--cov=partyboxd"]
 
 [tool.mypy]
