@@ -62,10 +62,20 @@ class PartyBoxDevice:
     async def connect(self) -> None:
         """Connect to the speaker and initialise capabilities.
 
-        Calling this on an already-connected device is a no-op.
+        Calling this on an already-connected device is a no-op. Calling it
+        after a :class:`~partybox.ConnectionLostError` clears the dead
+        transport and re-establishes the connection.
         """
-        if self._transport is not None:
+        if self._transport is not None and self._transport.is_connected:
             return
+        if self._transport is not None:
+            # Dead transport from a prior ConnectionLostError — clean up before
+            # reconnecting so capabilities are not left pointing at a dead object.
+            await self._transport.disconnect()
+            self._transport = None
+            self._power = None
+            self._device_info = None
+            self._battery = None
         if self._candidate is None:
             raise RuntimeError("device has no candidate (created via _from_transport)")
         transport: ControlTransport = await self._candidate.connect()
@@ -93,6 +103,44 @@ class PartyBoxDevice:
     def is_connected(self) -> bool:
         """Whether the control connection is currently live."""
         return self._transport is not None and self._transport.is_connected
+
+    @property
+    def address(self) -> str | None:
+        """BLE address of the connected speaker, or ``None`` when not connected.
+
+        The address is informational — PartyBox speakers rotate their private
+        address, so this value should not be persisted or used to reconnect.
+        """
+        if self._transport is None:
+            return None
+        return self._transport.address
+
+    async def drain_until_disconnect(self) -> None:
+        """Drain unsolicited notifications until the connection drops.
+
+        Blocks indefinitely, consuming and discarding every notification the
+        speaker sends (button presses, state updates, etc.) until the control
+        connection is lost. The name reflects the side effect: all messages
+        arriving while this is running are silently consumed.
+
+        Intended for the daemon's connection-maintenance loop, which does not
+        process unsolicited notifications in M6. Capabilities that read from
+        the receive queue (e.g. :meth:`~partybox.DeviceInfoCapability.firmware_version`)
+        must complete before this is called, or they will race for messages.
+
+        Raises:
+            NotConnectedError: if not connected, or if the connection was
+                closed cleanly via :meth:`disconnect`.
+            ConnectionLostError: when an unexpected disconnect is detected
+                (speaker powered off, went out of range, etc.).
+        """
+        if self._transport is None:
+            raise NotConnectedError("call connect() before draining")
+        # TODO: unsolicited notifications are intentionally discarded here until
+        # they become first-class SDK events (a typed async iterable on Device).
+        # When that happens, this loop should dispatch instead of discarding.
+        while True:
+            await self._transport.receive()
 
     @property
     def power(self) -> PowerCapability:

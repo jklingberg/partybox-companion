@@ -25,6 +25,28 @@ Research threads and known unknowns. Move entries here when a question is identi
 - How is the speaker woken from standby? It stops accepting new BLE bonds in standby; does it still accept a control connection from an already-bonded host to receive the power-on frame, or is a separate wake path needed?
 - Can multiple control (GATT) connections be held simultaneously?
 
+## Firmware version opcode regression (2026-06-27)
+
+**Symptom:** `AA 21 00` (firmware version request, previously confirmed opcode) no longer elicits an `AA 22 ...` response. Instead the speaker replies with `AA 12 04 00 53 01 00` (a state-dump notification, opcode `0x12`). This was reproduced across multiple connection attempts.
+
+**Confirmed via probe script (2026-06-27):**
+- Connecting without writing anything → no spontaneous notifications
+- Sending `AA 21 00` → speaker replies with `AA 12 04 00 53 01 00`; no `AA 22` follows within 5 s
+
+**Payload decode (partial):** `AA 12 04 | 00 53 01 00`. Opcode `0x12`, length 4. Payload meaning unknown.
+
+**Possible explanations (none confirmed):**
+- Possible firmware update that changed opcode `0x21` behaviour (unconfirmed — no version comparison available)
+- Response may be state-dependent: `0x22` may only be sent in certain operating states (e.g. fully active vs. standby-idle while mains-powered)
+- `0x12` may have always been triggered by `0x21`, with `0x22` following quickly; the observed change may be that `0x22` is now absent or the timing has changed
+
+**Impact:** `firmware_version()` raises `TimeoutError`; `DeviceInfoCapability.firmware_version()` is broken on the test unit. The daemon handles this with graceful degradation (`firmware: null` in status). The M4 hardware test `test_device_info_firmware_version` now fails.
+
+**Investigation paths:**
+- Capture JBL app traffic to see how it queries firmware in the current state
+- Try `AA 21 00` immediately after a power cycle (speaker may respond differently when freshly powered)
+- Inspect JADX export for opcode `0x21` usage — check if it changed in newer APK versions
+
 ## Features
 
 - Is there a way to query supported capabilities from the device rather than probing?

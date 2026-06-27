@@ -27,4 +27,5 @@ repos:
         exclude: ^packages/[^/]+/tests/
         additional_dependencies:
           - pydantic-settings>=2.2
+          - fastapi>=0.100
         args: [--ignore-missing-imports]
