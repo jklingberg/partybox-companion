@@ -216,6 +216,53 @@ The daemon starts at `http://localhost:8080`. Check `GET /api/v1/status`.
 
 ---
 
+## Deploying to the Pi
+
+The Pi runs the full `partybox-companion` appliance. All packages are installed as
+editable installs under `~/partybox-companion/.venv`, so copying source files to the
+Pi is sufficient for most changes — no reinstall is needed.
+
+**SSH access:** `ssh jonathan@partybox`
+
+**Deploy changed source files:**
+
+```bash
+# From the repo root on your dev machine — adjust paths to taste
+rsync -av packages/companion/src/ jonathan@partybox:~/partybox-companion/packages/companion/src/
+rsync -av packages/partyboxd/src/ jonathan@partybox:~/partybox-companion/packages/partyboxd/src/
+rsync -av packages/partybox/src/  jonathan@partybox:~/partybox-companion/packages/partybox/src/
+```
+
+**If dependencies changed** (i.e. `pyproject.toml` or `uv.lock` changed), sync the
+lock file and re-run `uv sync`:
+
+```bash
+rsync -av uv.lock pyproject.toml jonathan@partybox:~/partybox-companion/
+ssh jonathan@partybox "cd ~/partybox-companion && ~/.local/bin/uv sync --all-extras"
+```
+
+**Restart the companion:**
+
+```bash
+ssh jonathan@partybox "pkill -f partybox-companion; sleep 1; \
+  cd ~/partybox-companion && nohup ~/.local/bin/uv run partybox-companion \
+  > /tmp/companion.log 2>&1 &"
+```
+
+Check health after restart:
+
+```bash
+ssh jonathan@partybox "curl -s http://localhost:8080/api/v1/health"
+```
+
+**Logs:**
+
+```bash
+ssh jonathan@partybox "tail -f /tmp/companion.log"
+```
+
+---
+
 ## Project structure reference
 
 ```
