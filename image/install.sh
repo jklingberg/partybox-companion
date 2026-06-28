@@ -63,6 +63,11 @@ apt-get update -qq
 apt-get install -y raspotify
 systemctl disable raspotify 2>/dev/null || true
 
+# raspotify installs the librespot binary to /usr/bin/librespot. Symlink it
+# to /usr/local/bin so the documented layout (/usr/local/bin/librespot) and
+# SpotifyService's shutil.which("librespot") PATH lookup both work.
+ln -sf "$(command -v librespot)" /usr/local/bin/librespot
+
 # ──────────────────────────────────────────────────────────────────────────────
 # 3. companion user
 #
@@ -114,19 +119,22 @@ rm -f "${UV_TGZ}" && rm -rf "/tmp/uv-${UV_ARCH}"
 # ──────────────────────────────────────────────────────────────────────────────
 # 5. Python venv + Companion packages
 #
-# Installs partybox, partyboxd, and companion from the repository source.
-# uv resolves the workspace graph and installs all transitive dependencies.
-# The venv at INSTALL_PREFIX matches the production layout in ADR-017.
+# Installs partybox, partyboxd, and companion from the repository source,
+# with ALL transitive dependency versions pinned to uv.lock for reproducible
+# image builds. Two builds from the same tag always produce identical installs.
+#
+# UV_PROJECT_ENVIRONMENT redirects the venv from the workspace default (.venv)
+# to our production path. --frozen refuses to update uv.lock (fail loudly if
+# it is out of date). --no-editable copies workspace package source into
+# site-packages rather than creating .pth symlinks — the source tree is deleted
+# after install so symlinks would be dangling. --no-dev excludes test/lint deps.
 # ──────────────────────────────────────────────────────────────────────────────
-log "Creating venv at ${INSTALL_PREFIX}"
-uv venv "${INSTALL_PREFIX}" --python python3
-
-log "Installing partybox-companion"
-uv pip install \
-    --python "${INSTALL_PREFIX}/bin/python" \
-    "${PARTYBOX_SRC_DIR}/packages/partybox" \
-    "${PARTYBOX_SRC_DIR}/packages/partyboxd" \
-    "${PARTYBOX_SRC_DIR}/packages/companion"
+log "Installing partybox-companion (locked)"
+(
+    cd "${PARTYBOX_SRC_DIR}"
+    UV_PROJECT_ENVIRONMENT="${INSTALL_PREFIX}" \
+        uv sync --frozen --no-dev --no-editable
+)
 
 ln -sf "${INSTALL_PREFIX}/bin/partybox-companion" /usr/local/bin/partybox-companion
 

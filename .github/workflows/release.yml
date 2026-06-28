@@ -75,6 +75,10 @@ jobs:
             # Copy smoke-test.sh before install.sh removes /opt/partybox-src.
             cp /opt/partybox-src/image/smoke-test.sh /tmp/partybox-smoke-test.sh
 
+            # cd away from /opt/partybox-src so the shell's CWD remains valid
+            # after install.sh deletes the source tree (avoids getcwd errors).
+            cd /
+
             PARTYBOX_SRC_DIR=/opt/partybox-src \
             COMPANION_VERSION=${{ steps.meta.outputs.version }} \
               bash /opt/partybox-src/image/install.sh
