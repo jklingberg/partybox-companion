@@ -1,0 +1,44 @@
+[Unit]
+Description=PartyBox Companion
+Documentation=https://github.com/jklingberg/partybox-companion
+After=network-online.target bluetooth.service
+Wants=network-online.target bluetooth.service
+
+[Service]
+Type=simple
+User=companion
+Group=bluetooth
+
+# Production path for persistent data — always set, cannot be overridden accidentally.
+# The Portal writes config.json here; systemd creates the directory before ExecStart.
+Environment=COMPANION_DATA_DIR=/var/lib/companion
+
+# Operator overrides: copy system/systemd/companion.env to /etc/companion/companion.env
+# and uncomment the settings you want to change. The file is silently ignored if absent.
+EnvironmentFile=-/etc/companion/companion.env
+
+ExecStart=/opt/partybox-companion/bin/partybox-companion
+
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=companion
+
+# StateDirectory creates /var/lib/companion owned by companion before ExecStart
+StateDirectory=companion
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+# Port 80 binding: the appliance exposes the Portal on port 80 in production.
+# The mechanism (AmbientCapabilities, reverse proxy, or iptables) is determined
+# at image build time (M14). Set COMPANION_PORT=80 in companion.env once decided.
+
+[Install]
+WantedBy=multi-user.target

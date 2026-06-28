@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import platform
@@ -17,6 +18,8 @@ from companion.config import SpotifySettings
 from companion.config_store import ConfigStore
 from companion.services.spotify import SpotifyService
 
+_JOURNAL_LINES = 500
+
 
 class SpotifyStatusResponse(BaseModel):
     """Response body for GET /api/v1/spotify."""
@@ -24,6 +27,25 @@ class SpotifyStatusResponse(BaseModel):
     running: bool
     active: bool
     device_name: str
+
+
+async def _collect_journal_logs() -> str:
+    """Return recent journal entries for partybox-companion, or a fallback message."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "journalctl",
+            "--unit=partybox-companion",
+            f"--lines={_JOURNAL_LINES}",
+            "--no-pager",
+            "--output=short",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10.0)
+        output = stdout.decode(errors="replace")
+        return output if output.strip() else "(no journal entries found)\n"
+    except (OSError, TimeoutError):
+        return "(journalctl not available)\n"
 
 
 def make_services_router(spotify: SpotifyService, config: ConfigStore) -> APIRouter:
@@ -107,7 +129,7 @@ def make_services_router(spotify: SpotifyService, config: ConfigStore) -> APIRou
         """Download a ZIP archive with diagnostic information.
 
         The bundle contains appliance version, configuration, service status,
-        and system information useful for bug reports. No sensitive data
+        system information, and recent log lines. No sensitive data
         (API keys, credentials) is included.
 
         **Responses:**
@@ -119,6 +141,7 @@ def make_services_router(spotify: SpotifyService, config: ConfigStore) -> APIRou
         cfg = config.read()
         spotify_status = spotify.status
         ts = datetime.now(tz=UTC)
+        logs = await _collect_journal_logs()
 
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
@@ -158,6 +181,7 @@ def make_services_router(spotify: SpotifyService, config: ConfigStore) -> APIRou
                     indent=2,
                 ),
             )
+            zf.writestr("logs.txt", logs)
 
         buf.seek(0)
         filename = f"partybox-debug-{ts.strftime('%Y%m%d-%H%M%S')}.zip"

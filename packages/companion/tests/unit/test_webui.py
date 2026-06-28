@@ -28,6 +28,7 @@ def _make_app(tmp_path: Path) -> AsyncClient:
     """Assemble a companion app backed by a mock DeviceManager."""
     companion_settings = CompanionSettings(data_dir=tmp_path)
     daemon_settings = DaemonSettings()
+    store = ConfigStore(tmp_path / "config.json")
 
     manager = MagicMock()
     type(manager).snapshot = PropertyMock(
@@ -37,8 +38,7 @@ def _make_app(tmp_path: Path) -> AsyncClient:
     manager.unsubscribe = MagicMock()
 
     app = create_daemon_app(manager, daemon_settings)
-    portal_router, _ = make_portal_router(companion_settings)
-    app.include_router(portal_router)
+    app.include_router(make_portal_router(companion_settings, store))
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
 
