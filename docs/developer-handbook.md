@@ -38,7 +38,7 @@ After that, the terminal is ready. `uv run pytest`, `uv run ruff`, and `uv run m
 | Tool | Source |
 |---|---|
 | Python 3.12 | `mcr.microsoft.com/devcontainers/python:3.12-bookworm` |
-| uv | `ghcr.io/astral-sh/uv:latest` (copied at build time) |
+| uv | `ghcr.io/astral-sh/uv:0.11.24` (pinned; copied at build time) |
 | GitHub CLI (`gh`) | devcontainer feature |
 | Node.js LTS | devcontainer feature (Claude Code dependency) |
 | Claude Code | `npm install -g @anthropic-ai/claude-code` (post-create) |
