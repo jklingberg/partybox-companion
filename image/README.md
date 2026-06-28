@@ -21,6 +21,7 @@ the full rationale.
 | `install.sh` | The installation implementation — run inside the Pi OS image during CI, or on a running Pi |
 | `smoke-test.sh` | Release verification — starts Companion and checks `GET /api/v1/health`; called by the release workflow after install.sh |
 | `config/base-image.env` | Pinned Pi OS base image (version, name, URL) — update here when upgrading the base image |
+| `config/journald-appliance.conf` | journald drop-in: volatile storage, 50 MB RAM cap (no SD card journal writes) |
 | `config/wifi-powersave.conf` | NetworkManager drop-in that disables WiFi power saving |
 | `config/motd` | SSH login message template (version is substituted at install time) |
 
@@ -66,9 +67,12 @@ Steps (in order):
 6. **systemd service** — `companion.service` copied and enabled (auto-starts on boot)
 7. **Avahi** — mDNS service record so `partybox.local` resolves
 8. **BlueZ** — `AutoEnable=true` so the Bluetooth adapter powers on automatically
-9. **WiFi power management** — disabled to keep mDNS reliable during A2DP streaming
+9. **WiFi power management** — disabled to keep latency and mDNS stable (see ADR-020)
 10. **Hostname** — set to `partybox`
-11. **Version record** — written to `/etc/partybox-companion/version`
+11. **SD card longevity** — swap removed, `/tmp` on tmpfs, volatile journal (see ADR-020)
+12. **Unnecessary services disabled** — apt-daily, man-db, triggerhappy (see ADR-020)
+13. **Headless boot** — `gpu_mem=16`, splash screen removed (see ADR-020)
+14. **Version record** — written to `/etc/partybox-companion/version`
 
 ## Manual installation on a running Pi
 

@@ -289,20 +289,28 @@ Establish the release engineering foundation: the pipeline that turns a git tag 
 
 ---
 
-#### M13.2 — Image Polish *(post-M13.1)*
+#### M13.2 — Image Polish *(complete)*
 
-Harden and optimise the image once the pipeline is working end-to-end.
+**Delivered:**
+- `image/config/base-image.env` — Pi OS base image pinned to a specific dated release; upgrades are a single-file diff
+- `image/smoke-test.sh` — release gate: starts Companion inside the QEMU chroot, calls `GET /api/v1/health`, and fails the workflow if the appliance does not respond
+- Version flow: `git tag → hatch-vcs → importlib.metadata → REST API / Portal / MOTD` (see ADR-019 Version management section)
+- uv version pinning documented with release engineering rationale
+- Image cleanup: uv/pip caches, build logs, bash history removed before publishing
 
-**Goals:**
-- Pin the Raspberry Pi OS Lite base image to a specific dated release + SHA256 (reproducible builds)
-- Pin the uv version in install.sh
-- Configure PipeWire for the `companion` user (system-session audio routing so librespot can reach the Bluetooth sink)
-- Image size optimisation (strip unnecessary Pi OS packages)
-- Build time optimisation (apt cache, parallel xz)
-- `GET /api/v1/health` returns the correct version from the git tag
-- Upgrade path documented
+---
 
-**Done when:** The pipeline produces a minimal, reproducible image. Audio works end-to-end after flashing.
+#### M13.3 — Appliance Hardening *(complete)*
+
+Harden the appliance for unattended operation.
+
+**Delivered:**
+- **SD card longevity:** swap removed (`dphys-swapfile` purged), `/tmp` mounted as tmpfs (64 MB cap), journald set to volatile storage (no SD card writes)
+- **Service pruning:** `apt-daily.timer`, `apt-daily-upgrade.timer`, `unattended-upgrades`, `man-db.timer`, `triggerhappy`, `ModemManager` disabled — each with documented rationale
+- **Headless boot:** `gpu_mem=16` frees ~60 MB GPU-reserved RAM; firmware and Plymouth splash screens removed; `quiet` retained on serial UART
+- **ADR-020** — records all M13.3 decisions, including deferred items (hardware watchdog, `noatime`, Bluetooth plugin restrictions) and the intentionally open audio architecture question
+
+**Done when:** An image built from a release tag runs unattended without unnecessary background activity, SD card wear, or splash screens. Future hardening opportunities are documented with clear validation requirements.
 
 ---
 

@@ -198,7 +198,128 @@ sed -i '/^127\.0\.1\.1/d' /etc/hosts
 echo "127.0.1.1	partybox" >> /etc/hosts
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 11. Version record + MOTD
+# 11. SD card longevity
+#
+# Three changes reduce the write volume that normal operation imposes on the
+# SD card. Each one targets a different write source.
+#
+# (a) Swap. Pi OS creates a 100 MB swap file at /var/swap by default. Swap
+#     writes occur whenever memory pressure evicts pages; write amplification
+#     from swap thrashing is the fastest way to wear out an SD card. An
+#     appliance should be sized to avoid swap; if RAM is genuinely exhausted
+#     an OOM kill is preferable to card thrashing. dphys-swapfile is removed
+#     entirely — disabling is not sufficient because its postinst re-enables
+#     the swap file on reinstall.
+#
+# (b) /tmp on tmpfs. Temporary files go to RAM instead of the SD card.
+#     The 64 MB cap is sufficient for our workload. Note that companion.service
+#     has PrivateTmp=true, giving the Companion process its own private tmpfs
+#     regardless; this entry covers other system processes.
+#
+# (c) Volatile journal. With the Pi OS default (Storage=auto), journald writes
+#     every log entry to /var/log/journal on the SD card. Setting
+#     Storage=volatile moves the journal to /run/log/journal (tmpfs-backed).
+#     Logs are available for the current session via journalctl but lost on
+#     reboot. See image/config/journald-appliance.conf and ADR-020.
+# ──────────────────────────────────────────────────────────────────────────────
+log "Configuring SD card longevity"
+
+# (a) Remove swap
+apt-get remove -y --purge dphys-swapfile 2>/dev/null || true
+rm -f /var/swap
+
+# (b) /tmp as tmpfs
+if ! grep -q '^tmpfs /tmp' /etc/fstab; then
+    echo "tmpfs /tmp tmpfs rw,noatime,nosuid,nodev,mode=1777,size=64m 0 0" >> /etc/fstab
+fi
+
+# (c) Volatile journal
+mkdir -p /etc/systemd/journald.conf.d
+install -m 0644 \
+    "${PARTYBOX_SRC_DIR}/image/config/journald-appliance.conf" \
+    /etc/systemd/journald.conf.d/appliance.conf
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 12. Disable unnecessary background services
+#
+# Pi OS enables several services appropriate for a general-purpose machine but
+# providing no value — and causing unnecessary background activity — on a
+# dedicated headless appliance. See ADR-020 for the full rationale.
+#
+# apt-daily.timer / apt-daily-upgrade.timer / unattended-upgrades.service
+#   Schedule apt-get update and unattended package upgrades. An appliance is
+#   updated by flashing a new image. In-place upgrades are unacceptable: they
+#   can break pinned software, consume network bandwidth unpredictably, and in
+#   the worst case trigger a reboot-required flag mid-session.
+#
+# man-db.timer
+#   Rebuilds the man page index after package changes. Man pages are never
+#   consulted on a production headless appliance.
+#
+# triggerhappy.service (thd)
+#   Monitors /dev/input for key events and dispatches configurable actions
+#   (volume keys, power buttons). No input devices are attached.
+#
+# ModemManager.service
+#   Manages mobile broadband modems. Not installed on Pi OS Lite, but
+#   included here in case a dependency pulls it in.
+# ──────────────────────────────────────────────────────────────────────────────
+log "Disabling unnecessary background services"
+for svc in \
+    apt-daily.timer \
+    apt-daily-upgrade.timer \
+    unattended-upgrades.service \
+    man-db.timer \
+    triggerhappy.service \
+    ModemManager.service
+do
+    systemctl disable "${svc}" 2>/dev/null || true
+done
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 13. Headless boot
+#
+# Two adjustments make the boot cleaner and more efficient for a permanently
+# headless appliance. See ADR-020 for the rationale.
+#
+# (a) GPU memory (gpu_mem=16). The VideoCore GPU on Pi 4 permanently reserves
+#     memory even with no display attached. The minimum is 16 MB; setting it
+#     explicitly frees ~60 MB that would otherwise be unavailable to Linux.
+#     disable_splash=1 removes the firmware rainbow shown before the kernel
+#     loads. On Pi 5, gpu_mem semantics differ; the values are harmless.
+#
+# (b) Plymouth splash removal. Pi OS runs Plymouth during boot to show a
+#     graphical splash. On a headless appliance, Plymouth loads for no visible
+#     result. "splash" and "plymouth.ignore-serial-consoles" are removed from
+#     the kernel command line. "quiet" is retained — boot messages are
+#     suppressed on the console (appropriate for production) and remain
+#     visible on the UART serial port for debugging.
+# ──────────────────────────────────────────────────────────────────────────────
+log "Configuring headless boot"
+
+CONFIG_TXT="/boot/firmware/config.txt"
+CMDLINE_TXT="/boot/firmware/cmdline.txt"
+
+# (a) GPU memory + firmware splash
+if [ -f "${CONFIG_TXT}" ]; then
+    if grep -q '^gpu_mem=' "${CONFIG_TXT}"; then
+        sed -i 's/^gpu_mem=.*/gpu_mem=16/' "${CONFIG_TXT}"
+    else
+        echo "gpu_mem=16" >> "${CONFIG_TXT}"
+    fi
+    grep -q '^disable_splash=' "${CONFIG_TXT}" || echo "disable_splash=1" >> "${CONFIG_TXT}"
+else
+    log "Warning: ${CONFIG_TXT} not found — skipping GPU memory and splash config"
+fi
+
+# (b) Kernel command line: remove Plymouth parameters
+if [ -f "${CMDLINE_TXT}" ]; then
+    sed -i 's/\bsplash\b//g; s/\bplymouth\.ignore-serial-consoles\b//g' "${CMDLINE_TXT}"
+    sed -i 's/  */ /g; s/^ //; s/ $//' "${CMDLINE_TXT}"
+fi
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 14. Version record + MOTD
 # ──────────────────────────────────────────────────────────────────────────────
 log "Recording version ${COMPANION_VERSION}"
 mkdir -p /etc/partybox-companion
@@ -209,7 +330,7 @@ sed "s/COMPANION_VERSION/${COMPANION_VERSION}/" \
     "${PARTYBOX_SRC_DIR}/image/config/motd" > /etc/motd
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 12. Clean up
+# 15. Clean up
 # ──────────────────────────────────────────────────────────────────────────────
 log "Cleaning up"
 apt-get autoremove -y --purge
