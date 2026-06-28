@@ -261,6 +261,18 @@ ssh jonathan@partybox "curl -s http://localhost:8080/api/v1/health"
 ssh jonathan@partybox "tail -f /tmp/companion.log"
 ```
 
+**Bluetooth adapter wedge (scanner works, GATT connections fail):**
+
+The Pi's Bluetooth controller can enter a state where BLE scanning succeeds and the
+speaker is visible, but every GATT connection attempt fails. Restarting the Bluetooth
+stack recovers it without touching the speaker:
+
+```bash
+ssh jonathan@partybox "sudo systemctl restart bluetooth"
+```
+
+If that doesn't help, power-cycle the speaker as a last resort.
+
 ---
 
 ## Project structure reference

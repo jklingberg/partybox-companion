@@ -1,43 +1,30 @@
-"""Companion Portal router: config API endpoints and Portal HTML serving."""
+"""Companion Portal router: config API and Portal HTML serving."""
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from fastapi import APIRouter
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
 
 from companion.config import CompanionSettings
+from companion.config_store import ConfigStore, PortalConfig
 
 _STATIC_DIR = Path(__file__).parent / "static"
 
 
-class PortalConfig(BaseModel):
-    """Persistent companion configuration stored on disk."""
-
-    device_name: str = "PartyBox"
-
-
-def make_portal_router(settings: CompanionSettings) -> APIRouter:
+def make_portal_router(settings: CompanionSettings) -> tuple[APIRouter, ConfigStore]:
     """Return an APIRouter with companion config endpoints and the Portal.
 
+    Also returns the ConfigStore so the caller can pass it to other routers
+    that need config access (e.g. the services router for Spotify restart).
+
     Config endpoints are intentionally unauthenticated — they only hold
-    non-sensitive appliance metadata (device name, first-boot flag). Speaker
-    control endpoints in partyboxd carry the auth requirement.
+    non-sensitive appliance metadata. Speaker control endpoints in partyboxd
+    carry the auth requirement.
     """
     router = APIRouter()
-    config_file = settings.data_dir / "config.json"
-
-    def _read() -> PortalConfig:
-        if config_file.exists():
-            return PortalConfig.model_validate(json.loads(config_file.read_text()))
-        return PortalConfig()
-
-    def _write(cfg: PortalConfig) -> None:
-        config_file.parent.mkdir(parents=True, exist_ok=True)
-        config_file.write_text(cfg.model_dump_json(indent=2))
+    store = ConfigStore(settings.data_dir / "config.json")
 
     # ------------------------------------------------------------------
     # GET /api/v1/config — unauthenticated
@@ -52,10 +39,9 @@ def make_portal_router(settings: CompanionSettings) -> APIRouter:
     async def get_config() -> PortalConfig:
         """Return the current appliance configuration.
 
-        Always returns **200**. Defaults are returned when no config file exists
-        (e.g. first boot before the setup wizard has run).
+        Always returns **200**. Defaults are returned on first boot.
         """
-        return _read()
+        return store.read()
 
     # ------------------------------------------------------------------
     # PUT /api/v1/config — unauthenticated
@@ -68,8 +54,12 @@ def make_portal_router(settings: CompanionSettings) -> APIRouter:
         summary="Update appliance configuration",
     )
     async def put_config(cfg: PortalConfig) -> PortalConfig:
-        """Persist the appliance configuration and return it."""
-        _write(cfg)
+        """Persist the appliance configuration and return it.
+
+        To apply changed Spotify settings without rebooting, call
+        ``POST /api/v1/spotify/restart`` after this endpoint.
+        """
+        store.write(cfg)
         return cfg
 
     # ------------------------------------------------------------------
@@ -81,4 +71,4 @@ def make_portal_router(settings: CompanionSettings) -> APIRouter:
         """Serve the Companion Portal single-page application."""
         return (_STATIC_DIR / "index.html").read_text()
 
-    return router
+    return router, store

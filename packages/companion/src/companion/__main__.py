@@ -24,7 +24,8 @@ from partyboxd.api import create_app as create_daemon_app
 from partyboxd.config import Settings as DaemonSettings
 from partyboxd.device import DeviceManager
 
-from companion.config import CompanionSettings
+from companion.config import CompanionSettings, SpotifySettings
+from companion.config_store import ConfigStore
 from companion.services.audio import AudioService
 from companion.services.router import make_services_router
 from companion.services.spotify import SpotifyService
@@ -64,12 +65,23 @@ async def _run(
     companion_settings: CompanionSettings,
 ) -> None:
     manager = DeviceManager(daemon_settings.speaker)
-    spotify = SpotifyService(companion_settings.spotify)
+
+    # Load portal config so user-saved settings (device name, bitrate) survive
+    # reboots. The config file may not exist on first boot — defaults are used.
+    config_store = ConfigStore(companion_settings.data_dir / "config.json")
+    portal_cfg = config_store.read()
+    effective_spotify = SpotifySettings(
+        connect_name=portal_cfg.spotify_connect_name,
+        bitrate=portal_cfg.spotify_bitrate,
+        backend=companion_settings.spotify.backend,
+    )
+    spotify = SpotifyService(effective_spotify)
     audio = AudioService(companion_settings.audio)
 
     app = create_daemon_app(manager, daemon_settings)
-    app.include_router(make_portal_router(companion_settings))
-    app.include_router(make_services_router(spotify))
+    portal_router, _ = make_portal_router(companion_settings)
+    app.include_router(portal_router)
+    app.include_router(make_services_router(spotify, config_store))
 
     server_config = uvicorn.Config(
         app,

@@ -8,22 +8,21 @@
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     :root {
-      --bg:            #0f0f13;
-      --surface:       #1a1a22;
-      --surface-hi:    #22222c;
-      --text:          #ececf1;
-      --text-2:        #8b8ba7;
-      --text-3:        #55556a;
-      --accent:        #ff6d00;
-      --accent-dim:    rgba(255,109,0,.12);
-      --ok:            #3fb950;
-      --warn:          #d29922;
-      --danger:        #f85149;
-      --border:        rgba(255,255,255,.07);
-      --shadow:        0 4px 24px rgba(0,0,0,.5);
-      --r:             14px;
-      --r-sm:          8px;
-      --font:          system-ui, -apple-system, "Segoe UI", sans-serif;
+      --bg:         #0f0f13;
+      --surface:    #1a1a22;
+      --surface-hi: #22222c;
+      --text:       #ececf1;
+      --text-2:     #8b8ba7;
+      --text-3:     #55556a;
+      --accent:     #ff6d00;
+      --ok:         #3fb950;
+      --warn:       #d29922;
+      --danger:     #f85149;
+      --border:     rgba(255,255,255,.07);
+      --shadow:     0 4px 24px rgba(0,0,0,.5);
+      --r:          14px;
+      --r-sm:       8px;
+      --font:       system-ui, -apple-system, "Segoe UI", sans-serif;
     }
 
     body {
@@ -45,7 +44,7 @@
       display: flex; align-items: center;
     }
     .header-inner {
-      width: 100%; max-width: 860px; margin: 0 auto;
+      width: 100%; max-width: 720px; margin: 0 auto;
       display: flex; align-items: center; justify-content: space-between;
     }
     .logo { display: flex; align-items: center; gap: 9px; }
@@ -79,128 +78,107 @@
 
     /* ── Layout ──────────────────────────────────────────────────── */
     .page {
-      padding: 36px 24px 64px;
+      padding: 32px 24px 64px;
       min-height: calc(100dvh - 58px);
     }
     .hidden { display: none !important; }
 
-    .grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 14px;
-      max-width: 860px;
-      margin: 0 auto;
-    }
-    @media (max-width: 600px) {
-      .grid { grid-template-columns: 1fr; }
-      .page { padding: 20px 16px 48px; }
+    /* ── Status list ─────────────────────────────────────────────── */
+    .sl {
+      max-width: 720px; margin: 0 auto;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--r);
+      overflow: hidden;
     }
 
-    /* ── Cards ───────────────────────────────────────────────────── */
+    .sl-row {
+      display: grid;
+      grid-template-columns: 130px 1fr 180px auto;
+      align-items: center;
+      gap: 8px;
+      padding: 15px 20px;
+      border-bottom: 1px solid var(--border);
+    }
+    .sl-row:last-child { border-bottom: none; }
+    .sl-dim { opacity: .42; pointer-events: none; }
+
+    .sl-name {
+      font-size: 13px; font-weight: 600; color: var(--text);
+    }
+    .sl-status {
+      display: flex; align-items: center; gap: 7px;
+      font-size: 13px; color: var(--text-2);
+    }
+    .sl-detail {
+      font-family: ui-monospace, monospace; font-size: 12px;
+      color: var(--text-2); text-align: right;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .sl-detail.warn { color: var(--warn); }
+    .sl-actions {
+      display: flex; gap: 6px; justify-content: flex-end;
+    }
+
+    /* ── Small buttons ───────────────────────────────────────────── */
+    .btn-sm {
+      display: inline-flex; align-items: center; justify-content: center;
+      height: 28px; padding: 0 10px;
+      border-radius: var(--r-sm);
+      border: 1px solid var(--border);
+      background: var(--surface-hi);
+      color: var(--text-2);
+      font-size: 12px; font-weight: 500;
+      font-family: var(--font);
+      cursor: pointer;
+      white-space: nowrap;
+      transition: color .14s;
+      text-decoration: none;
+    }
+    .btn-sm:hover:not(:disabled) { color: var(--text); }
+    .btn-sm:disabled { opacity: .38; cursor: not-allowed; }
+
+    /* ── Footer nav ──────────────────────────────────────────────── */
+    .sl-footer {
+      max-width: 720px; margin: 14px auto 0;
+      display: flex; gap: 14px; justify-content: flex-end;
+      padding: 0 4px;
+    }
+    .sl-footer button {
+      background: none; border: none; color: var(--text-3);
+      font-size: 12px; font-family: var(--font);
+      cursor: pointer; padding: 0; height: auto;
+    }
+    .sl-footer button:hover { color: var(--text-2); }
+
+    /* ── Settings panel ──────────────────────────────────────────── */
+    .panel-wrap { max-width: 720px; margin: 14px auto 0; }
+
     .card {
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: var(--r);
       padding: 22px 24px 24px;
     }
-    .card-dim { opacity: .65; }
     .card-head {
       display: flex; align-items: center; justify-content: space-between;
-      margin-bottom: 16px;
+      margin-bottom: 20px;
     }
     .card-head h2 { font-size: 15px; font-weight: 600; }
 
-    .status-row {
-      display: flex; align-items: center; gap: 6px;
-      font-size: 13px; color: var(--text-2);
+    .section-title {
+      font-size: 11px; font-weight: 600; color: var(--text-3);
+      letter-spacing: .6px; text-transform: uppercase;
+      margin-bottom: 16px; padding-bottom: 8px;
+      border-bottom: 1px solid var(--border);
     }
+    .section + .section { margin-top: 24px; }
 
-    /* ── Detail rows ─────────────────────────────────────────────── */
-    .details {
-      display: flex; flex-direction: column; gap: 7px;
-      margin-bottom: 18px;
-    }
-    .drow {
-      display: flex; justify-content: space-between;
-      font-size: 13px;
-    }
-    .drow .k { color: var(--text-2); }
-    .drow .v { font-family: ui-monospace, monospace; font-size: 12px; color: var(--text); }
-
-    /* ── Buttons ─────────────────────────────────────────────────── */
-    button, .btn {
-      display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-      height: 42px; padding: 0 18px;
-      border-radius: var(--r-sm);
-      border: none; cursor: pointer;
-      font-size: 14px; font-weight: 500;
-      font-family: var(--font);
-      transition: opacity .14s, background .14s;
-      text-decoration: none;
-    }
-    button:disabled { opacity: .38; cursor: not-allowed; }
-
-    .btn-primary  { background: var(--accent); color: #fff; width: 100%; }
-    .btn-primary:hover:not(:disabled) { opacity: .88; }
-
-    .btn-on  { background: var(--ok);      color: #fff; flex: 1; }
-    .btn-off { background: var(--surface-hi); color: var(--text); border: 1px solid var(--border); flex: 1; }
-    .btn-on:hover:not(:disabled),
-    .btn-off:hover:not(:disabled) { opacity: .8; }
-
-    .btn-ghost {
-      background: var(--surface-hi);
-      color: var(--text-2);
-      border: 1px solid var(--border);
-      font-size: 13px;
-      height: 36px;
-    }
-    .btn-ghost:hover { color: var(--text); }
-
-    .power-row { display: flex; gap: 10px; margin-top: 18px; }
-
-    /* ── Badges ──────────────────────────────────────────────────── */
-    .badge {
-      font-size: 11px; font-weight: 600;
-      padding: 3px 8px; border-radius: 20px;
-      letter-spacing: .3px;
-    }
-    .badge-soon { background: var(--accent-dim); color: var(--accent); }
-
-    /* ── Placeholder card content ─────────────────────────────────── */
-    .placeholder-text { color: var(--text-2); font-size: 13px; line-height: 1.6; margin-top: 4px; }
-
-    /* ── Active pill ─────────────────────────────────────────────── */
-    .pill-active {
-      display: inline-flex; align-items: center; gap: 5px;
-      padding: 3px 9px; border-radius: 20px;
-      background: rgba(63,185,80,.14);
-      color: var(--ok);
-      font-size: 11px; font-weight: 600;
-    }
-
-    /* ── Notices ─────────────────────────────────────────────────── */
-    .notice { color: var(--text-2); font-size: 13px; margin-top: 14px; }
-    .notice-warn {
-      color: var(--warn); font-size: 12px; margin-top: 10px;
-    }
-    .notice-warn button {
-      background: none; border: none; color: var(--warn); font-size: 12px;
-      cursor: pointer; padding: 0; text-decoration: underline;
-      height: auto; display: inline;
-    }
-
-    /* ── Settings panel ──────────────────────────────────────────── */
-    #settings-panel {
-      max-width: 860px;
-      margin: 14px auto 0;
-    }
-    .btn-row { display: flex; gap: 10px; }
-
-    /* ── Forms ───────────────────────────────────────────────────── */
-    .field { display: flex; flex-direction: column; gap: 7px; margin-bottom: 24px; }
+    .field { display: flex; flex-direction: column; gap: 7px; margin-bottom: 20px; }
     .field label { font-size: 12px; font-weight: 500; color: var(--text-2); letter-spacing: .4px; text-transform: uppercase; }
-    input[type="text"], input[type="password"] {
+    .field-hint  { font-size: 12px; color: var(--text-3); margin-top: -4px; }
+
+    input[type="text"], input[type="password"], select {
       height: 44px;
       background: var(--bg);
       border: 1px solid var(--border);
@@ -212,7 +190,36 @@
       transition: border-color .15s;
       width: 100%;
     }
-    input:focus { border-color: var(--accent); }
+    select {
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='%238b8ba7' d='M1 1l5 5 5-5'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 14px center;
+      padding-right: 36px;
+    }
+    input:focus, select:focus { border-color: var(--accent); }
+
+    .btn-row { display: flex; gap: 10px; margin-top: 24px; }
+    .btn-primary {
+      display: inline-flex; align-items: center; justify-content: center;
+      height: 42px; padding: 0 18px; flex: 1;
+      border-radius: var(--r-sm); border: none; cursor: pointer;
+      background: var(--accent); color: #fff;
+      font-size: 14px; font-weight: 500; font-family: var(--font);
+      transition: opacity .14s;
+    }
+    .btn-primary:hover { opacity: .88; }
+    .btn-ghost {
+      display: inline-flex; align-items: center; justify-content: center;
+      height: 42px; padding: 0 18px;
+      border-radius: var(--r-sm);
+      border: 1px solid var(--border);
+      background: var(--surface-hi);
+      color: var(--text-2);
+      font-size: 14px; font-weight: 500; font-family: var(--font);
+      cursor: pointer; transition: color .14s;
+    }
+    .btn-ghost:hover { color: var(--text); }
 
     /* ── Toast ───────────────────────────────────────────────────── */
     #toast {
@@ -258,11 +265,27 @@
       font-weight: 700;
       letter-spacing: .4px;
     }
+
+    /* ── Mobile ──────────────────────────────────────────────────── */
+    @media (max-width: 580px) {
+      .page { padding: 20px 16px 48px; }
+
+      .sl-row {
+        grid-template-columns: 1fr auto;
+        grid-template-rows: auto auto;
+        row-gap: 5px; column-gap: 10px;
+        padding: 13px 16px;
+      }
+      .sl-name    { grid-column: 1; grid-row: 1; }
+      .sl-status  { grid-column: 1; grid-row: 2; font-size: 12px; }
+      .sl-detail  { display: none; }
+      .sl-actions { grid-column: 2; grid-row: 1 / span 2; flex-direction: column; align-items: flex-end; justify-content: center; }
+    }
   </style>
 </head>
 <body>
 
-<!-- ── Mock mode banner (shown only with ?mock) ──────────────────────── -->
+<!-- ── Mock mode banner ───────────────────────────────────────────────── -->
 <div id="mock-banner" class="hidden">MOCK MODE — no daemon required</div>
 
 <!-- ── Header ────────────────────────────────────────────────────────── -->
@@ -279,105 +302,111 @@
   </div>
 </header>
 
-<!-- ── Main dashboard ─────────────────────────────────────────────────── -->
+<!-- ── Dashboard ─────────────────────────────────────────────────────── -->
 <main id="dashboard" class="page hidden">
-  <div class="grid">
 
-    <!-- Speaker card -->
-    <div class="card" id="speaker-card">
-      <div class="card-head">
-        <h2>Speaker</h2>
-        <div class="status-row">
-          <span class="dot spin" id="sp-dot" aria-hidden="true"></span>
-          <span id="sp-label" aria-live="polite">Connecting…</span>
-        </div>
-      </div>
-      <div id="sp-details" class="details hidden" aria-live="polite"></div>
-      <div id="sp-power" class="power-row hidden">
-        <button class="btn btn-on"  id="btn-on"  onclick="sendPower('on')">Turn On</button>
-        <button class="btn btn-off" id="btn-off" onclick="sendPower('off')">Turn Off</button>
-      </div>
-      <p id="sp-notice" class="notice hidden">
-        Speaker is not connected. Reconnecting automatically…<br>
-        <span style="font-size:12px;color:var(--text-3)">
-          If the JBL app is open on your phone, close it — the speaker only accepts
-          one control connection at a time.
-        </span>
-      </p>
-    </div>
+  <div class="sl" role="list" aria-label="Appliance status">
 
-    <!-- System card -->
-    <div class="card" id="system-card">
-      <div class="card-head">
-        <h2>System</h2>
+    <!-- Speaker -->
+    <div class="sl-row" role="listitem">
+      <div class="sl-name">Speaker</div>
+      <div class="sl-status">
+        <span class="dot spin" id="sp-dot" aria-hidden="true"></span>
+        <span id="sp-status" aria-live="polite">Connecting…</span>
       </div>
-      <div class="details" id="sys-details">
-        <div class="drow">
-          <span class="k">Daemon</span>
-          <span class="v" id="sys-version">—</span>
-        </div>
-        <div class="drow">
-          <span class="k">Status</span>
-          <span class="v" id="sys-status">—</span>
-        </div>
+      <div class="sl-detail" id="sp-detail">—</div>
+      <div class="sl-actions">
+        <button class="btn-sm hidden" id="btn-on"  onclick="sendPower('on')">Turn On</button>
+        <button class="btn-sm hidden" id="btn-off" onclick="sendPower('off')">Turn Off</button>
       </div>
-      <button class="btn btn-ghost" onclick="openSettings()">Settings</button>
     </div>
 
     <!-- Spotify Connect -->
-    <div class="card" id="spotify-card">
-      <div class="card-head">
-        <h2>Spotify Connect</h2>
-        <div class="status-row">
-          <span class="dot" id="svc-dot" aria-hidden="true"></span>
-          <span id="svc-label" aria-live="polite">—</span>
-        </div>
+    <div class="sl-row" role="listitem">
+      <div class="sl-name">Spotify Connect</div>
+      <div class="sl-status">
+        <span class="dot" id="svc-dot" aria-hidden="true"></span>
+        <span id="svc-status" aria-live="polite">—</span>
       </div>
-      <div class="details" id="svc-details">
-        <div class="drow">
-          <span class="k">Device name</span>
-          <span class="v" id="svc-name">—</span>
-        </div>
-        <div class="drow" id="svc-active-row" style="display:none">
-          <span class="k">Playback</span>
-          <span class="v"><span class="pill-active">&#9654; Active</span></span>
-        </div>
+      <div class="sl-detail" id="svc-detail">—</div>
+      <div class="sl-actions">
+        <button class="btn-sm hidden" id="btn-spotify-rename"  onclick="openSettings()">Rename</button>
+        <button class="btn-sm hidden" id="btn-spotify-restart" onclick="restartSpotify()">Restart</button>
       </div>
-      <p id="svc-default-warn" class="notice-warn hidden">
-        ⚠ Default device name in use —
-        <button onclick="openSettings()">Rename</button>
-      </p>
     </div>
 
-    <!-- AirPlay placeholder -->
-    <div class="card card-dim">
-      <div class="card-head">
-        <h2>AirPlay</h2>
-        <span class="badge badge-soon">Coming soon</span>
+    <!-- AirPlay -->
+    <div class="sl-row sl-dim" role="listitem" aria-label="AirPlay — coming soon">
+      <div class="sl-name">AirPlay</div>
+      <div class="sl-status">
+        <span class="dot" aria-hidden="true"></span>
+        <span>Coming soon</span>
       </div>
-      <p class="placeholder-text">
-        Stream audio from any Apple device — iPhone, Mac, or iPad — directly to your speaker.
-      </p>
+      <div class="sl-detail">—</div>
+      <div class="sl-actions"></div>
     </div>
 
-  </div><!-- .grid -->
+    <!-- System -->
+    <div class="sl-row" role="listitem">
+      <div class="sl-name">System</div>
+      <div class="sl-status">
+        <span class="dot spin" id="sys-dot" aria-hidden="true"></span>
+        <span id="sys-status" aria-live="polite">—</span>
+      </div>
+      <div class="sl-detail" id="sys-detail">—</div>
+      <div class="sl-actions">
+        <button class="btn-sm" onclick="openSettings()">Settings</button>
+        <a class="btn-sm" id="bundle-link" href="/api/v1/debug/bundle" download>Debug Bundle</a>
+      </div>
+    </div>
 
-  <!-- Settings panel (inline) -->
-  <div id="settings-panel" class="hidden">
-    <div class="card" style="margin-top:0">
-      <div class="card-head" style="margin-bottom:20px">
+  </div><!-- .sl -->
+
+  <div class="sl-footer">
+    <button onclick="toast('Diagnostics coming in a future update.')">Diagnostics</button>
+    <button onclick="toast('partybox-companion · ' + (S.health ? S.health.version : '—'))">About</button>
+  </div>
+
+  <!-- ── Settings panel ─────────────────────────────────────────────── -->
+  <div id="settings-panel" class="panel-wrap hidden">
+    <div class="card">
+      <div class="card-head">
         <h2>Settings</h2>
       </div>
-      <div class="field">
-        <label for="set-name">Appliance name</label>
-        <input id="set-name" type="text" maxlength="48" />
+
+      <div class="section">
+        <div class="section-title">Appliance</div>
+        <div class="field">
+          <label for="set-name">Name shown in this Portal</label>
+          <input id="set-name" type="text" maxlength="48" />
+        </div>
       </div>
+
+      <div class="section">
+        <div class="section-title">Spotify Connect</div>
+        <div class="field">
+          <label for="set-spotify-name">Device name shown in Spotify</label>
+          <input id="set-spotify-name" type="text" maxlength="64" />
+          <span class="field-hint">The name you select in the Spotify app when choosing a speaker.</span>
+        </div>
+        <div class="field">
+          <label for="set-bitrate">Audio quality</label>
+          <select id="set-bitrate">
+            <option value="96">96 kbps — Low</option>
+            <option value="160">160 kbps — Normal</option>
+            <option value="320">320 kbps — High (recommended)</option>
+          </select>
+          <span class="field-hint">Changes apply after Spotify restarts (~5 seconds).</span>
+        </div>
+      </div>
+
       <div class="btn-row">
-        <button class="btn btn-primary" style="flex:1" onclick="saveSettings()">Save</button>
-        <button class="btn btn-ghost" onclick="closeSettings()">Cancel</button>
+        <button class="btn-primary" onclick="saveSettings()">Save</button>
+        <button class="btn-ghost" onclick="closeSettings()">Cancel</button>
       </div>
     </div>
   </div>
+
 </main>
 
 <!-- ── Toast ──────────────────────────────────────────────────────────── -->
@@ -396,30 +425,29 @@
       <input id="auth-key" type="password" placeholder="Paste your API key"
              onkeydown="if(event.key==='Enter')submitKey()" />
     </div>
-    <button class="btn btn-primary" onclick="submitKey()">Connect</button>
+    <button class="btn-primary" onclick="submitKey()">Connect</button>
   </div>
 </div>
 
 <script>
 // ── State ──────────────────────────────────────────────────────────────
 const S = {
-  health:   null,   // {status, version, speaker_connected}
-  speaker:  null,   // {connected, address, firmware, battery}
-  spotify:  null,   // {running, active, device_name}
-  config:   {device_name: 'PartyBox'},
-  apiKey:   localStorage.getItem('_pb_key') || null,
-  ws:       null,
-  _toast:   null,
+  health:  null,   // {status, version, speaker_connected}
+  speaker: null,   // {connected, address, firmware, battery}
+  spotify: null,   // {running, active, device_name}
+  config:  {device_name:'PartyBox', spotify_connect_name:'PartyBox', spotify_bitrate:320},
+  apiKey:  localStorage.getItem('_pb_key') || null,
+  ws:      null,
+  _toast:  null,
   _spotifyPoll: null,
 };
 
 const MOCK = location.search.includes('mock');
 
-// Mock data for UI development / demos without a running daemon.
-const MOCK_HEALTH   = {status:'ok', version:'0.1.0-dev', speaker_connected:true};
-const MOCK_SPEAKER  = {connected:true, address:'AA:BB:CC:DD:EE:FF', firmware:'26.2.10', battery:null};
-const MOCK_CONFIG   = {device_name:'Living Room'};
-const MOCK_SPOTIFY  = {running:true, active:false, device_name:'Living Room'};
+const MOCK_HEALTH  = {status:'ok', version:'0.1.0-dev', speaker_connected:true};
+const MOCK_SPEAKER = {connected:true, address:'AA:BB:CC:DD:EE:FF', firmware:'26.2.10', battery:null};
+const MOCK_CONFIG  = {device_name:'Living Room', spotify_connect_name:'Living Room', spotify_bitrate:320};
+const MOCK_SPOTIFY = {running:true, active:false, device_name:'Living Room'};
 
 // ── Boot ───────────────────────────────────────────────────────────────
 async function boot() {
@@ -430,11 +458,11 @@ async function boot() {
     S.spotify = MOCK_SPOTIFY;
     S.config  = MOCK_CONFIG;
     applyConfig();
-    setHealth(true);
     show('dashboard');
     updateSpeaker();
-    updateSystem();
     updateSpotify();
+    updateSystem();
+    updateHealthPill();
     return;
   }
 
@@ -444,19 +472,18 @@ async function boot() {
       get('/api/v1/config'),
       get('/api/v1/spotify'),
     ]);
-    if (hRes && hRes.ok) S.health  = await hRes.json();
-    if (cRes && cRes.ok) S.config  = await cRes.json();
+    if (hRes  && hRes.ok)  S.health  = await hRes.json();
+    if (cRes  && cRes.ok)  S.config  = await cRes.json();
     if (spRes && spRes.ok) S.spotify = await spRes.json();
-  } catch (_) { /* daemon unreachable — gracefully degrade */ }
+  } catch (_) {}
 
   applyConfig();
-  setHealth(!!S.health);
-
   await loadSpeaker();
   show('dashboard');
   updateSpeaker();
-  updateSystem();
   updateSpotify();
+  updateSystem();
+  updateHealthPill();
   connectWS();
   startSpotifyPolling();
 }
@@ -465,7 +492,7 @@ async function boot() {
 function id(x)          { return document.getElementById(x); }
 function show(el)       { if (typeof el==='string') el=id(el); el.classList.remove('hidden'); }
 function hide(el)       { if (typeof el==='string') el=id(el); el.classList.add('hidden'); }
-function setDot(el, cls){ if (typeof el==='string') el=id(el); el.className = 'dot ' + cls; }
+function setDot(el,cls) { if (typeof el==='string') el=id(el); el.className = 'dot ' + cls; }
 
 // ── Config ─────────────────────────────────────────────────────────────
 function applyConfig() {
@@ -475,12 +502,22 @@ function applyConfig() {
 }
 
 // ── Health pill ────────────────────────────────────────────────────────
-function setHealth(ok) {
-  setDot('health-dot', ok ? 'ok' : 'err');
-  id('health-label').textContent = ok ? 'Running' : 'Offline';
+function updateHealthPill() {
+  const h  = S.health;
+  const sp = S.speaker;
+  if (!h) {
+    setDot('health-dot', 'err');
+    id('health-label').textContent = 'Offline';
+  } else if (sp && sp.connected) {
+    setDot('health-dot', 'ok');
+    id('health-label').textContent = 'Speaker connected';
+  } else {
+    setDot('health-dot', 'spin');
+    id('health-label').textContent = 'Speaker disconnected';
+  }
 }
 
-// ── Speaker card ───────────────────────────────────────────────────────
+// ── Speaker row ────────────────────────────────────────────────────────
 async function loadSpeaker() {
   if (MOCK) { S.speaker = MOCK_SPEAKER; return; }
   const r = await get('/api/v1/speaker', true);
@@ -488,33 +525,24 @@ async function loadSpeaker() {
 }
 
 function updateSpeaker() {
-  const sp = S.speaker;
+  const sp   = S.speaker;
   const conn = sp && sp.connected;
 
   setDot('sp-dot', conn ? 'ok' : 'spin');
-  id('sp-label').textContent = conn ? 'Connected' : 'Disconnected';
+  id('sp-status').textContent = conn ? 'Connected' : 'Disconnected';
 
   if (conn) {
-    const rows = [];
-    if (sp.firmware) rows.push(['Firmware', sp.firmware]);
-    if (sp.address)  rows.push(['Address',  sp.address]);
-    if (sp.battery != null) rows.push(['Battery', sp.battery + '%']);
-
-    if (rows.length) {
-      id('sp-details').innerHTML = rows.map(([k,v]) =>
-        `<div class="drow"><span class="k">${k}</span><span class="v">${esc(v)}</span></div>`
-      ).join('');
-      show('sp-details');
-    } else {
-      hide('sp-details');
-    }
-    show('sp-power');
-    hide('sp-notice');
+    const detail = sp.firmware || sp.address || '—';
+    id('sp-detail').textContent = detail;
+    show('btn-on');
+    show('btn-off');
   } else {
-    hide('sp-details');
-    hide('sp-power');
-    show('sp-notice');
+    id('sp-detail').textContent = sp ? 'Reconnecting automatically' : '—';
+    hide('btn-on');
+    hide('btn-off');
   }
+
+  updateHealthPill();
 }
 
 // ── Power control ──────────────────────────────────────────────────────
@@ -522,36 +550,29 @@ async function sendPower(action) {
   const btn = id(action === 'on' ? 'btn-on' : 'btn-off');
   btn.disabled = true;
   const orig = btn.textContent;
-  btn.textContent = 'Sending…';
-
+  btn.textContent = '…';
   const r = await get('/api/v1/power/' + action, true, 'POST');
-
   btn.disabled = false;
   btn.textContent = orig;
-
-  if (!r) {
-    toast('Could not reach the daemon. Check your connection.');
-  } else if (r.status === 503) {
-    toast('Speaker is not connected — make sure it is powered on.');
-  } else if (r.status === 204) {
-    toast('Command sent.');
-  }
+  if (!r)              toast('Could not reach the daemon.');
+  else if (r.status === 503) toast('Speaker is not connected.');
+  else if (r.status === 204) toast('Command sent.');
 }
 
-// ── System card ────────────────────────────────────────────────────────
+// ── System row ─────────────────────────────────────────────────────────
 function updateSystem() {
   const h = S.health;
-  id('sys-version').textContent = h ? h.version : 'Unknown';
-  id('sys-status').textContent  = h ? 'Running' : 'Offline';
+  setDot('sys-dot', h ? 'ok' : 'err');
+  id('sys-status').textContent = h ? 'Running'  : 'Offline';
+  id('sys-detail').textContent = h ? 'v' + h.version : '—';
 }
 
 // ── WebSocket ──────────────────────────────────────────────────────────
 function connectWS() {
   if (MOCK) return;
-  const proto  = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const keyQS  = S.apiKey ? '?api_key=' + encodeURIComponent(S.apiKey) : '';
-  const ws     = new WebSocket(proto + '//' + location.host + '/api/v1/events' + keyQS);
-
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const keyQS = S.apiKey ? '?api_key=' + encodeURIComponent(S.apiKey) : '';
+  const ws    = new WebSocket(proto + '//' + location.host + '/api/v1/events' + keyQS);
   ws.onmessage = e => { try { onEvent(JSON.parse(e.data)); } catch(_){} };
   ws.onclose   = () => { setTimeout(connectWS, 5000); };
   S.ws = ws;
@@ -563,7 +584,6 @@ function onEvent(ev) {
       S.speaker = {connected:true, address:ev.address||null,
                    firmware:ev.firmware||null, battery:ev.battery??null};
       S.health = S.health || {status:'ok'};
-      setHealth(true);
       updateSpeaker();
       break;
     case 'disconnected':
@@ -574,19 +594,26 @@ function onEvent(ev) {
       toast('Speaker turned ' + ev.state + '.');
       break;
     case 'ping':
-      break; // heartbeat — ignore
+      break;
   }
 }
 
-// ── Spotify card ───────────────────────────────────────────────────────
+// ── Spotify row ────────────────────────────────────────────────────────
 function updateSpotify() {
   const sp = S.spotify;
   if (!sp) return;
+
+  const isDefault = sp.device_name === 'PartyBox';
+
   setDot('svc-dot', sp.running ? 'ok' : 'err');
-  id('svc-label').textContent = sp.running ? (sp.active ? 'Playing' : 'Ready') : 'Stopped';
-  id('svc-name').textContent  = esc(sp.device_name);
-  id('svc-active-row').style.display = sp.active ? '' : 'none';
-  id('svc-default-warn').classList.toggle('hidden', sp.device_name !== 'PartyBox');
+  id('svc-status').textContent = sp.running ? (sp.active ? 'Playing' : 'Ready') : 'Stopped';
+
+  const detail = id('svc-detail');
+  detail.textContent = sp.running ? esc(sp.device_name) + (isDefault ? ' ⚠' : '') : '—';
+  detail.classList.toggle('warn', sp.running && isDefault);
+
+  id('btn-spotify-rename').classList.toggle('hidden',  !(sp.running && isDefault));
+  id('btn-spotify-restart').classList.toggle('hidden', !sp.running);
 }
 
 function startSpotifyPolling() {
@@ -597,37 +624,81 @@ function startSpotifyPolling() {
   }, 15000);
 }
 
+async function restartSpotify() {
+  const btn = id('btn-spotify-restart');
+  btn.disabled = true;
+  btn.textContent = '…';
+  const r = await get('/api/v1/spotify/restart', false, 'POST');
+  btn.disabled = false;
+  btn.textContent = 'Restart';
+  if (r && r.status === 204) {
+    toast('Spotify is restarting…');
+    setTimeout(async () => {
+      const s = await get('/api/v1/spotify');
+      if (s && s.ok) { S.spotify = await s.json(); updateSpotify(); }
+    }, 6000);
+  } else {
+    toast('Could not restart Spotify.');
+  }
+}
+
 // ── Settings ───────────────────────────────────────────────────────────
 function openSettings() {
-  id('set-name').value = S.config.device_name || '';
+  id('set-name').value         = S.config.device_name || '';
+  id('set-spotify-name').value = S.config.spotify_connect_name || '';
+  const br  = String(S.config.spotify_bitrate || 320);
+  const sel = id('set-bitrate');
+  for (let i = 0; i < sel.options.length; i++) {
+    sel.options[i].selected = sel.options[i].value === br;
+  }
   show('settings-panel');
   id('settings-panel').scrollIntoView({behavior:'smooth', block:'nearest'});
 }
+
 function closeSettings() { hide('settings-panel'); }
 
 async function saveSettings() {
-  const name = id('set-name').value.trim() || 'PartyBox';
+  const newName    = id('set-name').value.trim()         || 'PartyBox';
+  const newSvcName = id('set-spotify-name').value.trim() || 'PartyBox';
+  const newBitrate = parseInt(id('set-bitrate').value, 10) || 320;
+
+  const spotifyChanged = newSvcName !== (S.config.spotify_connect_name || 'PartyBox')
+                      || newBitrate !== (S.config.spotify_bitrate       || 320);
+
   try {
     const r = await fetch('/api/v1/config', {
       method: 'PUT',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({device_name: name}),
+      body: JSON.stringify({
+        device_name:          newName,
+        spotify_connect_name: newSvcName,
+        spotify_bitrate:      newBitrate,
+      }),
     });
-    if (r.ok) {
-      S.config = await r.json();
-      applyConfig();
-      updateSpotify();
-      toast('Settings saved.');
+    if (!r.ok) { toast('Could not save settings.'); return; }
+    S.config = await r.json();
+    applyConfig();
+    updateSpotify();
+  } catch (_) { toast('Could not save settings.'); return; }
+
+  if (spotifyChanged) {
+    const r2 = await get('/api/v1/spotify/restart', false, 'POST');
+    toast(r2 && r2.status === 204 ? 'Settings saved. Spotify is restarting…' : 'Settings saved.');
+    if (r2 && r2.status === 204) {
+      setTimeout(async () => {
+        const s = await get('/api/v1/spotify');
+        if (s && s.ok) { S.spotify = await s.json(); updateSpotify(); }
+      }, 6000);
     }
-  } catch (_) { toast('Could not save settings.'); }
+  } else {
+    toast('Settings saved.');
+  }
+
   closeSettings();
 }
 
 // ── Auth modal ─────────────────────────────────────────────────────────
-function showAuth() {
-  show('auth-overlay');
-  id('auth-key').focus();
-}
+function showAuth() { show('auth-overlay'); id('auth-key').focus(); }
 function submitKey() {
   const key = id('auth-key').value.trim();
   if (!key) return;
