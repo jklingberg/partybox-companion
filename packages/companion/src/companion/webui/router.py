@@ -18,7 +18,6 @@ class PortalConfig(BaseModel):
     """Persistent companion configuration stored on disk."""
 
     device_name: str = "PartyBox"
-    setup_complete: bool = False
 
 
 def make_portal_router(settings: CompanionSettings) -> APIRouter:
@@ -69,10 +68,7 @@ def make_portal_router(settings: CompanionSettings) -> APIRouter:
         summary="Update appliance configuration",
     )
     async def put_config(cfg: PortalConfig) -> PortalConfig:
-        """Persist the appliance configuration and return it.
-
-        Called by the Portal setup wizard and the settings panel.
-        """
+        """Persist the appliance configuration and return it."""
         _write(cfg)
         return cfg
 
