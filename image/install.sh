@@ -21,6 +21,7 @@ set -euo pipefail
 PARTYBOX_SRC_DIR="${PARTYBOX_SRC_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 COMPANION_VERSION="${COMPANION_VERSION:-dev}"
 INSTALL_PREFIX=/opt/partybox-companion
+UV_VERSION=0.11.24
 
 log() { printf '==> %s\n' "$*" >&2; }
 
@@ -70,13 +71,25 @@ usermod -aG bluetooth companion
 # ──────────────────────────────────────────────────────────────────────────────
 # 4. uv (Python toolchain)
 #
-# The install script detects the host architecture and fetches the matching
-# musl-linked binary, which runs without glibc version constraints.
-# Installs to /usr/local/bin so it is available system-wide.
+# Pinned version for reproducible image builds. The musl-linked binary runs
+# without glibc version constraints and is installed system-wide.
+# To update: change UV_VERSION and verify with: uv --version
 # ──────────────────────────────────────────────────────────────────────────────
-log "Installing uv"
-curl -LsSf https://astral.sh/uv/install.sh \
-    | UV_INSTALL_DIR=/usr/local/bin INSTALLER_NO_MODIFY_PATH=1 sh
+log "Installing uv ${UV_VERSION}"
+ARCH=$(dpkg --print-architecture)
+case "${ARCH}" in
+    arm64) UV_ARCH=aarch64-unknown-linux-musl ;;
+    armhf) UV_ARCH=arm-unknown-linux-musleabihf ;;
+    amd64) UV_ARCH=x86_64-unknown-linux-musl ;;
+    *) echo "Unsupported architecture: ${ARCH}" >&2; exit 1 ;;
+esac
+UV_TGZ="/tmp/uv-${UV_VERSION}.tar.gz"
+curl -fsSL \
+    "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-${UV_ARCH}.tar.gz" \
+    -o "${UV_TGZ}"
+tar -xzf "${UV_TGZ}" -C /tmp
+install -m 755 "/tmp/uv-${UV_ARCH}/uv" /usr/local/bin/uv
+rm -f "${UV_TGZ}" && rm -rf "/tmp/uv-${UV_ARCH}"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 5. Python venv + Companion packages
@@ -159,18 +172,31 @@ sed -i '/^127\.0\.1\.1/d' /etc/hosts
 echo "127.0.1.1	partybox" >> /etc/hosts
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 11. Version record
+# 11. Version record + MOTD
 # ──────────────────────────────────────────────────────────────────────────────
 log "Recording version ${COMPANION_VERSION}"
 mkdir -p /etc/partybox-companion
 echo "${COMPANION_VERSION}" > /etc/partybox-companion/version
 
+log "Installing MOTD"
+sed "s/COMPANION_VERSION/${COMPANION_VERSION}/" \
+    "${PARTYBOX_SRC_DIR}/image/config/motd" > /etc/motd
+
 # ──────────────────────────────────────────────────────────────────────────────
 # 12. Clean up
 # ──────────────────────────────────────────────────────────────────────────────
 log "Cleaning up"
+apt-get autoremove -y --purge
 apt-get clean
 rm -rf /var/lib/apt/lists/*
+
+# Remove the source tree if it was copied into the image by CI (not the repo
+# root). The CI build copies it to /opt/partybox-src; running manually, the
+# PARTYBOX_SRC_DIR is outside the image so this guard prevents accidental deletion.
+if [ "${PARTYBOX_SRC_DIR}" = "/opt/partybox-src" ]; then
+    log "Removing source tree (CI mode)"
+    rm -rf /opt/partybox-src
+fi
 
 log "Done: partybox-companion ${COMPANION_VERSION} installed"
 log "  Venv:    ${INSTALL_PREFIX}"

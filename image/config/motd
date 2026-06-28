@@ -1,0 +1,7 @@
+
+PartyBox Companion COMPANION_VERSION
+
+  Portal   http://partybox.local:8080
+  Status   sudo systemctl status companion
+  Logs     sudo journalctl -u companion -f
+  Config   sudo nano /etc/companion/companion.env
