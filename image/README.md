@@ -19,6 +19,8 @@ the full rationale.
 | Path | Purpose |
 |---|---|
 | `install.sh` | The installation implementation — run inside the Pi OS image during CI, or on a running Pi |
+| `smoke-test.sh` | Release verification — starts Companion and checks `GET /api/v1/health`; called by the release workflow after install.sh |
+| `config/base-image.env` | Pinned Pi OS base image (version, name, URL) — update here when upgrading the base image |
 | `config/wifi-powersave.conf` | NetworkManager drop-in that disables WiFi power saving |
 | `config/motd` | SSH login message template (version is substituted at install time) |
 
@@ -37,11 +39,14 @@ git push origin v1.0.0
 
 The workflow:
 1. Runs the full CI suite (lint, type check, tests)
-2. Downloads the latest Raspberry Pi OS Lite ARM64 base image
+2. Downloads the Raspberry Pi OS Lite ARM64 base image (pinned in `config/base-image.env`)
 3. Boots it inside QEMU via [arm-runner-action](https://github.com/pguyot/arm-runner-action)
 4. Runs `image/install.sh` inside the image to install Companion and all dependencies
-5. Compresses the result with xz
-6. Publishes a **draft** GitHub Release containing `partybox-companion-vX.Y.Z.img.xz`
+5. Runs `image/smoke-test.sh` inside the image — starts Companion, calls `GET /api/v1/health`, and verifies the response
+6. Compresses the result with xz
+7. Publishes a **draft** GitHub Release containing `partybox-companion-vX.Y.Z.img.xz`
+
+Step 5 is a gate: if the health endpoint does not respond within 30 seconds, or returns a non-`ok` status, the workflow fails and no release is published.
 
 The draft release is reviewed and published manually. This gives the release manager
 a window to add release notes before the image is publicly visible.

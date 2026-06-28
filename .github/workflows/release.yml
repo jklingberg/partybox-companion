@@ -48,25 +48,41 @@ jobs:
           echo "image=${BASE}.img"           >> "$GITHUB_OUTPUT"
           echo "artifact=${BASE}.img.xz"    >> "$GITHUB_OUTPUT"
 
-      # Boot Pi OS Lite ARM64 in QEMU, copy the repository in, run install.sh.
+      # Load the pinned base image URL from image/config/base-image.env.
+      # Keeping the URL in a dedicated file makes upgrades a single, reviewable diff.
+      - name: Load base image configuration
+        id: base_image
+        run: |
+          set -a
+          source image/config/base-image.env
+          set +a
+          echo "url=${PI_OS_URL}"         >> "$GITHUB_OUTPUT"
+          echo "version=${PI_OS_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "name=${PI_OS_NAME}"       >> "$GITHUB_OUTPUT"
+
+      # Boot Pi OS Lite ARM64 in QEMU, copy the repository in, run install.sh,
+      # then run the smoke test before the image is finalised.
       # image_additional_mb: extra space beyond the base image (~1.8 GB) for
       # the Python venv, librespot, and apt packages.
-      #
-      # base_image is pinned to a specific dated release for reproducibility.
-      # To update: verify the new URL at
-      #   https://downloads.raspberrypi.com/raspios_lite_arm64/images/
-      # then change the URL and test by running a pre-release tag.
-      - name: Build Pi OS image
+      - name: Build and smoke-test Pi OS image
         uses: pguyot/arm-runner-action@v2
         id: build
         with:
-          base_image: https://downloads.raspberrypi.com/raspios_lite_arm64/images/raspios_lite_arm64-2024-11-19/2024-11-19-raspios-bookworm-arm64-lite.img.xz
+          base_image: ${{ steps.base_image.outputs.url }}
           image_additional_mb: 3000
           copy_repository_path: /opt/partybox-src
           commands: |
+            # Copy smoke-test.sh before install.sh removes /opt/partybox-src.
+            cp /opt/partybox-src/image/smoke-test.sh /tmp/partybox-smoke-test.sh
+
             PARTYBOX_SRC_DIR=/opt/partybox-src \
             COMPANION_VERSION=${{ steps.meta.outputs.version }} \
               bash /opt/partybox-src/image/install.sh
+
+            # Smoke test: verify the appliance starts and serves its health API.
+            # A non-zero exit here aborts the workflow before the image is published.
+            bash /tmp/partybox-smoke-test.sh
+            rm -f /tmp/partybox-smoke-test.sh
 
       # Rename to the versioned filename, then compress.
       # xz -T0 uses all available cores; --best trades build time for image size.

@@ -81,10 +81,16 @@ usermod -aG bluetooth companion
 # ──────────────────────────────────────────────────────────────────────────────
 # 4. uv (Python toolchain)
 #
-# Pinned version for reproducible image builds. The musl-linked binary runs
-# without glibc version constraints and is installed system-wide.
+# Pinned to an exact version for release engineering reasons: every image built
+# from the same git tag must produce an identical result. An unpinned "latest"
+# download would silently update between releases, introducing a variable that
+# cannot be reproduced from the tag alone. The pin is intentional and is treated
+# like any other dependency — updating it is an explicit, reviewable change.
 #
-# To update: change UV_VERSION, run a test release, verify with: uv --version.
+# The musl-linked binary runs without glibc version constraints and is installed
+# system-wide.
+#
+# To update: change UV_VERSION, push a pre-release tag, verify with: uv --version.
 # TODO: add SHA256 verification alongside the next version bump. The checksum
 # file is published at the same URL with a .sha256 suffix, e.g.:
 #   https://github.com/astral-sh/uv/releases/download/X.Y.Z/uv-ARCH.tar.gz.sha256
@@ -209,6 +215,15 @@ log "Cleaning up"
 apt-get autoremove -y --purge
 apt-get clean
 rm -rf /var/lib/apt/lists/*
+
+# Remove package download caches accumulated during the image build.
+# uv caches wheels and source distributions under /root/.cache/uv; pip may
+# leave a cache under /root/.cache/pip if any pip invocations occurred.
+rm -rf /root/.cache/uv /root/.cache/pip
+
+# Clear build logs and bash history that accumulated during the customisation.
+find /var/log -type f \( -name "*.log" -o -name "*.log.*" \) -delete 2>/dev/null || true
+truncate -s 0 /root/.bash_history 2>/dev/null || true
 
 # Remove the source tree if it was copied into the image by CI (not the repo
 # root). The CI build copies it to /opt/partybox-src; running manually, the

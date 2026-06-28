@@ -154,6 +154,47 @@ This is the **appliance default**, not a permanent value. The hostname is a stan
 
 ---
 
+## Version management
+
+The installed version is derived from the git tag and propagates automatically through every layer of the appliance. No version literal is ever edited by hand.
+
+### Version flow
+
+```
+git tag v1.0.0
+    │
+    ▼ hatch-vcs reads the tag at pip-install time (inside install.sh)
+    │
+    ├─ partybox           1.0.0   ← importlib.metadata at runtime
+    ├─ partyboxd          1.0.0   ← importlib.metadata at runtime
+    └─ partybox-companion 1.0.0   ← importlib.metadata at runtime
+              │
+              ├── GET /api/v1/health   {"version": "1.0.0", ...}
+              ├── Debug bundle         companion_version: 1.0.0
+              └── Portal header        shows "1.0.0"
+
+COMPANION_VERSION env var (set by release.yml from the tag)
+    │
+    ├── /etc/partybox-companion/version   ← plain text, written by install.sh
+    └── /etc/motd                         ← sed-substituted at install time
+```
+
+### Mechanism
+
+1. **`hatch-vcs`** is in `build-system.requires` in all three `pyproject.toml` files. When `uv pip install` runs inside the image, `hatch-vcs` reads the git tag from the copy of the repository at `/opt/partybox-src` and records it as the installed package version (`v1.0.0` → `1.0.0`). No tag → version `0.0.0.dev0` (configured via `fallback-version`).
+
+2. At runtime, each package calls `importlib.metadata.version()` in its `__init__.py`. This reads the value recorded at install time — no knowledge of git is needed at runtime.
+
+3. `partyboxd.__version__` is the canonical version string at the API layer. `GET /api/v1/health`, the debug bundle, and the Portal all read it from there.
+
+4. `COMPANION_VERSION` is passed by the release workflow (from `${GITHUB_REF_NAME}`, the git tag). `install.sh` writes it to `/etc/partybox-companion/version` and substitutes it into `/etc/motd`. Both paths agree with the runtime version because they originate from the same tag.
+
+### Single source of truth
+
+The git tag is the only place a version number is set. There are no `__version__ = "x.y.z"` literals to maintain. Tagging a commit is the entire release act — everything downstream derives from it automatically.
+
+---
+
 ## Filesystem layout (after install)
 
 The install script produces this layout, consistent with ADR-017:
