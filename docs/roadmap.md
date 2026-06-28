@@ -16,7 +16,7 @@ Protocol work also confirmed: the excelpoint vendor protocol uses `AA [opcode] [
 
 One intentional gap: `device_info.model()` and `serial_number()` raise `NotImplementedError` — the model/serial string appears only in the power-off TLV state dump (tag `0x40`) and no direct request opcode was found despite systematic probing. Documented in `open-questions.md`; the xfail hardware test tracks it.
 
-**M6 — Daemon**, **M7 — REST API**, and **M8 — Companion Portal MVP** are complete. Work proceeds to **M9 — CLI**.
+**M6 — Daemon**, **M7 — REST API**, and **M8 — Companion Portal MVP** are complete. Work proceeds to **M9 — Spotify Connect**.
 
 ---
 
@@ -181,35 +181,26 @@ The Companion Portal does **not** include media playback controls.
 
 ---
 
-### M9 — CLI
+### M9 — Spotify Connect ✅
 
 **Package:** `companion`
 
-The `partybox` CLI binary. A command-line interface for users who prefer the terminal over the Portal, and a natural integration surface for scripting and automation.
+librespot subprocess manager. Start on boot, restart on crash, clean shutdown. The Portal's Spotify section (introduced in M8 as a placeholder) becomes a live status card.
 
-```
-partybox status           # speaker state: connection, firmware, battery
-partybox power on/off     # send power commands
-partybox watch            # stream live device events (WebSocket)
-```
+**Implemented:**
+- `SpotifySettings` — `COMPANION_SPOTIFY__*` env vars (`connect_name`, `bitrate`, `backend`); sensible defaults
+- `SpotifyService` — manages the librespot subprocess: starts it, monitors stderr for playback state, restarts after unexpected exits, terminates cleanly on shutdown; degrades gracefully when librespot is not installed
+- `GET /api/v1/spotify` — public endpoint returning `{running, active, device_name}`; no auth required (status only, no sensitive data)
+- Appliance entry point updated to run `SpotifyService` as a task alongside `DeviceManager`
+- Portal Spotify card now shows service status (running/stopped), device name, and playback state; polls every 15 s; works in `?mock` mode
 
-All commands operate against the running daemon via the M7 REST API.
+**Design intent:** librespot is an implementation detail. The product is "this Pi appears as a Spotify Connect speaker." Playback control (volume, skip, queue) remains in Spotify clients. The Portal reports appliance state only. No generic service-manager abstractions were introduced.
 
-**Done when:** CLI commands work end-to-end against a running daemon; `partybox watch` streams events until interrupted.
-
----
-
-### M10 — Spotify Connect
-
-**Package:** `companion`
-
-librespot subprocess manager. Start on boot, restart on crash, stop on Bluetooth disconnect. The Portal's Spotify section (introduced in M8 as a placeholder) becomes active.
-
-**Done when:** A Spotify client sees the PartyBox as a Connect device; playback starts and stops correctly; the daemon event stream reflects playback state; Portal shows Spotify as active.
+**Done when:** A Spotify client sees the PartyBox as a Connect device; librespot is automatically managed by the daemon; unexpected exits are recovered; Portal correctly reflects service state.
 
 ---
 
-### M11 — AirPlay
+### M10 — AirPlay
 
 **Package:** `companion`
 
@@ -219,7 +210,7 @@ shairport-sync subprocess manager. The Portal's AirPlay section (introduced in M
 
 ---
 
-### M12 — Companion Portal: Complete
+### M11 — Companion Portal: Complete
 
 **Package:** `companion`
 
@@ -251,6 +242,7 @@ The Portal is completed with full Spotify/AirPlay configuration flows, diagnosti
 
 | Feature | Reason |
 |---|---|
+| CLI (`partybox` command) | The Companion Portal is the primary user interface; the REST API is the primary integration surface; the SDK and examples already provide an excellent developer experience. A CLI remains valuable for debugging and automation, but it is no longer required to achieve the project's primary vision — make the Pi appear as a Spotify Connect and AirPlay speaker. Post-v1.0. |
 | Volume control via SDK | librespot and shairport-sync handle volume within their protocols. Direct hardware volume adds no value for the WiFi speaker use case in v1.0. |
 | Input source selection | Useful, but not needed to stream Spotify or AirPlay. The companion can set the correct input when a service starts. Deferred until the mechanism is confirmed via protocol analysis. |
 | Lighting control | Hardware-unique but not core to the WiFi speaker goal. Post-v1.0. |
