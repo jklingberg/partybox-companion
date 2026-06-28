@@ -76,7 +76,6 @@
     .dot.spin { background: var(--warn); animation: blink 1.4s ease infinite; }
 
     @keyframes blink { 0%,100% { opacity:1 } 50% { opacity:.25 } }
-    @keyframes spin  { to { transform: rotate(360deg) } }
 
     /* ── Layout ──────────────────────────────────────────────────── */
     .page {
@@ -180,24 +179,23 @@
       font-size: 11px; font-weight: 600;
     }
 
-    /* ── Disconnected notice ─────────────────────────────────────── */
+    /* ── Notices ─────────────────────────────────────────────────── */
     .notice { color: var(--text-2); font-size: 13px; margin-top: 14px; }
-
-    /* ── Wizard ──────────────────────────────────────────────────── */
-    #wizard { display: flex; align-items: flex-start; justify-content: center; }
-    .wizard-wrap {
-      width: 100%; max-width: 460px;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--r);
-      padding: 48px 40px;
-      margin-top: 8px;
+    .notice-warn {
+      color: var(--warn); font-size: 12px; margin-top: 10px;
     }
-    @media (max-width: 520px) { .wizard-wrap { padding: 32px 22px; } }
+    .notice-warn button {
+      background: none; border: none; color: var(--warn); font-size: 12px;
+      cursor: pointer; padding: 0; text-decoration: underline;
+      height: auto; display: inline;
+    }
 
-    .wizard-emoji { font-size: 44px; line-height: 1; margin-bottom: 18px; }
-    .wizard-wrap h1 { font-size: 22px; font-weight: 700; margin-bottom: 10px; }
-    .wizard-sub { color: var(--text-2); font-size: 14px; line-height: 1.65; margin-bottom: 30px; }
+    /* ── Settings panel ──────────────────────────────────────────── */
+    #settings-panel {
+      max-width: 860px;
+      margin: 14px auto 0;
+    }
+    .btn-row { display: flex; gap: 10px; }
 
     /* ── Forms ───────────────────────────────────────────────────── */
     .field { display: flex; flex-direction: column; gap: 7px; margin-bottom: 24px; }
@@ -215,32 +213,6 @@
       width: 100%;
     }
     input:focus { border-color: var(--accent); }
-
-    /* ── Check list ──────────────────────────────────────────────── */
-    .check-list { display: flex; flex-direction: column; gap: 14px; margin-bottom: 28px; }
-    .check-item { display: flex; align-items: center; gap: 12px; font-size: 14px; }
-    .check-spin {
-      width: 18px; height: 18px; flex-shrink: 0;
-      border: 2px solid var(--border);
-      border-top-color: var(--accent);
-      border-radius: 50%;
-      animation: spin .7s linear infinite;
-    }
-    .check-ok, .check-warn {
-      width: 18px; height: 18px; flex-shrink: 0;
-      border-radius: 50%;
-      display: flex; align-items: center; justify-content: center;
-      font-size: 10px; font-weight: 700; color: #fff;
-    }
-    .check-ok   { background: var(--ok); }
-    .check-warn { background: var(--warn); }
-
-    /* ── Settings panel ──────────────────────────────────────────── */
-    #settings-panel {
-      max-width: 860px;
-      margin: 14px auto 0;
-    }
-    .btn-row { display: flex; gap: 10px; }
 
     /* ── Toast ───────────────────────────────────────────────────── */
     #toast {
@@ -307,51 +279,6 @@
   </div>
 </header>
 
-<!-- ── Setup wizard ───────────────────────────────────────────────────── -->
-<div id="wizard" class="page hidden" role="main">
-  <div class="wizard-wrap">
-
-    <!-- Step 1: Name -->
-    <div id="wiz-1">
-      <div class="wizard-emoji" aria-hidden="true">🎉</div>
-      <h1>Welcome to Companion</h1>
-      <p class="wizard-sub">
-        Your PartyBox appliance is running. Let's finish setup — it only takes a moment.
-      </p>
-      <div class="field">
-        <label for="wiz-name">Name this appliance</label>
-        <input id="wiz-name" type="text" placeholder="My PartyBox" maxlength="48"
-               aria-describedby="wiz-name-hint" />
-        <span id="wiz-name-hint" style="font-size:12px;color:var(--text-3)">
-          This name will appear in the browser tab and the header above.
-        </span>
-      </div>
-      <button class="btn btn-primary" onclick="wizStep2()">Continue →</button>
-    </div>
-
-    <!-- Step 2: Connection check -->
-    <div id="wiz-2" class="hidden">
-      <div class="wizard-emoji" aria-hidden="true">🔍</div>
-      <h1>Checking your setup</h1>
-      <p class="wizard-sub">Verifying everything is working before you start streaming.</p>
-      <div class="check-list" role="status" aria-live="polite">
-        <div class="check-item" id="chk-daemon">
-          <span class="check-spin" aria-hidden="true"></span>
-          <span>Daemon is running</span>
-        </div>
-        <div class="check-item" id="chk-speaker">
-          <span class="check-spin" aria-hidden="true"></span>
-          <span id="chk-speaker-text">Speaker is connected</span>
-        </div>
-      </div>
-      <button class="btn btn-primary hidden" id="wiz-finish" onclick="wizFinish()">
-        Open dashboard →
-      </button>
-    </div>
-
-  </div>
-</div>
-
 <!-- ── Main dashboard ─────────────────────────────────────────────────── -->
 <main id="dashboard" class="page hidden">
   <div class="grid">
@@ -416,6 +343,10 @@
           <span class="v"><span class="pill-active">&#9654; Active</span></span>
         </div>
       </div>
+      <p id="svc-default-warn" class="notice-warn hidden">
+        ⚠ Default device name in use —
+        <button onclick="openSettings()">Rename</button>
+      </p>
     </div>
 
     <!-- AirPlay placeholder -->
@@ -426,7 +357,6 @@
       </div>
       <p class="placeholder-text">
         Stream audio from any Apple device — iPhone, Mac, or iPad — directly to your speaker.
-        Arrives in the next milestone.
       </p>
     </div>
 
@@ -476,7 +406,7 @@ const S = {
   health:   null,   // {status, version, speaker_connected}
   speaker:  null,   // {connected, address, firmware, battery}
   spotify:  null,   // {running, active, device_name}
-  config:   {device_name:'PartyBox', setup_complete:false},
+  config:   {device_name: 'PartyBox'},
   apiKey:   localStorage.getItem('_pb_key') || null,
   ws:       null,
   _toast:   null,
@@ -488,7 +418,7 @@ const MOCK = location.search.includes('mock');
 // Mock data for UI development / demos without a running daemon.
 const MOCK_HEALTH   = {status:'ok', version:'0.1.0-dev', speaker_connected:true};
 const MOCK_SPEAKER  = {connected:true, address:'AA:BB:CC:DD:EE:FF', firmware:'26.2.10', battery:null};
-const MOCK_CONFIG   = {device_name:'Living Room', setup_complete:true};
+const MOCK_CONFIG   = {device_name:'Living Room'};
 const MOCK_SPOTIFY  = {running:true, active:false, device_name:'Living Room'};
 
 // ── Boot ───────────────────────────────────────────────────────────────
@@ -501,7 +431,7 @@ async function boot() {
     S.config  = MOCK_CONFIG;
     applyConfig();
     setHealth(true);
-    showDashboard();
+    show('dashboard');
     updateSpeaker();
     updateSystem();
     updateSpotify();
@@ -522,17 +452,13 @@ async function boot() {
   applyConfig();
   setHealth(!!S.health);
 
-  if (!S.config.setup_complete) {
-    showWizard();
-  } else {
-    await loadSpeaker();
-    showDashboard();
-    updateSpeaker();
-    updateSystem();
-    updateSpotify();
-    connectWS();
-    startSpotifyPolling();
-  }
+  await loadSpeaker();
+  show('dashboard');
+  updateSpeaker();
+  updateSystem();
+  updateSpotify();
+  connectWS();
+  startSpotifyPolling();
 }
 
 // ── DOM helpers ────────────────────────────────────────────────────────
@@ -552,82 +478,6 @@ function applyConfig() {
 function setHealth(ok) {
   setDot('health-dot', ok ? 'ok' : 'err');
   id('health-label').textContent = ok ? 'Running' : 'Offline';
-}
-
-// ── Page navigation ────────────────────────────────────────────────────
-function showWizard()    { show('wizard');    hide('dashboard'); }
-function showDashboard() { hide('wizard');    show('dashboard'); }
-
-// ── Wizard ─────────────────────────────────────────────────────────────
-function wizStep2() {
-  const name = id('wiz-name').value.trim() || 'PartyBox';
-  S.config.device_name = name;
-  applyConfig();
-
-  hide('wiz-1');
-  show('wiz-2');
-
-  // Check daemon
-  setCheckResult('chk-daemon', !!S.health, 'Daemon is running', 'Daemon not responding');
-
-  // Check speaker (best-effort, we proceed regardless)
-  const speakerEl = id('chk-speaker');
-  get('/api/v1/speaker', true).then(r => {
-    if (r && r.ok) {
-      r.json().then(sp => {
-        S.speaker = sp;
-        const ok = sp.connected;
-        setCheckResult('chk-speaker', ok, 'Speaker is connected',
-          'Speaker not found — make sure it is powered on and in range. ' +
-          'If the JBL app is open on your phone, close it: the speaker only accepts one control connection at a time.');
-        show('wiz-finish');
-      });
-    } else {
-      setCheckResult('chk-speaker', false, '',
-        r && r.status===401
-          ? 'API key required — you can set it in Settings after setup'
-          : 'Could not reach the speaker');
-      show('wiz-finish');
-    }
-  }).catch(() => {
-    setCheckResult('chk-speaker', false, '', 'Could not reach the daemon');
-    show('wiz-finish');
-  });
-}
-
-function setCheckResult(itemId, ok, okText, failText) {
-  const item = id(itemId);
-  if (!item) return;
-  const spinner = item.querySelector('.check-spin');
-  if (spinner) {
-    const icon = document.createElement('span');
-    icon.className = ok ? 'check-ok' : 'check-warn';
-    icon.textContent = ok ? '✓' : '!';
-    icon.setAttribute('aria-hidden', 'true');
-    spinner.replaceWith(icon);
-  }
-  const label = item.querySelector('span:last-child');
-  if (label) label.textContent = ok ? okText : failText;
-}
-
-async function wizFinish() {
-  const name = S.config.device_name || 'PartyBox';
-  try {
-    const r = await fetch('/api/v1/config', {
-      method: 'PUT',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({device_name: name, setup_complete: true}),
-    });
-    if (r.ok) S.config = await r.json();
-  } catch (_) {}
-  S.config.setup_complete = true;
-  applyConfig();
-  showDashboard();
-  updateSpeaker();
-  updateSystem();
-  updateSpotify();
-  connectWS();
-  startSpotifyPolling();
 }
 
 // ── Speaker card ───────────────────────────────────────────────────────
@@ -732,10 +582,11 @@ function onEvent(ev) {
 function updateSpotify() {
   const sp = S.spotify;
   if (!sp) return;
-  setDot('svc-dot', sp.running ? (sp.active ? 'ok' : 'ok') : 'err');
+  setDot('svc-dot', sp.running ? 'ok' : 'err');
   id('svc-label').textContent = sp.running ? (sp.active ? 'Playing' : 'Ready') : 'Stopped';
   id('svc-name').textContent  = esc(sp.device_name);
   id('svc-active-row').style.display = sp.active ? '' : 'none';
+  id('svc-default-warn').classList.toggle('hidden', sp.device_name !== 'PartyBox');
 }
 
 function startSpotifyPolling() {
@@ -760,11 +611,12 @@ async function saveSettings() {
     const r = await fetch('/api/v1/config', {
       method: 'PUT',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({device_name: name, setup_complete: true}),
+      body: JSON.stringify({device_name: name}),
     });
     if (r.ok) {
       S.config = await r.json();
       applyConfig();
+      updateSpotify();
       toast('Settings saved.');
     }
   } catch (_) { toast('Could not save settings.'); }

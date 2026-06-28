@@ -49,9 +49,7 @@ async def test_get_config_returns_defaults_on_first_boot(tmp_path: Path) -> None
     async with _make_app(tmp_path) as client:
         r = await client.get("/api/v1/config")
     assert r.status_code == 200
-    body = r.json()
-    assert body["device_name"] == "PartyBox"
-    assert body["setup_complete"] is False
+    assert r.json()["device_name"] == "PartyBox"
 
 
 async def test_get_config_always_200_unauthenticated(tmp_path: Path) -> None:
@@ -68,22 +66,14 @@ async def test_get_config_always_200_unauthenticated(tmp_path: Path) -> None:
 
 async def test_put_config_returns_updated_body(tmp_path: Path) -> None:
     async with _make_app(tmp_path) as client:
-        r = await client.put(
-            "/api/v1/config",
-            json={"device_name": "Kitchen", "setup_complete": True},
-        )
+        r = await client.put("/api/v1/config", json={"device_name": "Kitchen"})
     assert r.status_code == 200
-    body = r.json()
-    assert body["device_name"] == "Kitchen"
-    assert body["setup_complete"] is True
+    assert r.json()["device_name"] == "Kitchen"
 
 
 async def test_put_config_writes_to_disk(tmp_path: Path) -> None:
     async with _make_app(tmp_path) as client:
-        await client.put(
-            "/api/v1/config",
-            json={"device_name": "Garage", "setup_complete": False},
-        )
+        await client.put("/api/v1/config", json={"device_name": "Garage"})
     config_file = tmp_path / "config.json"
     assert config_file.exists()
     cfg = PortalConfig.model_validate_json(config_file.read_text())
@@ -92,13 +82,9 @@ async def test_put_config_writes_to_disk(tmp_path: Path) -> None:
 
 async def test_config_persists_across_requests(tmp_path: Path) -> None:
     async with _make_app(tmp_path) as client:
-        await client.put(
-            "/api/v1/config",
-            json={"device_name": "Living Room", "setup_complete": True},
-        )
+        await client.put("/api/v1/config", json={"device_name": "Living Room"})
         r = await client.get("/api/v1/config")
     assert r.json()["device_name"] == "Living Room"
-    assert r.json()["setup_complete"] is True
 
 
 # ---------------------------------------------------------------------------
