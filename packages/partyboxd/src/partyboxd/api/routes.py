@@ -39,6 +39,18 @@ class BatteryResponse(BaseModel):
     level: int
 
 
+class VolumeResponse(BaseModel):
+    """Response body for GET /api/v1/volume."""
+
+    level: int | None
+
+
+class VolumeRequest(BaseModel):
+    """Request body for POST /api/v1/volume."""
+
+    level: int
+
+
 # ---------------------------------------------------------------------------
 # Error helpers
 # ---------------------------------------------------------------------------
@@ -60,6 +72,26 @@ def _capability_unavailable() -> HTTPException:
         detail={
             "error": "capability_unavailable",
             "message": "This speaker does not have a battery.",
+        },
+    )
+
+
+def _volume_not_implemented() -> HTTPException:
+    return HTTPException(
+        status_code=501,
+        detail={
+            "error": "not_implemented",
+            "message": "Volume BLE opcode is not yet confirmed from hardware captures.",
+        },
+    )
+
+
+def _volume_out_of_range() -> HTTPException:
+    return HTTPException(
+        status_code=400,
+        detail={
+            "error": "invalid_request",
+            "message": "Volume level must be between 0 and 100.",
         },
     )
 
@@ -223,6 +255,68 @@ def make_router(
         """
         try:
             await manager.power_off()
+        except DeviceNotConnectedError as exc:
+            raise _speaker_disconnected() from exc
+
+    # ------------------------------------------------------------------
+    # GET /api/v1/volume
+    # ------------------------------------------------------------------
+
+    @private.get(
+        "/volume",
+        response_model=VolumeResponse,
+        tags=["volume"],
+        summary="Current volume level",
+    )
+    async def get_volume() -> VolumeResponse:
+        """Current speaker volume as a percentage (0-100).
+
+        Returns ``{"level": null}`` when the BLE volume opcode is not yet
+        implemented. Returns **503** when the speaker is not connected.
+
+        **Responses:**
+
+        | Code | Meaning |
+        |------|---------|
+        | 200 | Volume returned (``level`` may be ``null``) |
+        | 401 | Missing or invalid API key |
+        | 503 | Speaker is not connected |
+        """
+        try:
+            level = await manager.get_volume()
+        except DeviceNotConnectedError as exc:
+            raise _speaker_disconnected() from exc
+        return VolumeResponse(level=level)
+
+    # ------------------------------------------------------------------
+    # POST /api/v1/volume
+    # ------------------------------------------------------------------
+
+    @private.post(
+        "/volume",
+        status_code=204,
+        tags=["volume"],
+        summary="Set volume level",
+    )
+    async def post_volume(body: VolumeRequest) -> None:
+        """Set the speaker volume to the given level (0-100).
+
+        **Responses:**
+
+        | Code | Meaning |
+        |------|---------|
+        | 204 | Volume set |
+        | 400 | Level out of range |
+        | 401 | Missing or invalid API key |
+        | 501 | Volume BLE opcode not yet implemented |
+        | 503 | Speaker is not connected |
+        """
+        try:
+            await manager.set_volume(body.level)
+        except ValueError as exc:
+            raise _volume_out_of_range() from exc
+        except NotImplementedError as exc:
+            raise _volume_not_implemented() from exc
         except DeviceNotConnectedError as exc:
             raise _speaker_disconnected() from exc
 

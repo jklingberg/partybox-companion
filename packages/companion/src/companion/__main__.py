@@ -31,6 +31,7 @@ from companion.config_store import ConfigStore
 from companion.services.audio import AudioService
 from companion.services.router import make_services_router
 from companion.services.spotify import SpotifyService
+from companion.volume import VolumeState
 from companion.webui.router import make_portal_router
 
 
@@ -87,9 +88,15 @@ async def _run(
         bitrate=portal_cfg.spotify_bitrate,
         backend=companion_settings.spotify.backend,
     )
-    spotify = SpotifyService(effective_spotify)
+    volume_state = VolumeState()
+    spotify = SpotifyService(effective_spotify, volume_state=volume_state)
     audio = AudioService(companion_settings.audio)
-    manager = DeviceManager(daemon_settings.speaker)
+    # Pass a fallback callable so GET /api/v1/volume returns the most recently
+    # reported Spotify volume when the BLE opcode is not yet implemented.
+    manager = DeviceManager(
+        daemon_settings.speaker,
+        volume_fallback=lambda: volume_state.level,
+    )
 
     app = create_daemon_app(manager, daemon_settings)
     app.include_router(make_portal_router(companion_settings, config_store))
