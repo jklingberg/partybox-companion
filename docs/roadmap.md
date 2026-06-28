@@ -16,7 +16,7 @@ Protocol work also confirmed: the excelpoint vendor protocol uses `AA [opcode] [
 
 One intentional gap: `device_info.model()` and `serial_number()` raise `NotImplementedError` — the model/serial string appears only in the power-off TLV state dump (tag `0x40`) and no direct request opcode was found despite systematic probing. Documented in `open-questions.md`; the xfail hardware test tracks it.
 
-**M6 — Daemon**, **M7 — REST API**, **M8 — Companion Portal MVP**, **M9 — Spotify Connect**, **M10 — Portal UX**, and **M11 — Companion Portal: Complete** are complete. Work proceeds to **v1.0**.
+**M6 — Daemon**, **M7 — REST API**, **M8 — Companion Portal MVP**, **M9 — Spotify Connect**, **M10 — Portal UX**, **M11 — Companion Portal: Complete**, and **M12 — Appliance Runtime** are complete. Work proceeds to **M13 — Distribution & Packaging**.
 
 ---
 
@@ -236,33 +236,114 @@ The Portal is completed with full Spotify configuration flows, diagnostics, and 
 
 ---
 
+### M12 — Appliance Runtime ✅
+
+**Package:** `companion`
+
+Turn Companion from a development process into a proper Linux service. After M12, the appliance runs itself — no manual commands, no `nohup`, no open SSH session required.
+
+**Implemented:**
+- `system/systemd/companion.service` — production systemd unit: `Type=simple`, `Restart=on-failure`, `RestartSec=5`, `TimeoutStopSec=30`, `WantedBy=multi-user.target`, `After=network-online.target bluetooth.service`
+- `system/systemd/companion.env` — env file template installed to `/etc/companion/companion.env`; documents all operator-tunable settings
+- `StateDirectory=companion` — systemd creates and owns `/var/lib/companion/` before `ExecStart`; no setup scripts needed
+- `AmbientCapabilities=CAP_NET_BIND_SERVICE` — `companion` user can bind port 80 without root; no reverse proxy needed
+- `StandardOutput=journal` / `SyslogIdentifier=partybox-companion` — all output captured by journald; `journalctl -u partybox-companion` for log access
+- Journald-aware logging format: timestamps omitted from Python log records when `JOURNAL_STREAM` is in the environment (journald provides them); full timestamps preserved in terminal
+- `COMPANION_LOG_LEVEL` env var — configurable log level without code changes (default: `INFO`)
+- Single `ConfigStore` instance — `make_portal_router` now accepts an injected store; eliminates three redundant `ConfigStore` instances that read/wrote the same file
+- Debug bundle now includes recent journal log lines (`logs.txt`) via `journalctl --unit=partybox-companion`
+- Developer handbook updated: `nohup`-based restart workflow replaced with `sudo systemctl restart partybox-companion`; logs section updated to use `journalctl`
+- ADR-017 (runtime layout) and ADR-018 (systemd service model) written
+
+**Architecture decisions:** See [ADR-017](adr/017-runtime-layout.md) and [ADR-018](adr/018-systemd-service.md).
+
+**Done when:** A Raspberry Pi boots into a fully running Companion appliance without any manual intervention. `systemctl status companion` shows `active (running)`.
+
+> **Note on hardware validation:** The service unit is complete and architecturally sound. End-to-end boot validation (`systemctl enable --now partybox-companion` → Portal accessible) will occur as part of M16 (Release Candidate) on a clean SD card flash. The unit cannot be exercised in the devcontainer (no systemd).
+
+---
+
+### M13 — Distribution & Packaging
+
+**Package:** `companion`
+
+Ship a complete, self-contained appliance. After M13, installing Companion installs everything — librespot is an internal implementation detail, not a separate manual step.
+
+**Goals:**
+- librespot bundled with Companion (implementation: Debian package dependency, embedded binary, or image pre-install — TBD at build time)
+- Defined installation layout (binary locations, config paths, data directories)
+- Package or image layer structure
+- Startup dependency verification: Companion logs clearly if a required component is missing rather than silently degrading
+- Versioning: `GET /api/v1/health` returns the correct Companion version; `version.json` in the debug bundle is accurate
+- Upgrade path documented
+
+**Done when:** A single installation step results in a complete appliance with all dependencies satisfied. Users do not install librespot separately. See [ADR-016](adr/016-companion-owns-spotify-lifecycle.md).
+
+---
+
+### M14 — First Boot Experience
+
+**Package:** `companion`
+
+Close the gap between development environment and polished appliance. After M14, a non-technical user can flash an SD card, plug in the Pi, and reach the Portal from a browser — no terminal, no SSH, no configuration files beyond WiFi credentials.
+
+**Goals:**
+- Production networking: Portal served on port 80 (implementation: direct bind or reverse proxy — TBD)
+- mDNS hostname: `http://partybox.local` resolves without any router configuration
+- Appliance identity: Pi hostname set to `partybox` by default
+- WiFi pre-configuration: document the SD card `wpa_supplicant.conf` approach as the v1.0 WiFi onboarding path
+- Sensible defaults: all settings work out of the box without user intervention
+- Portal reachable at `http://partybox` once the router resolves the hostname
+
+**Done when:** The flash-to-stream path requires no terminal access. A user can follow a written guide using only a file editor (to write WiFi credentials) and a browser.
+
+---
+
+### M15 — Reliability
+
+**Packages:** `companion`, `partyboxd`
+
+Build confidence in the appliance's ability to run unattended. M15 introduces no new features — it ensures every existing feature survives real-world conditions without user intervention.
+
+**Goals:**
+- **Reboot recovery:** after a Pi reboot, Companion reconnects to the speaker and librespot re-registers with Spotify automatically
+- **Bluetooth recovery:** if the speaker is power-cycled or goes out of range, Companion reconnects when it returns; if the BT controller wedges, the daemon recovers without requiring `systemctl restart bluetooth` from the user
+- **Spotify visibility tied to speaker reachability:** librespot starts (and registers with Zeroconf) only after A2DP is confirmed available; it deregisters when A2DP has been unavailable long enough to indicate the speaker is off or out of range — selecting a Connect device that produces no audio is a confusing user experience
+- **Crash recovery:** any component that exits unexpectedly is restarted with backoff; repeated failures surface in Portal diagnostics rather than being silently swallowed
+- **Extended run:** 30-minute streaming session (deferred from M3) validated with combined A2DP + BLE + librespot
+
+**Done when:** The appliance survives a reboot, a speaker power cycle, and a 30-minute streaming session without user intervention.
+
+---
+
+### M16 — Release Candidate
+
+No significant new functionality. This milestone verifies that all the pieces work together and that the project is ready to ship.
+
+**Goals:**
+- End-to-end validation on real hardware: flash a fresh SD card → boot → reach Portal → stream Spotify → reboot → stream again
+- Documentation review: README, setup guide, and API reference are accurate and complete
+- API freeze: no breaking changes to `/api/v1/*` after this point
+- `CHANGELOG.md` drafted with user-visible changes since M6
+- Version bumped to `1.0.0` in all packages
+- Bug fixing only — no scope additions
+
+**Done when:** Every M12–M15 milestone is complete. A clean flash-to-stream walkthrough succeeds without workarounds. The project is ready to tag.
+
+---
+
 ### v1.0
 
-**Release criteria:**
+Not a milestone. The point at which M12–M16 are complete and the release candidate is accepted.
 
-- A non-technical user can flash the image and boot the device.
-- Complete the initial setup in the Companion Portal without opening a terminal.
-- Start streaming via Spotify Connect.
-- Recover automatically after a reboot.
-- librespot ships as part of the Companion image — no separate installation step. Users install Companion; librespot is an internal dependency. (See [ADR-016](adr/016-companion-owns-spotify-lifecycle.md).)
-- "PartyBox" only appears as a Spotify Connect device when the speaker is reachable. librespot starts (and registers with Zeroconf) only after A2DP is confirmed available; it stops (deregistering) if A2DP has been unavailable long enough to indicate the speaker is off or out of range. Selecting a Connect device that produces no audio is a confusing user experience.
+```
+git tag v1.0.0
+```
 
 **Known limitations at v1.0:**
 
 - **BLE exclusive connection.** The daemon holds a persistent BLE GATT connection to the speaker. Because BLE GATT allows only one central at a time, third-party BLE clients — including the JBL app — cannot connect while the daemon is running. Workaround: stop `partybox-companion`, use the JBL app, then restart. An opportunistic connection model (connect to send a command, disconnect when idle) would allow coexistence but adds reconnect latency and state-management complexity; deferred to post-v1.0.
 - **WiFi/Bluetooth coexistence on Pi 3 B+.** The BCM43438 chip shares the 2.4 GHz radio between WiFi and Bluetooth. During active A2DP audio streaming, Bluetooth timeslots can starve WiFi, causing mDNS (`partybox.local`) to become unreliable. Hostname resolution via the router's DNS (`partybox`) and direct IP remain unaffected. Mitigation applied: WiFi power management disabled (`wifi.powersave = 2`). Full resolution requires Ethernet or a dedicated USB WiFi adapter.
-
-**Production networking**
-
-During development, `partyboxd` listens on port 8080 for convenience.
-
-The appliance image will expose the Portal on the standard HTTP port (80), allowing users to access the appliance via:
-
-```
-http://partybox
-```
-
-The implementation (reverse proxy vs direct binding) is intentionally deferred until the appliance image is assembled.
 
 ---
 
@@ -282,4 +363,4 @@ The implementation (reverse proxy vs direct binding) is intentionally deferred u
 | Native HA custom component | HA works fine as an HTTP client. A custom component is an optimisation, not a requirement. |
 | Multi-device management | Auracast is hardware-level. One daemon, one master device. |
 | Hotspot / captive-portal WiFi onboarding | The Pi-creates-its-own-network first-boot pattern. Post-v1.0; SD card WiFi config is sufficient for v1.0. |
-| Bluetooth adapter reset from the Portal | When the Pi's BT controller wedges (scanner works, GATT connections fail), `systemctl restart bluetooth` recovers it. A "Reconnect" action on the Speaker card could trigger this via a new `POST /api/v1/bluetooth/reset` endpoint. Requires a `sudoers` entry on the Pi for that specific `systemctl` call. Fits under M11 Bluetooth diagnostics. Post-v1.0. |
+| Bluetooth adapter reset from the Portal | Daemon-level Bluetooth recovery (handling a wedged controller without user intervention) is addressed in M15. A Portal-triggered "Reconnect" button backed by `POST /api/v1/bluetooth/reset` (requiring a `sudoers` entry for `systemctl restart bluetooth`) remains post-v1.0. |

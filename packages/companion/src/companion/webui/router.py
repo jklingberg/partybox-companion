@@ -13,18 +13,18 @@ from companion.config_store import ConfigStore, PortalConfig
 _STATIC_DIR = Path(__file__).parent / "static"
 
 
-def make_portal_router(settings: CompanionSettings) -> tuple[APIRouter, ConfigStore]:
+def make_portal_router(settings: CompanionSettings, store: ConfigStore) -> APIRouter:
     """Return an APIRouter with companion config endpoints and the Portal.
 
-    Also returns the ConfigStore so the caller can pass it to other routers
-    that need config access (e.g. the services router for Spotify restart).
+    *store* is the shared :class:`~companion.config_store.ConfigStore` instance
+    owned by the caller. Passing it in (rather than constructing one here)
+    ensures a single file handle is used across all routers.
 
     Config endpoints are intentionally unauthenticated — they only hold
     non-sensitive appliance metadata. Speaker control endpoints in partyboxd
     carry the auth requirement.
     """
     router = APIRouter()
-    store = ConfigStore(settings.data_dir / "config.json")
 
     # ------------------------------------------------------------------
     # GET /api/v1/config — unauthenticated
@@ -71,4 +71,4 @@ def make_portal_router(settings: CompanionSettings) -> tuple[APIRouter, ConfigSt
         """Serve the Companion Portal single-page application."""
         return (_STATIC_DIR / "index.html").read_text()
 
-    return router, store
+    return router

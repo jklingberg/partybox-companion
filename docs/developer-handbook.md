@@ -199,20 +199,21 @@ PARTYBOX_ADDRESS=AA:BB:CC:DD:EE:FF uv run pytest packages/partybox/ -m hardware
 
 ---
 
-## Running the daemon locally
+## Running the appliance locally
 
 ```bash
-# Copy the example config
-cp packages/companion/config/partybox-companion.example.toml /tmp/partyboxd.toml
+# Start the full companion appliance (REST API + Portal + Spotify service)
+uv run partybox-companion
 
-# Edit the config — set your Bluetooth address
-$EDITOR /tmp/partyboxd.toml
-
-# Start the daemon
-uv run --package partyboxd partyboxd --config /tmp/partyboxd.toml
+# Override port or other settings
+COMPANION_PORT=9000 uv run partybox-companion
+COMPANION_LOG_LEVEL=DEBUG uv run partybox-companion
 ```
 
-The daemon starts at `http://localhost:8080`. Check `GET /api/v1/status`.
+The Portal and API start at `http://localhost:8080`. Check liveness with `GET /api/v1/health`.
+
+To develop Portal UI without hardware, open `http://localhost:8080/?mock` — mock mode
+serves the Portal with simulated device state.
 
 ---
 
@@ -244,9 +245,7 @@ ssh jonathan@partybox "cd ~/partybox-companion && ~/.local/bin/uv sync --all-ext
 **Restart the companion:**
 
 ```bash
-ssh jonathan@partybox "pkill -f partybox-companion; sleep 1; \
-  cd ~/partybox-companion && nohup ~/.local/bin/uv run partybox-companion \
-  > /tmp/companion.log 2>&1 &"
+ssh jonathan@partybox "sudo systemctl restart companion"
 ```
 
 Check health after restart:
@@ -258,7 +257,10 @@ ssh jonathan@partybox "curl -s http://localhost:8080/api/v1/health"
 **Logs:**
 
 ```bash
-ssh jonathan@partybox "tail -f /tmp/companion.log"
+ssh jonathan@partybox "journalctl -u companion -f"
+
+# Last 100 lines
+ssh jonathan@partybox "journalctl -u companion -n 100 --no-pager"
 ```
 
 **Bluetooth adapter wedge (scanner works, GATT connections fail):**
@@ -289,19 +291,19 @@ partybox-companion/
 │   ├── partyboxd/         ← Headless daemon
 │   │   └── src/partyboxd/
 │   │       ├── api/       ← FastAPI app factory
-│   │       ├── bus.py     ← internal event bus
 │   │       └── config/    ← DaemonSettings (pydantic-settings)
 │   │
 │   └── companion/         ← Full appliance
 │       └── src/companion/
-│           ├── cli/       ← partybox CLI (HTTP client)
-│           ├── services/  ← librespot + shairport-sync managers
-│           └── webui/     ← static file serving
+│           ├── services/  ← librespot + A2DP managers
+│           └── webui/     ← Portal HTML + config API
 │
-├── webui/                 ← Companion Portal source (framework TBD)
 ├── system/
-│   ├── systemd/           ← systemd service file
-│   └── avahi/             ← mDNS service record
+│   ├── systemd/
+│   │   ├── companion.service            ← production service unit
+│   │   └── companion.env               ← env file template (/etc/companion/)
+│   └── avahi/
+│       └── partyboxd.service           ← mDNS record (partybox.local)
 ├── docs/                  ← All documentation
 └── research/              ← Local RE workspace (not in VCS)
 ```
