@@ -19,8 +19,19 @@ from partybox import ConnectionFailedError, ConnectionLostError, PartyBoxDevice,
 from partybox.bluetooth.transport import NotConnectedError
 
 from partyboxd.config import SpeakerSettings
+from partyboxd.device.events import (
+    ConnectedEvent,
+    DeviceEvent,
+    DisconnectedEvent,
+    EventBus,
+    PowerChangedEvent,
+)
 
 log = logging.getLogger(__name__)
+
+
+class DeviceNotConnectedError(Exception):
+    """Raised when a device operation is attempted while the speaker is not connected."""
 
 
 @dataclass(frozen=True)
@@ -57,17 +68,60 @@ class DeviceManager:
         await task
 
     While :meth:`run` is active, :meth:`snapshot` returns the current state.
+    Callers may :meth:`subscribe` to receive device events as they occur.
     """
 
     def __init__(self, settings: SpeakerSettings) -> None:
         self._settings = settings
         self._snapshot: StatusSnapshot = _DISCONNECTED
         self._device: PartyBoxDevice | None = None
+        self._bus = EventBus()
 
     @property
     def snapshot(self) -> StatusSnapshot:
         """Current point-in-time device state. Never blocks."""
         return self._snapshot
+
+    def subscribe(self) -> asyncio.Queue[DeviceEvent]:
+        """Subscribe to device events. Returns a queue that receives future events.
+
+        Call :meth:`unsubscribe` with the returned queue when done.
+        """
+        return self._bus.subscribe()
+
+    def unsubscribe(self, queue: asyncio.Queue[DeviceEvent]) -> None:
+        """Stop delivering events to *queue*."""
+        self._bus.unsubscribe(queue)
+
+    async def power_on(self) -> None:
+        """Send a power-on command to the connected speaker.
+
+        Raises :exc:`DeviceNotConnectedError` if the speaker is not connected
+        or if the connection is lost during the command.
+        """
+        device = self._device
+        if device is None:
+            raise DeviceNotConnectedError()
+        try:
+            await device.power.turn_on()
+        except (ConnectionLostError, NotConnectedError) as exc:
+            raise DeviceNotConnectedError() from exc
+        self._bus.emit(PowerChangedEvent(state="on"))
+
+    async def power_off(self) -> None:
+        """Send a power-off command to the connected speaker.
+
+        Raises :exc:`DeviceNotConnectedError` if the speaker is not connected
+        or if the connection is lost during the command.
+        """
+        device = self._device
+        if device is None:
+            raise DeviceNotConnectedError()
+        try:
+            await device.power.turn_off()
+        except (ConnectionLostError, NotConnectedError) as exc:
+            raise DeviceNotConnectedError() from exc
+        self._bus.emit(PowerChangedEvent(state="off"))
 
     async def run(self) -> None:
         """Main connection loop. Runs until cancelled.
@@ -110,6 +164,14 @@ class DeviceManager:
         log.info("connected to %s (attempt %d)", device.address, attempt)
 
         await self._refresh(device)
+        snap = self._snapshot
+        self._bus.emit(
+            ConnectedEvent(
+                address=snap.address,
+                firmware=snap.firmware,
+                battery=snap.battery,
+            )
+        )
 
         try:
             await device.drain_until_disconnect()
@@ -122,6 +184,7 @@ class DeviceManager:
         finally:
             self._device = None
             self._snapshot = _DISCONNECTED
+            self._bus.emit(DisconnectedEvent())
 
     async def _scan(self) -> PartyBoxDevice | None:
         log.info("scanning for speaker")

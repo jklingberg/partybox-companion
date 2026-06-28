@@ -54,7 +54,7 @@ def main() -> None:
 
 async def _run(settings: Settings) -> None:
     manager = DeviceManager(settings.speaker)
-    app = create_app(manager)
+    app = create_app(manager, settings)
 
     server_config = uvicorn.Config(
         app,

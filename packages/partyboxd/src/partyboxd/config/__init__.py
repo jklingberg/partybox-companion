@@ -16,6 +16,12 @@ from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+class ApiSettings(BaseModel):
+    """Settings for the HTTP API."""
+
+    api_key: str | None = None
+
+
 class SpeakerSettings(BaseModel):
     """Settings for the BLE speaker connection."""
 
@@ -43,5 +49,6 @@ class Settings(BaseSettings):
         env_nested_delimiter="__",
     )
 
+    api: ApiSettings = Field(default_factory=ApiSettings)
     speaker: SpeakerSettings = Field(default_factory=SpeakerSettings)
     server: ServerSettings = Field(default_factory=ServerSettings)
