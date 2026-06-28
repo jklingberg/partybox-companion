@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
 # PartyBox Companion — appliance setup script
 #
-# Runs inside the Raspberry Pi OS Lite ARM64 image during the CI image build.
-# Can also be run directly on a freshly flashed Pi for manual installation.
+# This is the single authoritative implementation of how Companion is installed.
+# All installation contexts — CI image build, manual Pi install, future test
+# harnesses — invoke this script. See ADR-019 for the architectural rationale.
 #
-# Usage (image build — source dir is copied in by arm-runner-action):
-#   PARTYBOX_SRC_DIR=/opt/partybox-src bash image/install.sh
+# Invocation contexts:
 #
-# Usage (manual — run from the repository root):
-#   sudo PARTYBOX_SRC_DIR=$(pwd) bash image/install.sh
+#   CI image build (arm-runner-action copies the repo to /opt/partybox-src):
+#     PARTYBOX_SRC_DIR=/opt/partybox-src bash image/install.sh
+#
+#   Manual install on a running Pi (developers and advanced users only;
+#   the appliance image is the primary supported deployment — see image/README.md):
+#     sudo PARTYBOX_SRC_DIR=$(pwd) bash image/install.sh
 #
 # Environment variables:
 #   PARTYBOX_SRC_DIR     Path to the repository root.
@@ -61,6 +65,12 @@ systemctl disable raspotify 2>/dev/null || true
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 3. companion user
+#
+# System user with no home directory and no login shell. ProtectHome=true in
+# the service unit makes /home inaccessible at runtime anyway. Persistent state
+# lives in /var/lib/companion (StateDirectory=) and runtime artefacts such as
+# PipeWire sockets live in /run/companion (RuntimeDirectory=) — both managed by
+# systemd, not by a home directory. See ADR-019 for the full rationale.
 # ──────────────────────────────────────────────────────────────────────────────
 log "Creating companion user"
 if ! id companion &>/dev/null; then
@@ -73,7 +83,11 @@ usermod -aG bluetooth companion
 #
 # Pinned version for reproducible image builds. The musl-linked binary runs
 # without glibc version constraints and is installed system-wide.
-# To update: change UV_VERSION and verify with: uv --version
+#
+# To update: change UV_VERSION, run a test release, verify with: uv --version.
+# TODO: add SHA256 verification alongside the next version bump. The checksum
+# file is published at the same URL with a .sha256 suffix, e.g.:
+#   https://github.com/astral-sh/uv/releases/download/X.Y.Z/uv-ARCH.tar.gz.sha256
 # ──────────────────────────────────────────────────────────────────────────────
 log "Installing uv ${UV_VERSION}"
 ARCH=$(dpkg --print-architecture)
@@ -165,6 +179,12 @@ install -m 0644 \
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 10. Hostname
+#
+# "partybox" is the appliance default — it determines the mDNS address
+# (partybox.local) and the router hostname. It is not a permanent value.
+# A future Portal rename feature should call: hostnamectl set-hostname <name>
+# and restart avahi-daemon. /etc/hostname is a standard file; nothing here
+# prevents that.
 # ──────────────────────────────────────────────────────────────────────────────
 log "Setting hostname to 'partybox'"
 echo "partybox" > /etc/hostname

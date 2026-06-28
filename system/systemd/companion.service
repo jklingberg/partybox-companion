@@ -27,8 +27,16 @@ StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=companion
 
-# StateDirectory creates /var/lib/companion owned by companion before ExecStart
+# StateDirectory creates /var/lib/companion owned by companion before ExecStart.
 StateDirectory=companion
+
+# RuntimeDirectory creates /run/companion (tmpfs-backed, owned by companion) and
+# sets XDG_RUNTIME_DIR=/run/companion. This is the correct location for PipeWire
+# sockets, WirePlumber state, and any future user-session runtime artefacts.
+# Having this in place means enabling PipeWire for the companion user requires no
+# change to this unit — see ADR-019 companion user section.
+RuntimeDirectory=companion
+RuntimeDirectoryMode=0700
 
 # Security hardening
 NoNewPrivileges=true

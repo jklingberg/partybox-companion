@@ -3,12 +3,24 @@
 This directory contains the release engineering infrastructure for producing a
 bootable Raspberry Pi OS appliance image.
 
+**The primary distribution artifact is the appliance image.** It is what end users
+flash to a microSD card. Everything here exists to produce that image reliably and
+reproducibly.
+
+## Installation architecture
+
+`install.sh` is the **single authoritative implementation** of how Companion is
+installed. All installation contexts use it — CI image build, manual Pi install, and
+any future contexts (test harnesses, alternative installers). See [ADR-019](../docs/adr/019-distribution-approach.md) for
+the full rationale.
+
 ## What lives here
 
 | Path | Purpose |
 |---|---|
-| `install.sh` | Appliance setup script — runs inside the Pi OS image during CI, or manually on a Pi |
+| `install.sh` | The installation implementation — run inside the Pi OS image during CI, or on a running Pi |
 | `config/wifi-powersave.conf` | NetworkManager drop-in that disables WiFi power saving |
+| `config/motd` | SSH login message template (version is substituted at install time) |
 
 The service unit, env template, and Avahi record live in [`system/`](../system/) because
 they are runtime configuration files — `install.sh` copies them into the image from there.
@@ -55,21 +67,24 @@ Steps (in order):
 
 ## Manual installation on a running Pi
 
-`install.sh` can also be run directly on a Raspberry Pi that already has Pi OS Lite installed.
-Run as root from the repository root:
+> **Audience:** contributors debugging install.sh, developers without SD card access,
+> or advanced users who prefer a direct install over flashing. The appliance image is
+> the primary and supported deployment path. If in doubt, flash the image.
+
+Run as root from the repository root on a Pi with Pi OS Lite already installed:
 
 ```bash
 sudo PARTYBOX_SRC_DIR=$(pwd) bash image/install.sh
 ```
 
-This is useful for testing the install script without a full image build, or for
-updating an existing Pi installation during development.
-
-After running the script, restart the service:
+After the script completes, start the service:
 
 ```bash
-sudo systemctl restart companion
+sudo systemctl start companion
 ```
+
+The manual install is equivalent to the image build — it runs the same `install.sh` with
+the same effect. Updates to the installation logic benefit both contexts automatically.
 
 ## Filesystem layout after installation
 

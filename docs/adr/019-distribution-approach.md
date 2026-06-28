@@ -78,6 +78,82 @@ Draft releases are reviewed and published manually. This provides a window for t
 
 ---
 
+## Installation architecture
+
+### One implementation, multiple invocations
+
+`image/install.sh` is the single authoritative implementation of how Companion is installed. It is not merely a CI script — it is the definition of what a correctly installed Companion appliance looks like.
+
+Every installation context must go through this script:
+
+| Context | How install.sh is invoked |
+|---|---|
+| CI image build | arm-runner-action copies the repository into the QEMU image and calls `bash image/install.sh` |
+| Manual install on a running Pi | `sudo PARTYBOX_SRC_DIR=$(pwd) bash image/install.sh` |
+| Automated hardware tests (future) | Script invoked over SSH or in a test harness |
+| Alternative installer (future) | Wrapper that prepares inputs and calls install.sh |
+
+This architecture prevents installation paths from diverging. If a bug is found in how the BlueZ configuration is applied, it is fixed once, in install.sh, and all invocation contexts benefit.
+
+**The corollary:** there should never be a second install script. When a new installation context is needed, the correct approach is to add an invocation mechanism for the existing script, not to write a parallel implementation.
+
+### Future modularisation
+
+The script is intentionally a single file today. It is readable and the coupling between sections is low. When it grows beyond ~400 lines, or when individual sections become reusable across contexts, it should be split into sourced modules:
+
+```
+image/
+  install.sh             ← entry point (sources the modules below)
+  modules/
+    packages.sh          ← system package installation
+    python.sh            ← uv + venv + Companion packages
+    bluetooth.sh         ← BlueZ configuration
+    networking.sh        ← WiFi power management, hostname
+    services.sh          ← systemd units, Avahi
+```
+
+Each module is still a plain bash script. The entry point sets shared variables, sources each module in order, and handles cleanup. The invocation interface (`PARTYBOX_SRC_DIR`, `COMPANION_VERSION`) remains unchanged.
+
+Do not split until it is necessary. Three similar sections are not a reason to abstract.
+
+### uv installation and reproducibility
+
+The current approach — downloading a pinned uv binary from GitHub releases — is deterministic on version but does not verify the binary's integrity. The full reproducibility path is:
+
+```
+download binary
+    ↓
+verify SHA256 against the published checksum file
+    ↓
+install
+```
+
+The GitHub Releases page for uv publishes `.sha256` files alongside each binary. When uv is next upgraded in install.sh, the checksum should be added at that point. This is not implemented today because it requires updating two values (version + checksum) in lockstep — the infrastructure is designed for it but the policy is deferred.
+
+---
+
+## Companion user
+
+The `companion` service account is created as a **system user with no home directory** (`useradd --system --no-create-home`). This is the standard pattern for Linux service accounts that do not require interactive login, per-user configuration, or shell access.
+
+**Why no home directory:**
+
+- The service unit includes `ProtectHome=true`, which makes `/home` inaccessible to the process. A home directory under `/home/companion` would be created by the image build but unreachable at runtime — an inconsistency.
+- The single mutable directory the service needs is `/var/lib/companion/`, which systemd creates and manages via `StateDirectory=companion` before `ExecStart`. This is the correct mechanism for persistent service state.
+- The service unit exposes a runtime directory via `RuntimeDirectory=companion`, which creates `/run/companion/` (writable, tmpfs-backed, owned by companion) and sets `XDG_RUNTIME_DIR=/run/companion`. This is the correct location for PipeWire sockets, WirePlumber state, and any other user-session runtime artefacts.
+
+**If future components require a home directory** (e.g. an interactive debug shell, or a tool that hard-codes `~/.config` paths and ignores `XDG_CONFIG_HOME`), the correct fix is to add `--home-dir /var/lib/companion --create-home` to the `useradd` call and remove `ProtectHome=true` from the service unit. This is a one-line change to install.sh. The decision is deferred until a concrete need arises.
+
+---
+
+## Hostname
+
+The appliance default hostname is `partybox`. This is set at image build time in `/etc/hostname` and `/etc/hosts` and determines the mDNS address (`partybox.local`).
+
+This is the **appliance default**, not a permanent value. The hostname is a standard Linux configuration file and can be changed at any time with `hostnamectl set-hostname <name>`. A future Portal feature allowing appliance rename should update `/etc/hostname` and restart `avahi-daemon`. This is straightforward — the current install does nothing that makes it difficult.
+
+---
+
 ## Filesystem layout (after install)
 
 The install script produces this layout, consistent with ADR-017:
@@ -101,21 +177,16 @@ The install script produces this layout, consistent with ADR-017:
 ## Consequences
 
 - **CI build time.** A release build takes ~40–60 minutes: base image download (~5 min), apt package installation (~10 min), uv/Python install (~10 min), image compression (~5 min). This is acceptable for a release pipeline; developers are not blocked by it.
-- **Base image version is not pinned in M13.1.** `raspios_lite_arm64:latest` is used. If a Pi OS release introduces a breaking change, the build could fail. M13.2 will pin to a specific dated release and verify the SHA256.
-- **uv version is not pinned in M13.1.** The install.sh fetches the latest uv. M13.2 will pin the uv version for full reproducibility.
 - **Port 80 is not used.** The Portal is served on port 8080 until M14 resolves the port 80 binding strategy.
 - **The developer workflow is unchanged.** `uv sync`, `uv run`, and the test suite work exactly as before. Image generation is purely a release engineering concern.
+- **uv SHA256 verification is not implemented.** The binary is pinned by version; integrity checking is deferred to a future update of the uv version.
 
 ---
 
-## M13.2 scope
+## Open items
 
-The following items are intentionally deferred to M13.2 (image polish):
-
-- Pin the base Pi OS image to a specific dated release + SHA256
-- Pin the uv version
-- Configure PipeWire for the `companion` user (system-session audio routing for librespot)
+- Configure PipeWire for the `companion` user via `loginctl enable-linger` or the ALSA backend alternative (audio routing for librespot)
 - Image size optimisation (remove unnecessary Pi OS packages)
-- Branding (custom boot splash, hostname confirmation message)
 - First-boot hostname uniqueness (if multiple appliances are on the same network)
-- Build time optimisation (apt cache layer, parallel compression)
+- Build time optimisation (apt cache layer)
+- uv SHA256 verification (add alongside next uv version bump)
