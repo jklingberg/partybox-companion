@@ -89,11 +89,11 @@ jobs:
             rm -f /tmp/partybox-smoke-test.sh
 
       # Rename to the versioned filename, then compress.
-      # xz -T0 uses all available cores; --best trades build time for image size.
+      # xz -T0 uses all available cores.
       - name: Compress image
         run: |
           mv "${{ steps.build.outputs.image }}" "${{ steps.meta.outputs.image }}"
-          xz -T0 --best "${{ steps.meta.outputs.image }}"
+          xz -T0 "${{ steps.meta.outputs.image }}"
 
       # Publish a draft release so the release manager can review before
       # making the image publicly visible.

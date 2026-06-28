@@ -64,7 +64,7 @@ partybox-companion-vX.Y.Z.img.xz
 
 This is the format expected by Raspberry Pi Imager. Users download the file, open Raspberry Pi Imager, select "Use Custom", write to their SD card, and boot. No additional software is required on their machine beyond Raspberry Pi Imager.
 
-The image is compressed with `xz --best` at build time. Typical size: ~2–3 GB uncompressed, ~600–900 MB compressed.
+The image is compressed with `xz` at build time. Typical size: ~2–3 GB uncompressed, ~600–900 MB compressed.
 
 ### Release workflow: tag → draft release
 
