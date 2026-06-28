@@ -78,6 +78,7 @@ def _unconnected_device() -> PartyBoxDevice:
     device._power = None
     device._device_info = None
     device._battery = None
+    device._volume = None
     return device
 
 

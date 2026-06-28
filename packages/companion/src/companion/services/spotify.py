@@ -16,11 +16,13 @@ from __future__ import annotations
 import asyncio
 import ctypes
 import logging
+import re
 import shutil
 import signal
 from dataclasses import dataclass
 
 from companion.config import SpotifySettings
+from companion.volume import VolumeState
 
 log = logging.getLogger(__name__)
 
@@ -32,6 +34,9 @@ _NOT_FOUND_RETRY = 60.0
 # vary between librespot releases. Best-effort is sufficient for a status display.
 _ACTIVE_PATTERNS = ("is now playing", "loading track", "preloading")
 _INACTIVE_PATTERNS = ("track paused", "track stopped", "end of track", "stopped")
+
+# Matches librespot lines like: mixer: set volume to 65535 (100%)
+_VOLUME_RE = re.compile(r"volume.*?\((\d+)%\)", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -57,8 +62,13 @@ class SpotifyService:
     While :meth:`run` is active, :attr:`status` reflects the current state.
     """
 
-    def __init__(self, settings: SpotifySettings) -> None:
+    def __init__(
+        self,
+        settings: SpotifySettings,
+        volume_state: VolumeState | None = None,
+    ) -> None:
         self._settings = settings
+        self._volume_state = volume_state
         self._running = False
         self._active = False
         self._proc: asyncio.subprocess.Process | None = None
@@ -172,8 +182,16 @@ class SpotifyService:
             line = line_bytes.decode(errors="replace").rstrip()
             log.debug("librespot: %s", line)
             self._infer_playback_state(line)
+            self._infer_volume(line)
 
         await proc.wait()
+
+    def _infer_volume(self, line: str) -> None:
+        if self._volume_state is None:
+            return
+        m = _VOLUME_RE.search(line)
+        if m is not None:
+            self._volume_state.update(int(m.group(1)))
 
     def _infer_playback_state(self, line: str) -> None:
         lower = line.lower()

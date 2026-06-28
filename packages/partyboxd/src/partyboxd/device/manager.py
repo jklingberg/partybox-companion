@@ -108,6 +108,39 @@ class DeviceManager:
             raise DeviceNotConnectedError() from exc
         self._bus.emit(PowerChangedEvent(state="on"))
 
+    async def get_volume(self) -> int | None:
+        """Return the current hardware volume (0-100), or None if not readable.
+
+        Raises:
+            DeviceNotConnectedError: if the speaker is not connected.
+        """
+        device = self._device
+        if device is None:
+            raise DeviceNotConnectedError()
+        try:
+            return await device.volume.get()
+        except (ConnectionLostError, NotConnectedError) as exc:
+            raise DeviceNotConnectedError() from exc
+        except NotImplementedError:
+            return None
+
+    async def set_volume(self, percent: int) -> None:
+        """Set the hardware volume (0-100).
+
+        Raises:
+            ValueError: if *percent* is outside [0, 100].
+            DeviceNotConnectedError: if the speaker is not connected or the
+                connection is lost during the command.
+            NotImplementedError: if the BLE volume opcode is not yet confirmed.
+        """
+        device = self._device
+        if device is None:
+            raise DeviceNotConnectedError()
+        try:
+            await device.volume.set(percent)
+        except (ConnectionLostError, NotConnectedError) as exc:
+            raise DeviceNotConnectedError() from exc
+
     async def power_off(self) -> None:
         """Send a power-off command to the connected speaker.
 

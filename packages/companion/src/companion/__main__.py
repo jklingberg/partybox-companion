@@ -32,6 +32,7 @@ from companion.services.audio import AudioService
 from companion.services.provisioning import ProvisioningService
 from companion.services.router import make_services_router
 from companion.services.spotify import SpotifyService
+from companion.volume import VolumeState
 from companion.webui.router import make_portal_router
 from companion.wifi.middleware import CaptivePortalMiddleware
 from companion.wifi.router import make_wifi_router
@@ -90,7 +91,8 @@ async def _run(
         bitrate=portal_cfg.spotify_bitrate,
         backend=companion_settings.spotify.backend,
     )
-    spotify = SpotifyService(effective_spotify)
+    volume_state = VolumeState()
+    spotify = SpotifyService(effective_spotify, volume_state=volume_state)
     audio = AudioService(companion_settings.audio)
     manager = DeviceManager(daemon_settings.speaker)
 
@@ -98,7 +100,9 @@ async def _run(
 
     app = create_daemon_app(manager, daemon_settings)
     app.include_router(make_portal_router(companion_settings, config_store))
-    app.include_router(make_services_router(spotify, config_store))
+    app.include_router(
+        make_services_router(spotify, config_store, manager=manager, volume_state=volume_state)
+    )
     app.include_router(make_wifi_router(provisioning))
     app.add_middleware(CaptivePortalMiddleware, provisioning=provisioning)
 
