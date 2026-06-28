@@ -33,7 +33,18 @@ export DEBIAN_FRONTEND=noninteractive
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 1. System packages
+#
+# All apt sources are registered before the single apt-get update so that
+# only one index fetch is required. A second apt-get update (to pick up a
+# newly added repo) can fail with ENOMEM in QEMU after the heavy package
+# install has consumed most available memory.
 # ──────────────────────────────────────────────────────────────────────────────
+log "Adding raspotify apt repository"
+curl -fsSL https://dtcooper.github.io/raspotify/key.asc \
+    | gpg --dearmor -o /usr/share/keyrings/raspotify.gpg
+echo "deb [signed-by=/usr/share/keyrings/raspotify.gpg] https://dtcooper.github.io/raspotify/ raspotify main" \
+    > /etc/apt/sources.list.d/raspotify.list
+
 log "Installing system packages"
 apt-get update -qq
 apt-get install -y --no-install-recommends \
@@ -53,13 +64,10 @@ apt-get install -y --no-install-recommends \
 #
 # Companion owns the librespot lifecycle (ADR-016). The raspotify.service unit
 # is disabled immediately — it is a conflicting orchestrator and must not run.
+# The raspotify repo was added to apt sources in section 1 (before apt-get
+# update), so no second update is needed here.
 # ──────────────────────────────────────────────────────────────────────────────
 log "Installing librespot"
-curl -fsSL https://dtcooper.github.io/raspotify/key.asc \
-    | gpg --dearmor -o /usr/share/keyrings/raspotify.gpg
-echo "deb [signed-by=/usr/share/keyrings/raspotify.gpg] https://dtcooper.github.io/raspotify/ raspotify main" \
-    > /etc/apt/sources.list.d/raspotify.list
-apt-get update -qq
 apt-get install -y raspotify
 systemctl disable raspotify 2>/dev/null || true
 
