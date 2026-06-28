@@ -578,6 +578,7 @@ version = "0.1.0.dev0"
 source = { editable = "packages/companion" }
 dependencies = [
     { name = "partyboxd" },
+    { name = "pydantic-settings" },
     { name = "rich" },
     { name = "typer" },
 ]
@@ -597,6 +598,7 @@ requires-dist = [
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=2.0" },
     { name = "partyboxd", editable = "packages/partyboxd" },
+    { name = "pydantic-settings", specifier = ">=2.2" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=1.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0" },
