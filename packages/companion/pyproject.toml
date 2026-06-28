@@ -28,6 +28,8 @@ classifiers = [
 dependencies = [
     # Daemon (workspace dependency)
     "partyboxd",
+    # Portal configuration
+    "pydantic-settings>=2.2",
     # CLI
     "typer>=0.12",
     "rich>=13.0",
@@ -63,6 +65,7 @@ packages = ["src/companion"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+asyncio_mode = "auto"
 addopts = ["--cov=companion"]
 
 [tool.mypy]
