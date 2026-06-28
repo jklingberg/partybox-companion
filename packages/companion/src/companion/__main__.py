@@ -25,6 +25,7 @@ from partyboxd.config import Settings as DaemonSettings
 from partyboxd.device import DeviceManager
 
 from companion.config import CompanionSettings
+from companion.services.audio import AudioService
 from companion.services.router import make_services_router
 from companion.services.spotify import SpotifyService
 from companion.webui.router import make_portal_router
@@ -64,6 +65,7 @@ async def _run(
 ) -> None:
     manager = DeviceManager(daemon_settings.speaker)
     spotify = SpotifyService(companion_settings.spotify)
+    audio = AudioService(companion_settings.audio)
 
     app = create_daemon_app(manager, daemon_settings)
     app.include_router(make_portal_router(companion_settings))
@@ -79,11 +81,15 @@ async def _run(
 
     manager_task = asyncio.create_task(manager.run(), name="device-manager")
     spotify_task = asyncio.create_task(spotify.run(), name="spotify-service")
+    audio_task = asyncio.create_task(audio.run(), name="audio-service")
     try:
         await server.serve()
     finally:
+        audio_task.cancel()
         spotify_task.cancel()
         manager_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await audio_task
         with suppress(asyncio.CancelledError):
             await spotify_task
         with suppress(asyncio.CancelledError):

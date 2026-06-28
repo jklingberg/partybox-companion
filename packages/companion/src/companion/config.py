@@ -7,6 +7,7 @@ Settings are read from environment variables (prefix ``COMPANION_``)::
     COMPANION_DATA_DIR=/var/lib/companion
     COMPANION_SPOTIFY__CONNECT_NAME=Living Room
     COMPANION_SPOTIFY__BITRATE=320
+    COMPANION_AUDIO__SINK_ADDRESS=50:1B:6A:14:FD:1D
 """
 
 from __future__ import annotations
@@ -16,6 +17,22 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class AudioSettings(BaseModel):
+    """Settings for Bluetooth A2DP audio sink management.
+
+    Override with environment variables::
+
+        COMPANION_AUDIO__SINK_ADDRESS="50:1B:6A:14:FD:1D"
+
+    Set ``sink_address`` to the Bluetooth Classic (public) MAC address of the
+    speaker. When set, the daemon establishes and maintains the A2DP connection
+    so librespot always has an audio sink. When unset, A2DP management is
+    disabled and the connection must be established externally.
+    """
+
+    sink_address: str | None = None
 
 
 class SpotifySettings(BaseModel):
@@ -53,4 +70,5 @@ class CompanionSettings(BaseSettings):
     host: str = "0.0.0.0"  # noqa: S104 — appliance must be reachable on the local network
     port: int = Field(default=8080, ge=1, le=65535)
     data_dir: Path = Field(default_factory=lambda: Path.home() / ".local" / "share" / "companion")
+    audio: AudioSettings = Field(default_factory=AudioSettings)
     spotify: SpotifySettings = Field(default_factory=SpotifySettings)
