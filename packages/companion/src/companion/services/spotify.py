@@ -14,8 +14,10 @@ whether playback is currently active.
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import logging
 import shutil
+import signal
 from dataclasses import dataclass
 
 from companion.config import SpotifySettings
@@ -102,6 +104,7 @@ class SpotifyService:
                 *cmd,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.PIPE,
+                preexec_fn=self._preexec,
             )
         except OSError as exc:
             log.error("failed to start librespot: %s (retrying in %.0fs)", exc, _RESTART_DELAY)
@@ -175,6 +178,17 @@ class SpotifyService:
             self._proc = None
             self._running = False
             self._active = False
+
+    @staticmethod
+    def _preexec() -> None:
+        # Ask the kernel to send SIGTERM to this child if the parent dies
+        # unexpectedly (SIGKILL, hard crash). Without this, librespot becomes
+        # an orphan and blocks Avahi re-registration on the next companion start.
+        # PR_SET_PDEATHSIG = 1; Linux-only, safe to ignore on other platforms.
+        try:
+            ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, int(signal.SIGTERM), 0, 0, 0)
+        except OSError:
+            pass
 
     def _build_command(self) -> list[str]:
         cmd = [
