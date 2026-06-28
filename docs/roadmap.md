@@ -16,7 +16,7 @@ Protocol work also confirmed: the excelpoint vendor protocol uses `AA [opcode] [
 
 One intentional gap: `device_info.model()` and `serial_number()` raise `NotImplementedError` — the model/serial string appears only in the power-off TLV state dump (tag `0x40`) and no direct request opcode was found despite systematic probing. Documented in `open-questions.md`; the xfail hardware test tracks it.
 
-**M6 — Daemon**, **M7 — REST API**, **M8 — Companion Portal MVP**, **M9 — Spotify Connect**, **M10 — Portal UX**, **M11 — Companion Portal: Complete**, and **M12 — Appliance Runtime** are complete. Work proceeds to **M13 — Distribution & Packaging**.
+**M6 — Daemon**, **M7 — REST API**, **M8 — Companion Portal MVP**, **M9 — Spotify Connect**, **M10 — Portal UX**, **M11 — Companion Portal: Complete**, and **M12 — Appliance Runtime** are complete. **M13.1 — Image Pipeline** is in progress.
 
 ---
 
@@ -267,17 +267,42 @@ Turn Companion from a development process into a proper Linux service. After M12
 
 **Package:** `companion`
 
-Ship a complete, self-contained appliance. After M13, installing Companion installs everything — librespot is an internal implementation detail, not a separate manual step.
+Ship a complete, self-contained appliance. After M13, a user can flash an SD card image and boot directly into Companion — no terminal, no manual software installation.
+
+M13 is split into two phases:
+
+---
+
+#### M13.1 — Image Pipeline *(in progress)*
+
+Establish the release engineering foundation: the pipeline that turns a git tag into a bootable appliance image.
+
+**Delivered:**
+- `image/install.sh` — appliance setup script; runs inside the Pi OS chroot during CI, or directly on a Pi for manual installs. Installs system packages, librespot (via raspotify), uv, the Companion Python venv, systemd service, Avahi, BlueZ config, and WiFi power management.
+- `image/config/` — host configuration files copied into the image by install.sh
+- `.github/workflows/release.yml` — release pipeline triggered by `v*.*.*` tags: runs CI, builds the image with arm-runner-action (QEMU ARM64), compresses with xz, and publishes a draft GitHub Release
+- `docs/adr/019-distribution-approach.md` — records the tool choices (arm-runner-action over pi-gen, raspotify as librespot source)
+
+**Architecture decisions:** See [ADR-019](adr/019-distribution-approach.md).
+
+**Done when:** `git tag v1.0.0 && git push origin v1.0.0` triggers a GitHub Actions run that produces `partybox-companion-v1.0.0.img.xz` as a draft release artifact. A Pi flashed with that image boots into a running Companion service accessible at `http://partybox.local:8080`.
+
+---
+
+#### M13.2 — Image Polish *(post-M13.1)*
+
+Harden and optimise the image once the pipeline is working end-to-end.
 
 **Goals:**
-- librespot bundled with Companion (implementation: Debian package dependency, embedded binary, or image pre-install — TBD at build time)
-- Defined installation layout (binary locations, config paths, data directories)
-- Package or image layer structure
-- Startup dependency verification: Companion logs clearly if a required component is missing rather than silently degrading
-- Versioning: `GET /api/v1/health` returns the correct Companion version; `version.json` in the debug bundle is accurate
+- Pin the Raspberry Pi OS Lite base image to a specific dated release + SHA256 (reproducible builds)
+- Pin the uv version in install.sh
+- Configure PipeWire for the `companion` user (system-session audio routing so librespot can reach the Bluetooth sink)
+- Image size optimisation (strip unnecessary Pi OS packages)
+- Build time optimisation (apt cache, parallel xz)
+- `GET /api/v1/health` returns the correct version from the git tag
 - Upgrade path documented
 
-**Done when:** A single installation step results in a complete appliance with all dependencies satisfied. Users do not install librespot separately. See [ADR-016](adr/016-companion-owns-spotify-lifecycle.md).
+**Done when:** The pipeline produces a minimal, reproducible image. Audio works end-to-end after flashing.
 
 ---
 

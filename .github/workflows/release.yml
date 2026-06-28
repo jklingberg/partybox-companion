@@ -1,0 +1,108 @@
+name: Release
+
+# Triggered by a version tag (e.g. v1.0.0 or v1.0.0-rc.1).
+# Runs the full CI suite, then builds a Raspberry Pi OS appliance image and
+# publishes a draft GitHub Release containing the compressed image.
+#
+# After the workflow completes, review and publish the draft release manually.
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────
+  # Gate: full CI suite must pass before the image build starts
+  # ─────────────────────────────────────────────────────────────────────────
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Image build: customize Raspberry Pi OS Lite ARM64 in QEMU via
+  # arm-runner-action, then compress and publish the result.
+  # ─────────────────────────────────────────────────────────────────────────
+  build-image:
+    name: Build Appliance Image
+    needs: ci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # required to create the GitHub Release
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Derive artifact names from the tag (e.g. v1.0.0)
+      - name: Resolve release metadata
+        id: meta
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          BASE="partybox-companion-${VERSION}"
+          echo "version=${VERSION}"          >> "$GITHUB_OUTPUT"
+          echo "image=${BASE}.img"           >> "$GITHUB_OUTPUT"
+          echo "artifact=${BASE}.img.xz"    >> "$GITHUB_OUTPUT"
+
+      # Boot Pi OS Lite ARM64 in QEMU, copy the repository in, run install.sh.
+      # image_additional_mb: extra space beyond the base image (~1.8 GB) for
+      # the Python venv, librespot, and apt packages.
+      - name: Build Pi OS image
+        uses: pguyot/arm-runner-action@v2
+        id: build
+        with:
+          base_image: raspios_lite_arm64:latest
+          image_additional_mb: 3000
+          copy_repository_path: /opt/partybox-src
+          commands: |
+            PARTYBOX_SRC_DIR=/opt/partybox-src \
+            COMPANION_VERSION=${{ steps.meta.outputs.version }} \
+              bash /opt/partybox-src/image/install.sh
+
+      # Rename to the versioned filename, then compress.
+      # xz -T0 uses all available cores; --best trades build time for image size.
+      - name: Compress image
+        run: |
+          mv "${{ steps.build.outputs.image }}" "${{ steps.meta.outputs.image }}"
+          xz -T0 --best "${{ steps.meta.outputs.image }}"
+
+      # Publish a draft release so the release manager can review before
+      # making the image publicly visible.
+      - name: Create draft GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "PartyBox Companion ${{ steps.meta.outputs.version }}"
+          draft: true
+          generate_release_notes: true
+          files: "${{ steps.meta.outputs.artifact }}"
+          body: |
+            ## Installation
+
+            1. Download `${{ steps.meta.outputs.artifact }}`
+            2. Open [Raspberry Pi Imager](https://www.raspberrypi.com/software/)
+            3. **Operating System** → Use Custom → select the downloaded file
+            4. **Storage** → select your SD card
+            5. Click the settings icon (gear) to configure:
+               - Set your WiFi network and password
+               - (Optional) enable SSH for initial debugging
+            6. Write the image, insert the card, and power on your Raspberry Pi
+            7. Open **http://partybox.local** in a browser on the same network
+
+            ### Requirements
+
+            - Raspberry Pi 4 or Pi 5 (ARM64)
+            - MicroSD card — 8 GB minimum, 16 GB recommended
+            - JBL PartyBox speaker
+            - 2.4 GHz or 5 GHz WiFi network
+
+            ### First boot
+
+            The first boot takes 30–60 seconds. The Portal is served on port 8080
+            until the port 80 binding mechanism is configured (M14). If
+            `http://partybox.local` does not resolve, try `http://partybox.local:8080`.
+
+            ---
+
+            See the [contributor guide](https://github.com/jklingberg/partybox-companion/blob/main/CONTRIBUTING.md)
+            and [image build documentation](https://github.com/jklingberg/partybox-companion/blob/main/image/README.md)
+            for details.
