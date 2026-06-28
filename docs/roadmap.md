@@ -16,7 +16,7 @@ Protocol work also confirmed: the excelpoint vendor protocol uses `AA [opcode] [
 
 One intentional gap: `device_info.model()` and `serial_number()` raise `NotImplementedError` — the model/serial string appears only in the power-off TLV state dump (tag `0x40`) and no direct request opcode was found despite systematic probing. Documented in `open-questions.md`; the xfail hardware test tracks it.
 
-**M6 — Daemon**, **M7 — REST API**, and **M8 — Companion Portal MVP** are complete. Work proceeds to **M9 — Spotify Connect**.
+**M6 — Daemon**, **M7 — REST API**, **M8 — Companion Portal MVP**, **M9 — Spotify Connect**, **M10 — Portal UX**, and **M11 — Companion Portal: Complete** are complete. Work proceeds to **v1.0**.
 
 ---
 
@@ -214,19 +214,25 @@ Deferred to post-v1.0 to focus on a reliable Spotify Connect experience first. S
 
 ---
 
-### M11 — Companion Portal: Complete
+### M11 — Companion Portal: Complete ✅
 
 **Package:** `companion`
 
 The Portal is completed with full Spotify configuration flows, diagnostics, and administration. This milestone closes the gap between the MVP introduced in M8 and the full appliance experience.
 
-**This milestone adds:**
-- Spotify Connect configuration in the Portal (device name, settings)
-- Full diagnostics: connection history, Bluetooth diagnostics
-- Log download and debug bundle generation
-- Full configuration management: network settings, update channel
+**Implemented:**
+- `ConfigStore` — shared config storage (`data_dir/config.json`) with extended `PortalConfig`: `device_name`, `spotify_connect_name`, `spotify_bitrate`; replaces inline read/write in both routers
+- **Spotify Connect configuration** — Settings panel now has a dedicated Spotify section: device name (what Spotify sees), and audio quality (96/160/320 kbps); changes persist across reboots
+- `SpotifyService.update_settings()` — updates running settings and terminates the current librespot process so it restarts with the new config; no daemon restart needed
+- `POST /api/v1/spotify/restart` — Portal calls this after saving config changes; reads current `PortalConfig` and applies it to the live service
+- `GET /api/v1/debug/bundle` — downloadable ZIP (generated in-process, no shell calls) containing `version.json`, `config.json`, `services.json`, `system.json`; linked from the System card
+- **Diagnostics section** — always-visible health summary below the dashboard grid: Speaker connection (with address), Spotify Connect status and device name, System version
+- **Settings panel** — redesigned with two sections (Appliance / Spotify Connect); saves all fields in a single `PUT /api/v1/config`, then calls `/spotify/restart` only when Spotify settings changed
+- **Boot from portal config** — `__main__.py` reads `PortalConfig` at startup so user-saved Spotify device name and bitrate survive appliance reboots, overriding env-var defaults
+- Appliance name and Spotify device name are now separate, clearly labelled fields; the "rename" warning on the Spotify card points to the Settings section
+- Restart button on Spotify card (visible when service is running)
 
-**Done when:** All Portal sections are complete; a user can configure Spotify Connect from the Portal; log download works.
+**Done when:** A user can configure Spotify Connect device name and audio quality from the Portal; settings survive reboots; a debug bundle can be downloaded for support; all Portal sections show live status.
 
 ---
 
@@ -276,3 +282,4 @@ The implementation (reverse proxy vs direct binding) is intentionally deferred u
 | Native HA custom component | HA works fine as an HTTP client. A custom component is an optimisation, not a requirement. |
 | Multi-device management | Auracast is hardware-level. One daemon, one master device. |
 | Hotspot / captive-portal WiFi onboarding | The Pi-creates-its-own-network first-boot pattern. Post-v1.0; SD card WiFi config is sufficient for v1.0. |
+| Bluetooth adapter reset from the Portal | When the Pi's BT controller wedges (scanner works, GATT connections fail), `systemctl restart bluetooth` recovers it. A "Reconnect" action on the Speaker card could trigger this via a new `POST /api/v1/bluetooth/reset` endpoint. Requires a `sudoers` entry on the Pi for that specific `systemctl` call. Fits under M11 Bluetooth diagnostics. Post-v1.0. |

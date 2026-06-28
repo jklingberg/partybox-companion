@@ -62,6 +62,11 @@ class SpotifyService:
         self._proc: asyncio.subprocess.Process | None = None
 
     @property
+    def settings(self) -> SpotifySettings:
+        """Current effective settings — may change after update_settings()."""
+        return self._settings
+
+    @property
     def status(self) -> SpotifyStatus:
         """Current point-in-time service state. Never blocks."""
         return SpotifyStatus(
@@ -69,6 +74,25 @@ class SpotifyService:
             active=self._active,
             device_name=self._settings.connect_name,
         )
+
+    def update_settings(self, settings: SpotifySettings) -> None:
+        """Apply new settings and restart librespot.
+
+        The current subprocess (if any) is terminated; the run() loop restarts
+        it automatically with the new settings.
+        """
+        self._settings = settings
+        log.info(
+            "Spotify settings updated (device_name=%r, bitrate=%d) — restarting",
+            settings.connect_name,
+            settings.bitrate,
+        )
+        proc = self._proc
+        if proc is not None:
+            try:
+                proc.terminate()
+            except ProcessLookupError:
+                pass
 
     async def run(self) -> None:
         """Start librespot and restart after unexpected exits. Runs until cancelled."""
