@@ -546,7 +546,6 @@ wheels = [
 
 [[package]]
 name = "partybox"
-version = "0.1.0.dev0"
 source = { editable = "packages/partybox" }
 dependencies = [
     { name = "bleak" },
@@ -574,7 +573,6 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "partybox-companion"
-version = "0.1.0.dev0"
 source = { editable = "packages/companion" }
 dependencies = [
     { name = "partyboxd" },
@@ -610,7 +608,6 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "partyboxd"
-version = "0.1.0.dev0"
 source = { editable = "packages/partyboxd" }
 dependencies = [
     { name = "fastapi" },

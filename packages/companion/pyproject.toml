@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
 name = "partybox-companion"
-version = "0.1.0-dev"
+dynamic = ["version"]
 description = "Turn any PartyBox into a true WiFi speaker — full appliance package"
 readme = "README.md"
 license = { file = "../../LICENSE" }
@@ -59,6 +59,10 @@ Homepage = "https://github.com/jklingberg/partybox-companion"
 Repository = "https://github.com/jklingberg/partybox-companion"
 Issues = "https://github.com/jklingberg/partybox-companion/issues"
 Changelog = "https://github.com/jklingberg/partybox-companion/blob/main/CHANGELOG.md"
+
+[tool.hatch.version]
+source = "vcs"
+fallback-version = "0.0.0.dev0"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/companion"]

@@ -16,7 +16,7 @@ Protocol work also confirmed: the excelpoint vendor protocol uses `AA [opcode] [
 
 One intentional gap: `device_info.model()` and `serial_number()` raise `NotImplementedError` — the model/serial string appears only in the power-off TLV state dump (tag `0x40`) and no direct request opcode was found despite systematic probing. Documented in `open-questions.md`; the xfail hardware test tracks it.
 
-**M6 — Daemon**, **M7 — REST API**, **M8 — Companion Portal MVP**, **M9 — Spotify Connect**, **M10 — Portal UX**, **M11 — Companion Portal: Complete**, and **M12 — Appliance Runtime** are complete. Work proceeds to **M13 — Distribution & Packaging**.
+**M6 — Daemon**, **M7 — REST API**, **M8 — Companion Portal MVP**, **M9 — Spotify Connect**, **M10 — Portal UX**, **M11 — Companion Portal: Complete**, **M12 — Appliance Runtime**, and **M13 — Distribution & Packaging** are complete.
 
 ---
 
@@ -173,7 +173,7 @@ The Portal is the primary onboarding surface. A user who has just booted the dev
 
 **Design:** dark appliance theme, system font, zero external dependencies, responsive (works on mobile), ARIA landmarks and live regions for accessibility.
 
-**Network prerequisite:** The Portal assumes the Pi already has network connectivity. For v1.0, WiFi is configured by writing credentials to the SD card before first boot — Raspberry Pi OS supports `wpa_supplicant.conf` on the boot partition, requiring only a file editor and no terminal on the Pi itself. A hotspot/captive-portal mode is post-v1.0.
+**Network prerequisite:** The Portal assumes the Pi already has network connectivity. For M8, WiFi is configured by writing credentials to the SD card before first boot. Zero-touch WiFi provisioning (captive AP + portal) lands in M14.
 
 The Companion Portal does **not** include media playback controls.
 
@@ -259,51 +259,126 @@ Turn Companion from a development process into a proper Linux service. After M12
 
 **Done when:** A Raspberry Pi boots into a fully running Companion appliance without any manual intervention. `systemctl status companion` shows `active (running)`.
 
-> **Note on hardware validation:** The service unit is complete and architecturally sound. End-to-end boot validation (`systemctl enable --now partybox-companion` → Portal accessible) will occur as part of M16 (Release Candidate) on a clean SD card flash. The unit cannot be exercised in the devcontainer (no systemd).
+> **Note on hardware validation:** The service unit is complete and architecturally sound. End-to-end boot validation (`systemctl enable --now partybox-companion` → Portal accessible) will occur as part of M17 (Release Candidate) on a clean SD card flash. The unit cannot be exercised in the devcontainer (no systemd).
 
 ---
 
-### M13 — Distribution & Packaging
+### M13 — Distribution & Packaging ✅
 
 **Package:** `companion`
 
-Ship a complete, self-contained appliance. After M13, installing Companion installs everything — librespot is an internal implementation detail, not a separate manual step.
+Ship a complete, self-contained appliance. After M13, a user can flash an SD card image and boot directly into Companion — no terminal, no manual software installation.
 
-**Goals:**
-- librespot bundled with Companion (implementation: Debian package dependency, embedded binary, or image pre-install — TBD at build time)
-- Defined installation layout (binary locations, config paths, data directories)
-- Package or image layer structure
-- Startup dependency verification: Companion logs clearly if a required component is missing rather than silently degrading
-- Versioning: `GET /api/v1/health` returns the correct Companion version; `version.json` in the debug bundle is accurate
-- Upgrade path documented
-
-**Done when:** A single installation step results in a complete appliance with all dependencies satisfied. Users do not install librespot separately. See [ADR-016](adr/016-companion-owns-spotify-lifecycle.md).
+M13 is split into three phases:
 
 ---
 
-### M14 — First Boot Experience
+#### M13.1 — Image Pipeline ✅
+
+Establish the release engineering foundation: the pipeline that turns a git tag into a bootable appliance image.
+
+**Delivered:**
+- `image/install.sh` — appliance setup script; runs inside the Pi OS chroot during CI, or directly on a Pi for manual installs. Installs system packages, librespot (via raspotify), uv, the Companion Python venv, systemd service, Avahi, BlueZ config, and WiFi power management.
+- `image/config/` — host configuration files copied into the image by install.sh
+- `.github/workflows/release.yml` — release pipeline triggered by `v*.*.*` tags: runs CI, builds the image with arm-runner-action (QEMU ARM64), compresses with xz, and publishes a draft GitHub Release
+- `docs/adr/019-distribution-approach.md` — records the tool choices (arm-runner-action over pi-gen, raspotify as librespot source)
+
+**Architecture decisions:** See [ADR-019](adr/019-distribution-approach.md).
+
+**Done when:** `git tag v1.0.0 && git push origin v1.0.0` triggers a GitHub Actions run that produces `partybox-companion-v1.0.0.img.xz` as a draft release artifact. A Pi flashed with that image boots into a running Companion service accessible at `http://partybox.local:8080`.
+
+---
+
+#### M13.2 — Image Polish *(complete)*
+
+**Delivered:**
+- `image/config/base-image.env` — Pi OS base image pinned to a specific dated release; upgrades are a single-file diff
+- `image/smoke-test.sh` — release gate: starts Companion inside the QEMU chroot, calls `GET /api/v1/health`, and fails the workflow if the appliance does not respond
+- Version flow: `git tag → hatch-vcs → importlib.metadata → REST API / Portal / MOTD` (see ADR-019 Version management section)
+- uv version pinning documented with release engineering rationale
+- Image cleanup: uv/pip caches, build logs, bash history removed before publishing
+
+---
+
+#### M13.3 — Appliance Hardening *(complete)*
+
+Harden the appliance for unattended operation.
+
+**Delivered:**
+- **SD card longevity:** swap removed (`dphys-swapfile` purged), `/tmp` mounted as tmpfs (64 MB cap), journald set to volatile storage (no SD card writes)
+- **Service pruning:** `apt-daily.timer`, `apt-daily-upgrade.timer`, `unattended-upgrades`, `man-db.timer`, `triggerhappy`, `ModemManager` disabled — each with documented rationale
+- **Headless boot:** `gpu_mem=16` frees ~60 MB GPU-reserved RAM; firmware and Plymouth splash screens removed; `quiet` retained on serial UART
+- **ADR-020** — records all M13.3 decisions, including deferred items (hardware watchdog, `noatime`, Bluetooth plugin restrictions) and the intentionally open audio architecture question
+
+**Done when:** An image built from a release tag runs unattended without unnecessary background activity, SD card wear, or splash screens. Future hardening opportunities are documented with clear validation requirements.
+
+---
+
+### M14 — Network Provisioning
 
 **Package:** `companion`
 
-Close the gap between development environment and polished appliance. After M14, a non-technical user can flash an SD card, plug in the Pi, and reach the Portal from a browser — no terminal, no SSH, no configuration files beyond WiFi credentials.
+Remove the last piece of Raspberry Pi knowledge from the onboarding experience. After M14, a brand-new appliance can join a WiFi network without the user editing any files, connecting a keyboard, or opening a terminal.
+
+The provisioning flow reuses the existing Portal and REST API, served during AP mode before the appliance has joined a network.
+
+**User flow:**
+
+1. Flash SD card → insert → power on
+2. If valid WiFi credentials exist: connect normally, no provisioning mode
+3. Otherwise: create a temporary access point — `PartyBox Companion Setup`
+4. User connects with a phone or laptop
+5. The OS captive portal detection triggers automatically and opens a browser
+6. The Portal's provisioning screen: scan for networks, select one, enter password
+7. Appliance joins the selected network and tears down the temporary access point
+8. Normal operation resumes — Portal accessible at `http://partybox.local`
+
+**Architecture:**
+
+- **AP mode via NetworkManager** — NM creates and manages the temporary access point natively (`802-11-wireless.mode ap`); no separate hostapd required
+- **Wildcard DNS via dnsmasq** — all DNS queries from AP clients resolve to the appliance's own IP, causing iOS and Android to trigger their captive network popups automatically; HTTP redirect alone is insufficient for modern OS probing
+- **HTTP only during provisioning** — iOS Captive Network Assistant does not render HTTPS pages; the Portal must be reachable over plain HTTP on port 80 during AP mode (dependency on M15)
+- **Hold AP until STA confirmed** — the access point is not torn down until NetworkManager confirms the new connection reached `ACTIVATED` state; this prevents the failure mode where the AP disappears before the Pi has successfully joined the network
+- **Reuse Portal and REST API** — provisioning is a new state in the existing Portal, not a separate web server; new `/api/v1/wifi/*` endpoints expose NM state and credential submission to the front end
+
+**New API surface:**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/wifi/status` | Current WiFi state: `unprovisioned`, `ap_active`, `connecting`, `connected` |
+| `GET` | `/api/v1/wifi/networks` | Scan result: available SSIDs with signal strength |
+| `POST` | `/api/v1/wifi/connect` | Submit SSID + password; instructs NM to activate the connection |
+
+**State detection:** On startup, if NetworkManager reports no active WiFi STA connection, the appliance enters provisioning mode. Once a connection is saved and NM confirms activation, normal startup continues.
+
+**Done when:** A Pi flashed with the appliance image, with no WiFi credentials present, boots, creates a `PartyBox Companion Setup` access point, and a user can connect from a phone, open a browser, select their home network, enter a password, and have the Pi join that network and resume normal operation — no keyboard, monitor, terminal, or file editor required.
+
+---
+
+### M15 — First Boot Experience
+
+**Package:** `companion`
+
+Close the gap between development environment and polished appliance. After M15, a user who has provisioned WiFi (via M14) can reach the Portal from a browser with no manual configuration.
+
+M14 gets the appliance onto the network. M15 polishes how it presents itself once there.
 
 **Goals:**
 - Production networking: Portal served on port 80 (implementation: direct bind or reverse proxy — TBD)
 - mDNS hostname: `http://partybox.local` resolves without any router configuration
-- Appliance identity: Pi hostname set to `partybox` by default
-- WiFi pre-configuration: document the SD card `wpa_supplicant.conf` approach as the v1.0 WiFi onboarding path
+- Appliance identity: Pi hostname set to `partybox` by default (hostname and `/etc/hosts` set in M13.1; this milestone validates it end-to-end)
 - Sensible defaults: all settings work out of the box without user intervention
 - Portal reachable at `http://partybox` once the router resolves the hostname
 
-**Done when:** The flash-to-stream path requires no terminal access. A user can follow a written guide using only a file editor (to write WiFi credentials) and a browser.
+**Done when:** After WiFi provisioning, the Portal is reachable at `http://partybox.local` with no terminal access required.
 
 ---
 
-### M15 — Reliability
+### M16 — Reliability
 
 **Packages:** `companion`, `partyboxd`
 
-Build confidence in the appliance's ability to run unattended. M15 introduces no new features — it ensures every existing feature survives real-world conditions without user intervention.
+Build confidence in the appliance's ability to run unattended. M16 introduces no new features — it ensures every existing feature survives real-world conditions without user intervention.
 
 **Goals:**
 - **Reboot recovery:** after a Pi reboot, Companion reconnects to the speaker and librespot re-registers with Spotify automatically
@@ -316,7 +391,7 @@ Build confidence in the appliance's ability to run unattended. M15 introduces no
 
 ---
 
-### M16 — Release Candidate
+### M17 — Release Candidate
 
 No significant new functionality. This milestone verifies that all the pieces work together and that the project is ready to ship.
 
@@ -328,13 +403,13 @@ No significant new functionality. This milestone verifies that all the pieces wo
 - Version bumped to `1.0.0` in all packages
 - Bug fixing only — no scope additions
 
-**Done when:** Every M12–M15 milestone is complete. A clean flash-to-stream walkthrough succeeds without workarounds. The project is ready to tag.
+**Done when:** Every M12–M16 milestone is complete. A clean flash-to-stream walkthrough succeeds without workarounds. The project is ready to tag.
 
 ---
 
 ### v1.0
 
-Not a milestone. The point at which M12–M16 are complete and the release candidate is accepted.
+Not a milestone. The point at which M12–M17 are complete and the release candidate is accepted.
 
 ```
 git tag v1.0.0
@@ -362,5 +437,4 @@ git tag v1.0.0
 | MQTT | REST + WebSocket covers all use cases. MQTT adds broker dependency for no v1.0 gain. |
 | Native HA custom component | HA works fine as an HTTP client. A custom component is an optimisation, not a requirement. |
 | Multi-device management | Auracast is hardware-level. One daemon, one master device. |
-| Hotspot / captive-portal WiFi onboarding | The Pi-creates-its-own-network first-boot pattern. Post-v1.0; SD card WiFi config is sufficient for v1.0. |
-| Bluetooth adapter reset from the Portal | Daemon-level Bluetooth recovery (handling a wedged controller without user intervention) is addressed in M15. A Portal-triggered "Reconnect" button backed by `POST /api/v1/bluetooth/reset` (requiring a `sudoers` entry for `systemctl restart bluetooth`) remains post-v1.0. |
+| Bluetooth adapter reset from the Portal | Daemon-level Bluetooth recovery (handling a wedged controller without user intervention) is addressed in M16. A Portal-triggered "Reconnect" button backed by `POST /api/v1/bluetooth/reset` (requiring a `sudoers` entry for `systemctl restart bluetooth`) remains post-v1.0. |

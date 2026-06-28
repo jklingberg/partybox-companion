@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
 name = "partyboxd"
-version = "0.1.0-dev"
+dynamic = ["version"]
 description = "Headless daemon exposing a stable HTTP API for PartyBox speakers"
 readme = "README.md"
 license = { file = "../../LICENSE" }
@@ -58,6 +58,10 @@ Homepage = "https://github.com/jklingberg/partybox-companion"
 Repository = "https://github.com/jklingberg/partybox-companion"
 Issues = "https://github.com/jklingberg/partybox-companion/issues"
 Changelog = "https://github.com/jklingberg/partybox-companion/blob/main/CHANGELOG.md"
+
+[tool.hatch.version]
+source = "vcs"
+fallback-version = "0.0.0.dev0"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/partyboxd"]
