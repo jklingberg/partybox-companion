@@ -16,7 +16,7 @@ Protocol work also confirmed: the excelpoint vendor protocol uses `AA [opcode] [
 
 One intentional gap: `device_info.model()` and `serial_number()` raise `NotImplementedError` — the model/serial string appears only in the power-off TLV state dump (tag `0x40`) and no direct request opcode was found despite systematic probing. Documented in `open-questions.md`; the xfail hardware test tracks it.
 
-**M6 — Daemon**, **M7 — REST API**, **M8 — Companion Portal MVP**, **M9 — Spotify Connect**, **M10 — Portal UX**, **M11 — Companion Portal: Complete**, and **M12 — Appliance Runtime** are complete. **M13.1 — Image Pipeline** is in progress.
+**M6 — Daemon**, **M7 — REST API**, **M8 — Companion Portal MVP**, **M9 — Spotify Connect**, **M10 — Portal UX**, **M11 — Companion Portal: Complete**, **M12 — Appliance Runtime**, and **M13 — Distribution & Packaging** are complete.
 
 ---
 
@@ -263,17 +263,17 @@ Turn Companion from a development process into a proper Linux service. After M12
 
 ---
 
-### M13 — Distribution & Packaging
+### M13 — Distribution & Packaging ✅
 
 **Package:** `companion`
 
 Ship a complete, self-contained appliance. After M13, a user can flash an SD card image and boot directly into Companion — no terminal, no manual software installation.
 
-M13 is split into two phases:
+M13 is split into three phases:
 
 ---
 
-#### M13.1 — Image Pipeline *(in progress)*
+#### M13.1 — Image Pipeline ✅
 
 Establish the release engineering foundation: the pipeline that turns a git tag into a bootable appliance image.
 
