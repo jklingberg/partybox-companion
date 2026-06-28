@@ -16,7 +16,7 @@ Protocol work also confirmed: the excelpoint vendor protocol uses `AA [opcode] [
 
 One intentional gap: `device_info.model()` and `serial_number()` raise `NotImplementedError` — the model/serial string appears only in the power-off TLV state dump (tag `0x40`) and no direct request opcode was found despite systematic probing. Documented in `open-questions.md`; the xfail hardware test tracks it.
 
-**M6 — Daemon**, **M7 — REST API**, and **M8 — Companion Portal MVP** are complete. Work proceeds to **M9 — CLI**.
+**M6 — Daemon**, **M7 — REST API**, and **M8 — Companion Portal MVP** are complete. Work proceeds to **M9 — Spotify Connect**.
 
 ---
 
@@ -181,57 +181,52 @@ The Companion Portal does **not** include media playback controls.
 
 ---
 
-### M9 — CLI
+### M9 — Spotify Connect ✅
 
 **Package:** `companion`
 
-The `partybox` CLI binary. A command-line interface for users who prefer the terminal over the Portal, and a natural integration surface for scripting and automation.
+librespot subprocess manager. Start on boot, restart on crash, clean shutdown. The Portal's Spotify section (introduced in M8 as a placeholder) becomes a live status card.
 
-```
-partybox status           # speaker state: connection, firmware, battery
-partybox power on/off     # send power commands
-partybox watch            # stream live device events (WebSocket)
-```
+**Implemented:**
+- `SpotifySettings` — `COMPANION_SPOTIFY__*` env vars (`connect_name`, `bitrate`, `backend`); sensible defaults
+- `SpotifyService` — manages the librespot subprocess: starts it, monitors stderr for playback state, restarts after unexpected exits, terminates cleanly on shutdown; degrades gracefully when librespot is not installed
+- `GET /api/v1/spotify` — public endpoint returning `{running, active, device_name}`; no auth required (status only, no sensitive data)
+- Appliance entry point updated to run `SpotifyService` as a task alongside `DeviceManager`
+- Portal Spotify card now shows service status (running/stopped), device name, and playback state; polls every 15 s; works in `?mock` mode
 
-All commands operate against the running daemon via the M7 REST API.
+**Design intent:** librespot is an implementation detail. The product is "this Pi appears as a Spotify Connect speaker." Playback control (volume, skip, queue) remains in Spotify clients. The Portal reports appliance state only. No generic service-manager abstractions were introduced.
 
-**Done when:** CLI commands work end-to-end against a running daemon; `partybox watch` streams events until interrupted.
+**Distribution note:** During development the Raspotify Debian package is used as a convenient source of a prebuilt `librespot` binary. The `raspotify.service` systemd unit must be disabled — Companion is the sole orchestrator; a second service manager must not conflict. Before v1.0, librespot must ship as part of Companion so no manual installation step is required. See [ADR-016](adr/016-companion-owns-spotify-lifecycle.md).
 
----
-
-### M10 — Spotify Connect
-
-**Package:** `companion`
-
-librespot subprocess manager. Start on boot, restart on crash, stop on Bluetooth disconnect. The Portal's Spotify section (introduced in M8 as a placeholder) becomes active.
-
-**Done when:** A Spotify client sees the PartyBox as a Connect device; playback starts and stops correctly; the daemon event stream reflects playback state; Portal shows Spotify as active.
+**Done when:** A Spotify client sees the PartyBox as a Connect device; librespot is automatically managed by the daemon; unexpected exits are recovered; Portal correctly reflects service state.
 
 ---
 
-### M11 — AirPlay
+### M10 — AirPlay *(post-v1.0)*
 
 **Package:** `companion`
 
 shairport-sync subprocess manager. The Portal's AirPlay section (introduced in M8 as a placeholder) becomes active.
 
+Deferred to post-v1.0 to focus on a reliable Spotify Connect experience first. See the "Deliberately deferred" section.
+
 **Done when:** An Apple device sees the PartyBox as an AirPlay receiver; Portal shows AirPlay as active.
 
 ---
 
-### M12 — Companion Portal: Complete
+### M11 — Companion Portal: Complete
 
 **Package:** `companion`
 
-The Portal is completed with full Spotify/AirPlay configuration flows, diagnostics, and administration. This milestone closes the gap between the MVP introduced in M8 and the full appliance experience.
+The Portal is completed with full Spotify configuration flows, diagnostics, and administration. This milestone closes the gap between the MVP introduced in M8 and the full appliance experience.
 
 **This milestone adds:**
-- Spotify Connect and AirPlay configuration in the Portal (device name, settings)
+- Spotify Connect configuration in the Portal (device name, settings)
 - Full diagnostics: connection history, Bluetooth diagnostics
 - Log download and debug bundle generation
 - Full configuration management: network settings, update channel
 
-**Done when:** All Portal sections are complete; a user can configure Spotify Connect and AirPlay from the Portal; log download works.
+**Done when:** All Portal sections are complete; a user can configure Spotify Connect from the Portal; log download works.
 
 ---
 
@@ -242,8 +237,26 @@ The Portal is completed with full Spotify/AirPlay configuration flows, diagnosti
 - A non-technical user can flash the image and boot the device.
 - Complete the initial setup in the Companion Portal without opening a terminal.
 - Start streaming via Spotify Connect.
-- Start streaming via AirPlay.
 - Recover automatically after a reboot.
+- librespot ships as part of the Companion image — no separate installation step. Users install Companion; librespot is an internal dependency. (See [ADR-016](adr/016-companion-owns-spotify-lifecycle.md).)
+- "PartyBox" only appears as a Spotify Connect device when the speaker is reachable. librespot starts (and registers with Zeroconf) only after A2DP is confirmed available; it stops (deregistering) if A2DP has been unavailable long enough to indicate the speaker is off or out of range. Selecting a Connect device that produces no audio is a confusing user experience.
+
+**Known limitations at v1.0:**
+
+- **BLE exclusive connection.** The daemon holds a persistent BLE GATT connection to the speaker. Because BLE GATT allows only one central at a time, third-party BLE clients — including the JBL app — cannot connect while the daemon is running. Workaround: stop `partybox-companion`, use the JBL app, then restart. An opportunistic connection model (connect to send a command, disconnect when idle) would allow coexistence but adds reconnect latency and state-management complexity; deferred to post-v1.0.
+- **WiFi/Bluetooth coexistence on Pi 3 B+.** The BCM43438 chip shares the 2.4 GHz radio between WiFi and Bluetooth. During active A2DP audio streaming, Bluetooth timeslots can starve WiFi, causing mDNS (`partybox.local`) to become unreliable. Hostname resolution via the router's DNS (`partybox`) and direct IP remain unaffected. Mitigation applied: WiFi power management disabled (`wifi.powersave = 2`). Full resolution requires Ethernet or a dedicated USB WiFi adapter.
+
+**Production networking**
+
+During development, `partyboxd` listens on port 8080 for convenience.
+
+The appliance image will expose the Portal on the standard HTTP port (80), allowing users to access the appliance via:
+
+```
+http://partybox
+```
+
+The implementation (reverse proxy vs direct binding) is intentionally deferred until the appliance image is assembled.
 
 ---
 
@@ -251,6 +264,9 @@ The Portal is completed with full Spotify/AirPlay configuration flows, diagnosti
 
 | Feature | Reason |
 |---|---|
+| AirPlay (M10) | Deferred to post-v1.0 to focus on a reliable Spotify Connect experience. shairport-sync subprocess manager follows the same pattern as librespot/SpotifyService. |
+| CLI (`partybox` command) | The Companion Portal is the primary user interface; the REST API is the primary integration surface; the SDK and examples already provide an excellent developer experience. A CLI remains valuable for debugging and automation, but it is no longer required to achieve the project's primary vision. Post-v1.0. |
+| Third-party BLE client coexistence | An opportunistic BLE connection model (connect to send, disconnect when idle) would allow the JBL app and other BLE centrals to connect to the speaker while Companion is running. Deferred because it adds reconnect latency (~1–2 s per command), complicates connection-state management in `DeviceManager`, and is not required for the core appliance use case. The persistent connection is a conscious v1.0 trade-off. Post-v1.0. |
 | Volume control via SDK | librespot and shairport-sync handle volume within their protocols. Direct hardware volume adds no value for the WiFi speaker use case in v1.0. |
 | Input source selection | Useful, but not needed to stream Spotify or AirPlay. The companion can set the correct input when a service starts. Deferred until the mechanism is confirmed via protocol analysis. |
 | Lighting control | Hardware-unique but not core to the WiFi speaker goal. Post-v1.0. |

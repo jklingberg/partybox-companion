@@ -171,6 +171,15 @@
     /* ── Placeholder card content ─────────────────────────────────── */
     .placeholder-text { color: var(--text-2); font-size: 13px; line-height: 1.6; margin-top: 4px; }
 
+    /* ── Active pill ─────────────────────────────────────────────── */
+    .pill-active {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 3px 9px; border-radius: 20px;
+      background: rgba(63,185,80,.14);
+      color: var(--ok);
+      font-size: 11px; font-weight: 600;
+    }
+
     /* ── Disconnected notice ─────────────────────────────────────── */
     .notice { color: var(--text-2); font-size: 13px; margin-top: 14px; }
 
@@ -388,16 +397,25 @@
       <button class="btn btn-ghost" onclick="openSettings()">Settings</button>
     </div>
 
-    <!-- Spotify placeholder -->
-    <div class="card card-dim">
+    <!-- Spotify Connect -->
+    <div class="card" id="spotify-card">
       <div class="card-head">
         <h2>Spotify Connect</h2>
-        <span class="badge badge-soon">Coming soon</span>
+        <div class="status-row">
+          <span class="dot" id="svc-dot" aria-hidden="true"></span>
+          <span id="svc-label" aria-live="polite">—</span>
+        </div>
       </div>
-      <p class="placeholder-text">
-        Stream directly from Spotify to your speaker without your phone acting as a bridge.
-        Arrives in the next milestone.
-      </p>
+      <div class="details" id="svc-details">
+        <div class="drow">
+          <span class="k">Device name</span>
+          <span class="v" id="svc-name">—</span>
+        </div>
+        <div class="drow" id="svc-active-row" style="display:none">
+          <span class="k">Playback</span>
+          <span class="v"><span class="pill-active">&#9654; Active</span></span>
+        </div>
+      </div>
     </div>
 
     <!-- AirPlay placeholder -->
@@ -457,18 +475,21 @@
 const S = {
   health:   null,   // {status, version, speaker_connected}
   speaker:  null,   // {connected, address, firmware, battery}
+  spotify:  null,   // {running, active, device_name}
   config:   {device_name:'PartyBox', setup_complete:false},
   apiKey:   localStorage.getItem('_pb_key') || null,
   ws:       null,
   _toast:   null,
+  _spotifyPoll: null,
 };
 
 const MOCK = location.search.includes('mock');
 
 // Mock data for UI development / demos without a running daemon.
-const MOCK_HEALTH  = {status:'ok', version:'0.1.0-dev', speaker_connected:true};
-const MOCK_SPEAKER = {connected:true, address:'AA:BB:CC:DD:EE:FF', firmware:'26.2.10', battery:null};
-const MOCK_CONFIG  = {device_name:'Living Room', setup_complete:true};
+const MOCK_HEALTH   = {status:'ok', version:'0.1.0-dev', speaker_connected:true};
+const MOCK_SPEAKER  = {connected:true, address:'AA:BB:CC:DD:EE:FF', firmware:'26.2.10', battery:null};
+const MOCK_CONFIG   = {device_name:'Living Room', setup_complete:true};
+const MOCK_SPOTIFY  = {running:true, active:false, device_name:'Living Room'};
 
 // ── Boot ───────────────────────────────────────────────────────────────
 async function boot() {
@@ -476,22 +497,26 @@ async function boot() {
     id('mock-banner').classList.remove('hidden');
     S.health  = MOCK_HEALTH;
     S.speaker = MOCK_SPEAKER;
+    S.spotify = MOCK_SPOTIFY;
     S.config  = MOCK_CONFIG;
     applyConfig();
     setHealth(true);
     showDashboard();
     updateSpeaker();
     updateSystem();
+    updateSpotify();
     return;
   }
 
   try {
-    const [hRes, cRes] = await Promise.all([
+    const [hRes, cRes, spRes] = await Promise.all([
       get('/api/v1/health'),
       get('/api/v1/config'),
+      get('/api/v1/spotify'),
     ]);
-    if (hRes && hRes.ok) S.health = await hRes.json();
-    if (cRes && cRes.ok) S.config = await cRes.json();
+    if (hRes && hRes.ok) S.health  = await hRes.json();
+    if (cRes && cRes.ok) S.config  = await cRes.json();
+    if (spRes && spRes.ok) S.spotify = await spRes.json();
   } catch (_) { /* daemon unreachable — gracefully degrade */ }
 
   applyConfig();
@@ -504,7 +529,9 @@ async function boot() {
     showDashboard();
     updateSpeaker();
     updateSystem();
+    updateSpotify();
     connectWS();
+    startSpotifyPolling();
   }
 }
 
@@ -598,7 +625,9 @@ async function wizFinish() {
   showDashboard();
   updateSpeaker();
   updateSystem();
+  updateSpotify();
   connectWS();
+  startSpotifyPolling();
 }
 
 // ── Speaker card ───────────────────────────────────────────────────────
@@ -697,6 +726,24 @@ function onEvent(ev) {
     case 'ping':
       break; // heartbeat — ignore
   }
+}
+
+// ── Spotify card ───────────────────────────────────────────────────────
+function updateSpotify() {
+  const sp = S.spotify;
+  if (!sp) return;
+  setDot('svc-dot', sp.running ? (sp.active ? 'ok' : 'ok') : 'err');
+  id('svc-label').textContent = sp.running ? (sp.active ? 'Playing' : 'Ready') : 'Stopped';
+  id('svc-name').textContent  = esc(sp.device_name);
+  id('svc-active-row').style.display = sp.active ? '' : 'none';
+}
+
+function startSpotifyPolling() {
+  if (MOCK || S._spotifyPoll) return;
+  S._spotifyPoll = setInterval(async () => {
+    const r = await get('/api/v1/spotify');
+    if (r && r.ok) { S.spotify = await r.json(); updateSpotify(); }
+  }, 15000);
 }
 
 // ── Settings ───────────────────────────────────────────────────────────

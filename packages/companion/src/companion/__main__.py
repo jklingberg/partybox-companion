@@ -1,14 +1,15 @@
 """partybox-companion appliance entry point.
 
-Starts the DeviceManager, the partyboxd HTTP API, and the Companion Portal
-as a single process. Both the daemon and the Portal are served on the same
-port — the Portal at ``/`` and the REST API at ``/api/v1/*``.
+Starts the DeviceManager, the partyboxd HTTP API, the Companion Portal, and
+the Spotify Connect service (librespot) as a single process. Both the daemon
+and the Portal are served on the same port — the Portal at ``/`` and the
+REST API at ``/api/v1/*``.
 
 Usage::
 
-    partybox-companion                         # 0.0.0.0:8080
-    COMPANION_PORT=80 partybox-companion       # bind to port 80
-    PARTYBOXD_SERVER__PORT=9000 partybox-companion  # (ignored — companion controls the port)
+    partybox-companion                                  # 0.0.0.0:8080
+    COMPANION_PORT=80 partybox-companion                # bind to port 80
+    COMPANION_SPOTIFY__CONNECT_NAME="Living Room" partybox-companion
 """
 
 from __future__ import annotations
@@ -24,6 +25,9 @@ from partyboxd.config import Settings as DaemonSettings
 from partyboxd.device import DeviceManager
 
 from companion.config import CompanionSettings
+from companion.services.audio import AudioService
+from companion.services.router import make_services_router
+from companion.services.spotify import SpotifyService
 from companion.webui.router import make_portal_router
 
 _LOG_CONFIG: dict[str, object] = {
@@ -60,8 +64,12 @@ async def _run(
     companion_settings: CompanionSettings,
 ) -> None:
     manager = DeviceManager(daemon_settings.speaker)
+    spotify = SpotifyService(companion_settings.spotify)
+    audio = AudioService(companion_settings.audio)
+
     app = create_daemon_app(manager, daemon_settings)
     app.include_router(make_portal_router(companion_settings))
+    app.include_router(make_services_router(spotify))
 
     server_config = uvicorn.Config(
         app,
@@ -72,10 +80,18 @@ async def _run(
     server = uvicorn.Server(server_config)
 
     manager_task = asyncio.create_task(manager.run(), name="device-manager")
+    spotify_task = asyncio.create_task(spotify.run(), name="spotify-service")
+    audio_task = asyncio.create_task(audio.run(), name="audio-service")
     try:
         await server.serve()
     finally:
+        audio_task.cancel()
+        spotify_task.cancel()
         manager_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await audio_task
+        with suppress(asyncio.CancelledError):
+            await spotify_task
         with suppress(asyncio.CancelledError):
             await manager_task
 
