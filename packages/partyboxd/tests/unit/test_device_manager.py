@@ -11,7 +11,8 @@ from partybox.protocol.codec import encode
 from partybox.protocol.constants import BATTERY_LEVEL_CHAR_UUID, BATTERY_SERVICE_UUID
 from partybox.protocol.messages import FirmwareVersionRequest
 from partyboxd.config import SpeakerSettings
-from partyboxd.device.manager import DeviceManager
+from partyboxd.device.events import ConnectedEvent, DisconnectedEvent, PowerChangedEvent
+from partyboxd.device.manager import DeviceManager, DeviceNotConnectedError
 
 FIRMWARE_REQUEST = encode(FirmwareVersionRequest())
 # Real hardware capture: firmware 26.2.10
@@ -169,3 +170,95 @@ async def test_run_connects_and_snapshot_is_live(monkeypatch: pytest.MonkeyPatch
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+# ---------------------------------------------------------------------------
+# power_on / power_off
+# ---------------------------------------------------------------------------
+
+
+async def test_power_on_raises_when_not_connected() -> None:
+    manager = _make_manager()
+    with pytest.raises(DeviceNotConnectedError):
+        await manager.power_on()
+
+
+async def test_power_off_raises_when_not_connected() -> None:
+    manager = _make_manager()
+    with pytest.raises(DeviceNotConnectedError):
+        await manager.power_off()
+
+
+async def test_power_on_sends_command_and_emits_event() -> None:
+    manager = _make_manager()
+    transport = MockTransport(address="AA:BB:CC:DD:EE:FF")
+    await transport.connect()
+    device = PartyBoxDevice._from_transport(transport)
+    manager._device = device  # type: ignore[assignment]
+
+    queue = manager.subscribe()
+    await manager.power_on()
+
+    event = queue.get_nowait()
+    assert isinstance(event, PowerChangedEvent)
+    assert event.state == "on"
+
+
+async def test_power_off_sends_command_and_emits_event() -> None:
+    manager = _make_manager()
+    transport = MockTransport(address="AA:BB:CC:DD:EE:FF")
+    await transport.connect()
+    device = PartyBoxDevice._from_transport(transport)
+    manager._device = device  # type: ignore[assignment]
+
+    queue = manager.subscribe()
+    await manager.power_off()
+
+    event = queue.get_nowait()
+    assert isinstance(event, PowerChangedEvent)
+    assert event.state == "off"
+
+
+# ---------------------------------------------------------------------------
+# EventBus — subscribe / unsubscribe
+# ---------------------------------------------------------------------------
+
+
+async def test_connected_event_emitted_after_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
+    """run() emits a ConnectedEvent once the speaker is connected and refreshed."""
+    transport = MockTransport(address="BB:CC:DD:EE:FF:AA")
+    transport.stub(FIRMWARE_REQUEST, FIRMWARE_RESPONSE)
+
+    connected_event = asyncio.Event()
+
+    async def _fake_find(*_: object, **__: object) -> PartyBoxDevice:
+        await transport.connect()
+        device = PartyBoxDevice._from_transport(transport)
+        connected_event.set()
+        return device
+
+    monkeypatch.setattr("partyboxd.device.manager.Scanner.find", _fake_find)
+
+    manager = _make_manager()
+    queue = manager.subscribe()
+    task = asyncio.create_task(manager.run())
+
+    await asyncio.wait_for(connected_event.wait(), timeout=2.0)
+    await asyncio.sleep(0.05)
+
+    event = await asyncio.wait_for(queue.get(), timeout=1.0)
+    assert isinstance(event, ConnectedEvent)
+    assert event.address == "BB:CC:DD:EE:FF:AA"
+    assert event.firmware == "26.2.10"
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+async def test_unsubscribe_stops_delivery() -> None:
+    manager = _make_manager()
+    queue = manager.subscribe()
+    manager.unsubscribe(queue)
+    manager._bus.emit(DisconnectedEvent())
+    assert queue.empty()

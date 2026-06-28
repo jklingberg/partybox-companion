@@ -16,7 +16,7 @@ Protocol work also confirmed: the excelpoint vendor protocol uses `AA [opcode] [
 
 One intentional gap: `device_info.model()` and `serial_number()` raise `NotImplementedError` — the model/serial string appears only in the power-off TLV state dump (tag `0x40`) and no direct request opcode was found despite systematic probing. Documented in `open-questions.md`; the xfail hardware test tracks it.
 
-Work proceeds to **M6 — Daemon**.
+**M6 — Daemon** and **M7 — REST API** are complete. Work proceeds to **M8 — Companion Portal MVP**.
 
 ---
 
@@ -115,7 +115,7 @@ Delivered as part of M4 — see above.
 
 Daemon lifecycle, connection management, and a minimal HTTP API. The daemon owns the speaker connection — scanning, connecting, maintaining, and reconnecting — and exposes current state over HTTP.
 
-**Done when:** `partyboxd` starts, connects to a real PartyBox, maintains the connection, and serves `GET /api/v1/status` returning connection status, firmware version, and battery level (if available) as JSON. Power state is intentionally absent — no confirmed query opcode exists; it will be revisited in M8 once the protocol is better understood.
+**Done when:** `partyboxd` starts, connects to a real PartyBox, maintains the connection, and serves `GET /api/v1/status` returning connection status, firmware version, and battery level (if available) as JSON. Power state is intentionally absent — no confirmed query opcode exists. The `/status` endpoint is a minimal placeholder; the full REST API lands in M7.
 
 **Validated on hardware (JBL PartyBox 520, 2026-06-27):**
 
@@ -128,13 +128,42 @@ Daemon lifecycle, connection management, and a minimal HTTP API. The daemon owns
 
 ---
 
-### M7 — Companion Portal MVP
+### M7 — REST API ✅
+
+**Package:** `partyboxd`
+
+The REST API is the primary integration surface for all external clients — Companion Portal, CLI, Home Assistant, and future integrations. It exposes the daemon's domain model rather than SDK implementation details. Clients interact with concepts like speaker, battery, power, and firmware — not transports, opcodes, or Bluetooth.
+
+**Endpoints:**
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `GET` | `/api/v1/health` | No | Daemon liveness; returns `status`, `version`, `speaker_connected` |
+| `GET` | `/api/v1/speaker` | Yes | Speaker state: `connected`, `address`, `firmware`, `battery` |
+| `GET` | `/api/v1/battery` | Yes | Battery level (0–100); 404 for mains-powered, 503 if disconnected |
+| `POST` | `/api/v1/power/on` | Yes | Turn speaker on; 204 or 503 |
+| `POST` | `/api/v1/power/off` | Yes | Turn speaker off; 204 or 503 |
+| `WS` | `/api/v1/events` | `?api_key=` | Real-time event stream (`connected`, `disconnected`, `power_changed`) |
+
+**Authentication:** optional API key via `X-Api-Key` header, configured with `PARTYBOXD_API__API_KEY`. Disabled by default. WebSocket clients supply the key as a `?api_key=` query parameter.
+
+**Error responses** share a consistent shape: `{"detail": {"error": "<code>", "message": "<description>"}}`.
+
+**Also delivered:**
+- `DeviceManager.power_on()`, `power_off()`, `subscribe()`, `unsubscribe()`
+- `EventBus` in `partyboxd.device.events` — fan-out dispatcher from manager to WebSocket clients
+- `GET /api/v1/status` from M6 replaced by the cleaner `/health` + `/speaker` split
+- Interactive docs at `/api/docs`; API reference at `docs/api/v1.md`
+
+---
+
+### M8 — Companion Portal MVP
 
 **Package:** `companion`
 
-The Portal is introduced here — immediately after the daemon — because it is the primary onboarding surface, not a finishing touch. A user who has just booted the device should be able to verify their speaker connection and configure the appliance from a browser. See [ADR-011](adr/011-companion-portal.md) and [ADR-013](adr/013-user-journey-milestone-ordering.md).
+The Portal is the primary onboarding surface. A user who has just booted the device should be able to verify their speaker connection and configure the appliance from a browser. See [ADR-011](adr/011-companion-portal.md) and [ADR-013](adr/013-user-journey-milestone-ordering.md).
 
-M6 already exposes a minimal status endpoint (`GET /api/v1/status`). The Portal MVP is built against that endpoint — it does not need the full REST API.
+The Portal is built against the M7 REST API. All endpoints it needs — health, speaker state, power control — are already in place.
 
 **This milestone covers:**
 - First-boot setup wizard: Bluetooth verification, speaker pairing, basic service configuration
@@ -142,57 +171,57 @@ M6 already exposes a minimal status endpoint (`GET /api/v1/status`). The Portal 
 - Basic configuration: device name, service preferences (written to config file)
 - Spotify Connect and AirPlay sections present but showing "not yet active"
 
-The Portal MVP is intentionally read-heavy. Control actions (power on/off from the browser) require the full REST API, which arrives in M8.
-
 **Network prerequisite:** The Portal assumes the Pi already has network connectivity. For v1.0, WiFi is configured by writing credentials to the SD card before first boot — Raspberry Pi OS supports `wpa_supplicant.conf` on the boot partition, requiring only a file editor and no terminal on the Pi itself. A hotspot/captive-portal mode is post-v1.0.
 
 The Companion Portal does **not** include media playback controls.
 
-**Done when:** A user who has booted the device (with network reachable) can verify speaker status and complete initial configuration from a browser without touching a terminal on the Pi.
+**Done when:** A user who has booted the device (with network reachable) can verify speaker status, control power, and complete initial configuration from a browser without touching a terminal on the Pi.
 
 ---
 
-### M8 — REST API & CLI
-
-**Packages:** `partyboxd` (REST API) · `companion` (CLI)
-
-Full REST API for the M5 capabilities, WebSocket event stream, and API key authentication. The `partybox` CLI binary. The Portal's control actions (power on/off, etc.) become available once the REST API is in place.
-
-```
-partybox status           # power state, battery, firmware
-partybox power on/off
-partybox watch            # stream device events
-```
-
-**Done when:** Power, device info, and battery endpoints are stable; WebSocket delivers events; API key auth works; CLI commands work end-to-end against a running daemon.
-
----
-
-### M9 — Spotify Connect
+### M9 — CLI
 
 **Package:** `companion`
 
-librespot subprocess manager. Start on boot, restart on crash, stop on Bluetooth disconnect. The Portal's Spotify section (introduced in M7 as a placeholder) becomes active.
+The `partybox` CLI binary. A command-line interface for users who prefer the terminal over the Portal, and a natural integration surface for scripting and automation.
+
+```
+partybox status           # speaker state: connection, firmware, battery
+partybox power on/off     # send power commands
+partybox watch            # stream live device events (WebSocket)
+```
+
+All commands operate against the running daemon via the M7 REST API.
+
+**Done when:** CLI commands work end-to-end against a running daemon; `partybox watch` streams events until interrupted.
+
+---
+
+### M10 — Spotify Connect
+
+**Package:** `companion`
+
+librespot subprocess manager. Start on boot, restart on crash, stop on Bluetooth disconnect. The Portal's Spotify section (introduced in M8 as a placeholder) becomes active.
 
 **Done when:** A Spotify client sees the PartyBox as a Connect device; playback starts and stops correctly; the daemon event stream reflects playback state; Portal shows Spotify as active.
 
 ---
 
-### M10 — AirPlay
+### M11 — AirPlay
 
 **Package:** `companion`
 
-shairport-sync subprocess manager. The Portal's AirPlay section (introduced in M7 as a placeholder) becomes active.
+shairport-sync subprocess manager. The Portal's AirPlay section (introduced in M8 as a placeholder) becomes active.
 
 **Done when:** An Apple device sees the PartyBox as an AirPlay receiver; Portal shows AirPlay as active.
 
 ---
 
-### M11 — Companion Portal: Complete
+### M12 — Companion Portal: Complete
 
 **Package:** `companion`
 
-The Portal is completed with full Spotify/AirPlay configuration flows, diagnostics, and administration. This milestone closes the gap between the minimal Portal introduced in M7 and the full appliance experience.
+The Portal is completed with full Spotify/AirPlay configuration flows, diagnostics, and administration. This milestone closes the gap between the MVP introduced in M8 and the full appliance experience.
 
 **This milestone adds:**
 - Spotify Connect and AirPlay configuration in the Portal (device name, settings)

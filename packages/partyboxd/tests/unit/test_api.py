@@ -2,54 +2,84 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, PropertyMock
+from unittest.mock import AsyncMock, MagicMock, PropertyMock
 
+import pytest
 from httpx import ASGITransport, AsyncClient
 from partyboxd.api import create_app
-from partyboxd.device.manager import StatusSnapshot
+from partyboxd.config import ApiSettings, Settings
+from partyboxd.device.manager import DeviceNotConnectedError, StatusSnapshot
 
 
-def _make_client(snapshot: StatusSnapshot) -> AsyncClient:
+def _make_settings(api_key: str | None = None) -> Settings:
+    return Settings(api=ApiSettings(api_key=api_key))
+
+
+def _make_client(
+    snapshot: StatusSnapshot,
+    settings: Settings | None = None,
+) -> AsyncClient:
     manager = MagicMock()
-    # snapshot is now a @property — use PropertyMock so the mock returns
-    # the value on attribute access rather than on call.
     type(manager).snapshot = PropertyMock(return_value=snapshot)
-    app = create_app(manager)
+    manager.power_on = AsyncMock()
+    manager.power_off = AsyncMock()
+    app = create_app(manager, settings or _make_settings())
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
 
+_CONNECTED = StatusSnapshot(
+    connected=True,
+    address="AA:BB:CC:DD:EE:FF",
+    firmware="26.2.10",
+    battery=None,
+)
+_DISCONNECTED = StatusSnapshot(connected=False, address=None, firmware=None, battery=None)
+_WITH_BATTERY = StatusSnapshot(
+    connected=True,
+    address="AA:BB:CC:DD:EE:FF",
+    firmware="26.2.10",
+    battery=84,
+)
+
+
 # ---------------------------------------------------------------------------
-# GET /api/v1/status — disconnected
+# GET /api/v1/health — unauthenticated, always 200
 # ---------------------------------------------------------------------------
 
 
-async def test_status_disconnected() -> None:
-    snap = StatusSnapshot(connected=False, address=None, firmware=None, battery=None)
-    async with _make_client(snap) as client:
-        r = await client.get("/api/v1/status")
+async def test_health_when_connected() -> None:
+    async with _make_client(_CONNECTED) as client:
+        r = await client.get("/api/v1/health")
     assert r.status_code == 200
     body = r.json()
-    assert body["connected"] is False
-    assert body["address"] is None
-    assert body["firmware"] is None
-    assert body["battery"] is None
-    assert "healthy" not in body
+    assert body["status"] == "ok"
+    assert body["speaker_connected"] is True
+
+
+async def test_health_when_disconnected() -> None:
+    async with _make_client(_DISCONNECTED) as client:
+        r = await client.get("/api/v1/health")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "ok"
+    assert body["speaker_connected"] is False
+
+
+async def test_health_requires_no_api_key() -> None:
+    settings = _make_settings(api_key="secret")
+    async with _make_client(_CONNECTED, settings) as client:
+        r = await client.get("/api/v1/health")
+    assert r.status_code == 200
 
 
 # ---------------------------------------------------------------------------
-# GET /api/v1/status — connected, mains-powered
+# GET /api/v1/speaker
 # ---------------------------------------------------------------------------
 
 
-async def test_status_connected_no_battery() -> None:
-    snap = StatusSnapshot(
-        connected=True,
-        address="AA:BB:CC:DD:EE:FF",
-        firmware="26.2.10",
-        battery=None,
-    )
-    async with _make_client(snap) as client:
-        r = await client.get("/api/v1/status")
+async def test_speaker_connected() -> None:
+    async with _make_client(_CONNECTED) as client:
+        r = await client.get("/api/v1/speaker")
     assert r.status_code == 200
     body = r.json()
     assert body["connected"] is True
@@ -58,22 +88,149 @@ async def test_status_connected_no_battery() -> None:
     assert body["battery"] is None
 
 
-# ---------------------------------------------------------------------------
-# GET /api/v1/status — connected, battery present
-# ---------------------------------------------------------------------------
+async def test_speaker_disconnected() -> None:
+    async with _make_client(_DISCONNECTED) as client:
+        r = await client.get("/api/v1/speaker")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["connected"] is False
+    assert body["address"] is None
+    assert body["firmware"] is None
+    assert body["battery"] is None
 
 
-async def test_status_connected_with_battery() -> None:
-    snap = StatusSnapshot(
-        connected=True,
-        address="AA:BB:CC:DD:EE:FF",
-        firmware="26.2.10",
-        battery=84,
-    )
-    async with _make_client(snap) as client:
-        r = await client.get("/api/v1/status")
+async def test_speaker_with_battery() -> None:
+    async with _make_client(_WITH_BATTERY) as client:
+        r = await client.get("/api/v1/speaker")
     assert r.status_code == 200
     assert r.json()["battery"] == 84
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/battery
+# ---------------------------------------------------------------------------
+
+
+async def test_battery_available() -> None:
+    async with _make_client(_WITH_BATTERY) as client:
+        r = await client.get("/api/v1/battery")
+    assert r.status_code == 200
+    assert r.json() == {"level": 84}
+
+
+async def test_battery_not_available_returns_404() -> None:
+    async with _make_client(_CONNECTED) as client:
+        r = await client.get("/api/v1/battery")
+    assert r.status_code == 404
+    body = r.json()
+    assert body["detail"]["error"] == "capability_unavailable"
+
+
+async def test_battery_disconnected_returns_503() -> None:
+    async with _make_client(_DISCONNECTED) as client:
+        r = await client.get("/api/v1/battery")
+    assert r.status_code == 503
+    body = r.json()
+    assert body["detail"]["error"] == "speaker_disconnected"
+
+
+# ---------------------------------------------------------------------------
+# POST /api/v1/power/on
+# ---------------------------------------------------------------------------
+
+
+async def test_power_on_success() -> None:
+    manager = MagicMock()
+    type(manager).snapshot = PropertyMock(return_value=_CONNECTED)
+    manager.power_on = AsyncMock()
+    app = create_app(manager, _make_settings())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.post("/api/v1/power/on")
+    assert r.status_code == 204
+    manager.power_on.assert_awaited_once()
+
+
+async def test_power_on_disconnected_returns_503() -> None:
+    manager = MagicMock()
+    type(manager).snapshot = PropertyMock(return_value=_DISCONNECTED)
+    manager.power_on = AsyncMock(side_effect=DeviceNotConnectedError())
+    app = create_app(manager, _make_settings())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.post("/api/v1/power/on")
+    assert r.status_code == 503
+    assert r.json()["detail"]["error"] == "speaker_disconnected"
+
+
+# ---------------------------------------------------------------------------
+# POST /api/v1/power/off
+# ---------------------------------------------------------------------------
+
+
+async def test_power_off_success() -> None:
+    manager = MagicMock()
+    type(manager).snapshot = PropertyMock(return_value=_CONNECTED)
+    manager.power_off = AsyncMock()
+    app = create_app(manager, _make_settings())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.post("/api/v1/power/off")
+    assert r.status_code == 204
+    manager.power_off.assert_awaited_once()
+
+
+async def test_power_off_disconnected_returns_503() -> None:
+    manager = MagicMock()
+    type(manager).snapshot = PropertyMock(return_value=_DISCONNECTED)
+    manager.power_off = AsyncMock(side_effect=DeviceNotConnectedError())
+    app = create_app(manager, _make_settings())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.post("/api/v1/power/off")
+    assert r.status_code == 503
+    assert r.json()["detail"]["error"] == "speaker_disconnected"
+
+
+# ---------------------------------------------------------------------------
+# API key authentication
+# ---------------------------------------------------------------------------
+
+
+async def test_auth_passes_with_correct_key() -> None:
+    settings = _make_settings(api_key="secret")
+    async with _make_client(_CONNECTED, settings) as client:
+        r = await client.get("/api/v1/speaker", headers={"X-Api-Key": "secret"})
+    assert r.status_code == 200
+
+
+async def test_auth_rejected_with_wrong_key() -> None:
+    settings = _make_settings(api_key="secret")
+    async with _make_client(_CONNECTED, settings) as client:
+        r = await client.get("/api/v1/speaker", headers={"X-Api-Key": "wrong"})
+    assert r.status_code == 401
+    assert r.json()["detail"]["error"] == "unauthorized"
+
+
+async def test_auth_rejected_with_missing_key() -> None:
+    settings = _make_settings(api_key="secret")
+    async with _make_client(_CONNECTED, settings) as client:
+        r = await client.get("/api/v1/speaker")
+    assert r.status_code == 401
+
+
+async def test_auth_disabled_when_no_key_configured() -> None:
+    settings = _make_settings(api_key=None)
+    async with _make_client(_CONNECTED, settings) as client:
+        r = await client.get("/api/v1/speaker")
+    assert r.status_code == 200
+
+
+async def test_auth_applies_to_power_endpoints() -> None:
+    settings = _make_settings(api_key="secret")
+    manager = MagicMock()
+    type(manager).snapshot = PropertyMock(return_value=_CONNECTED)
+    manager.power_on = AsyncMock()
+    app = create_app(manager, settings)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.post("/api/v1/power/on")
+    assert r.status_code == 401
 
 
 # ---------------------------------------------------------------------------
@@ -82,7 +239,83 @@ async def test_status_connected_with_battery() -> None:
 
 
 async def test_unknown_route_returns_404() -> None:
-    snap = StatusSnapshot(connected=False, address=None, firmware=None, battery=None)
-    async with _make_client(snap) as client:
+    async with _make_client(_DISCONNECTED) as client:
         r = await client.get("/api/v1/nonexistent")
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/health — version field
+# ---------------------------------------------------------------------------
+
+
+async def test_health_includes_version() -> None:
+    import partyboxd
+
+    async with _make_client(_CONNECTED) as client:
+        r = await client.get("/api/v1/health")
+    assert r.status_code == 200
+    assert r.json()["version"] == partyboxd.__version__
+
+
+# ---------------------------------------------------------------------------
+# Error shape — every domain error returns {detail: {error, message}}
+# ---------------------------------------------------------------------------
+
+
+def _make_power_client(exc: Exception, settings: Settings | None = None) -> AsyncClient:
+    manager = MagicMock()
+    type(manager).snapshot = PropertyMock(return_value=_DISCONNECTED)
+    manager.power_on = AsyncMock(side_effect=exc)
+    manager.power_off = AsyncMock(side_effect=exc)
+    app = create_app(manager, settings or _make_settings())
+    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+
+
+@pytest.mark.parametrize(
+    "method,path,client_factory",
+    [
+        # GET /battery — disconnected
+        ("GET", "/api/v1/battery", lambda: _make_client(_DISCONNECTED)),
+        # GET /battery — connected but no battery
+        ("GET", "/api/v1/battery", lambda: _make_client(_CONNECTED)),
+        # POST /power/on — speaker not connected
+        (
+            "POST",
+            "/api/v1/power/on",
+            lambda: _make_power_client(DeviceNotConnectedError()),
+        ),
+        # POST /power/off — speaker not connected
+        (
+            "POST",
+            "/api/v1/power/off",
+            lambda: _make_power_client(DeviceNotConnectedError()),
+        ),
+        # GET /speaker — wrong API key
+        (
+            "GET",
+            "/api/v1/speaker",
+            lambda: _make_client(_CONNECTED, _make_settings(api_key="x")),
+        ),
+    ],
+)
+async def test_error_shape(
+    method: str,
+    path: str,
+    client_factory: object,
+) -> None:
+    """Every domain error must return {"detail": {"error": str, "message": str}}."""
+    factory = client_factory  # type: ignore[assignment]
+    client_ctx = factory()  # type: ignore[operator]
+    async with client_ctx as client:
+        r = await client.request(method, path)
+
+    assert r.status_code >= 400
+    body = r.json()
+    assert "detail" in body, "missing 'detail' key"
+    detail = body["detail"]
+    assert isinstance(detail, dict), f"detail should be a dict, got {type(detail)}"
+    assert "error" in detail, "missing 'error' key in detail"
+    assert "message" in detail, "missing 'message' key in detail"
+    assert isinstance(detail["error"], str)
+    assert isinstance(detail["message"], str)
