@@ -9,10 +9,6 @@ librespot is an implementation detail. The product is: this Pi appears as a
 Spotify Connect speaker. Playback control (volume, skip, queue) stays inside
 Spotify clients; the service only tracks whether librespot is running and
 whether playback is currently active.
-
-When librespot logs a mixer/volume change event on stderr, :class:`SpotifyService`
-forwards the new level to the shared :class:`~companion.volume.VolumeState` so
-that the REST API can report it even before BLE volume commands are implemented.
 """
 
 from __future__ import annotations
@@ -20,13 +16,11 @@ from __future__ import annotations
 import asyncio
 import ctypes
 import logging
-import re
 import shutil
 import signal
 from dataclasses import dataclass
 
 from companion.config import SpotifySettings
-from companion.volume import VolumeState
 
 log = logging.getLogger(__name__)
 
@@ -38,12 +32,6 @@ _NOT_FOUND_RETRY = 60.0
 # vary between librespot releases. Best-effort is sufficient for a status display.
 _ACTIVE_PATTERNS = ("is now playing", "loading track", "preloading")
 _INACTIVE_PATTERNS = ("track paused", "track stopped", "end of track", "stopped")
-
-# Pattern for volume change lines emitted by librespot, e.g.:
-#   "Mixer: setting volume to 65535 (100%)"
-#   "librespot_audio::mixer: volume set to 52428 (80%)"
-# We capture the trailing percentage value.
-_VOLUME_RE = re.compile(r"\((\d+)%\)")  # match "(N%)" and capture N
 
 
 @dataclass(frozen=True)
@@ -69,13 +57,8 @@ class SpotifyService:
     While :meth:`run` is active, :attr:`status` reflects the current state.
     """
 
-    def __init__(
-        self,
-        settings: SpotifySettings,
-        volume_state: VolumeState | None = None,
-    ) -> None:
+    def __init__(self, settings: SpotifySettings) -> None:
         self._settings = settings
-        self._volume_state = volume_state
         self._running = False
         self._active = False
         self._proc: asyncio.subprocess.Process | None = None
@@ -202,27 +185,6 @@ class SpotifyService:
             if self._active:
                 self._active = False
                 log.info("Spotify playback stopped")
-        self._infer_volume(line)
-
-    def _infer_volume(self, line: str) -> None:
-        """Extract a volume percentage from *line* and update shared state.
-
-        librespot logs volume changes as e.g. ``"volume set to 65535 (100%)"``.
-        We parse the trailing ``(N%)`` form because it is stable across librespot
-        versions, unlike the raw mixer integer which depends on the mixer type.
-        """
-        if self._volume_state is None:
-            return
-        m = _VOLUME_RE.search(line)
-        if m is None:
-            return
-        try:
-            percent = int(m.group(1))
-        except ValueError:
-            return
-        if 0 <= percent <= 100:
-            self._volume_state.update(percent)
-            log.debug("Spotify volume updated to %d%%", percent)
 
     async def _terminate(self) -> None:
         proc = self._proc

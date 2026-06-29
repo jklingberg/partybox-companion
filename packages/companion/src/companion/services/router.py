@@ -48,10 +48,7 @@ async def _collect_journal_logs() -> str:
         return "(journalctl not available)\n"
 
 
-def make_services_router(
-    spotify: SpotifyService,
-    config: ConfigStore,
-) -> APIRouter:
+def make_services_router(spotify: SpotifyService, config: ConfigStore) -> APIRouter:
     """Return an APIRouter with service-status and diagnostics endpoints.
 
     These endpoints are intentionally unauthenticated — they expose read-only

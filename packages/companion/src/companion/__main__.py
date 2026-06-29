@@ -29,13 +29,9 @@ from partyboxd.device import DeviceManager
 from companion.config import CompanionSettings, SpotifySettings
 from companion.config_store import ConfigStore
 from companion.services.audio import AudioService
-from companion.services.provisioning import ProvisioningService
 from companion.services.router import make_services_router
 from companion.services.spotify import SpotifyService
-from companion.volume import VolumeState
 from companion.webui.router import make_portal_router
-from companion.wifi.middleware import CaptivePortalMiddleware
-from companion.wifi.router import make_wifi_router
 
 
 def _make_log_config(level: str) -> dict[str, object]:
@@ -91,23 +87,13 @@ async def _run(
         bitrate=portal_cfg.spotify_bitrate,
         backend=companion_settings.spotify.backend,
     )
-    volume_state = VolumeState()
-    spotify = SpotifyService(effective_spotify, volume_state=volume_state)
+    spotify = SpotifyService(effective_spotify)
     audio = AudioService(companion_settings.audio)
-    # Pass a fallback callable so GET /api/v1/volume returns the most recently
-    # reported Spotify volume when the BLE opcode is not yet implemented.
-    manager = DeviceManager(
-        daemon_settings.speaker,
-        volume_fallback=lambda: volume_state.level,
-    )
-
-    provisioning = ProvisioningService(companion_settings.wifi.interface)
+    manager = DeviceManager(daemon_settings.speaker)
 
     app = create_daemon_app(manager, daemon_settings)
     app.include_router(make_portal_router(companion_settings, config_store))
     app.include_router(make_services_router(spotify, config_store))
-    app.include_router(make_wifi_router(provisioning))
-    app.add_middleware(CaptivePortalMiddleware, provisioning=provisioning)
 
     server_config = uvicorn.Config(
         app,
