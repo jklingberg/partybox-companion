@@ -54,6 +54,7 @@ apt-get install -y --no-install-recommends \
     wireplumber \
     bluez \
     avahi-daemon \
+    openssh-server \
     python3 \
     curl \
     ca-certificates \
@@ -269,6 +270,33 @@ log "Setting hostname to 'partybox'"
 echo "partybox" > /etc/hostname
 sed -i '/^127\.0\.1\.1/d' /etc/hosts
 echo "127.0.1.1	partybox" >> /etc/hosts
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 10a. SSH access
+#
+# Creates a default login user and enables the SSH daemon. SSH is the primary
+# administration interface for a headless appliance.
+#
+# Pi OS Bookworm ships openssh-server but disables it because the default pi
+# user was removed in Bookworm. We restore both here.
+#
+# Default credentials: pi / raspberry
+# Change the password after first login: ssh pi@partybox.local && passwd
+# ──────────────────────────────────────────────────────────────────────────────
+log "Creating default SSH user (pi)"
+if ! id pi &>/dev/null; then
+    useradd -m -s /bin/bash -G sudo pi
+fi
+echo "pi:raspberry" | chpasswd
+
+log "Enabling SSH daemon"
+systemctl enable ssh
+
+# Bookworm's default sshd_config uses PasswordAuthentication prohibit-password.
+# Override via a drop-in so that password login works for the pi user.
+mkdir -p /etc/ssh/sshd_config.d
+printf 'PasswordAuthentication yes\n' \
+    > /etc/ssh/sshd_config.d/10-partybox.conf
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 11. SD card longevity
