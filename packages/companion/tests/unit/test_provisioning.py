@@ -84,6 +84,16 @@ def test_parse_colon_in_ssid() -> None:
     assert result == [WifiNetwork(ssid="Net:With:Colons", signal=65, security="WPA2")]
 
 
+def test_parse_no_blank_line_separators() -> None:
+    # nmcli device wifi list in multiline mode does not always emit blank
+    # lines between records. The parser must detect new records via the SSID
+    # field instead.
+    output = "SSID:HomeNet\nSIGNAL:80\nSECURITY:WPA2\nSSID:GuestNet\nSIGNAL:40\nSECURITY:\n"
+    result = _parse_wifi_list(output)
+    assert [n.ssid for n in result] == ["HomeNet", "GuestNet"]
+    assert result[0].signal == 80
+
+
 def test_parse_invalid_signal_defaults_to_zero() -> None:
     output = _make_output({"SSID": "FlakyNet", "SIGNAL": "N/A", "SECURITY": "WPA2"})
     result = _parse_wifi_list(output)

@@ -118,6 +118,10 @@ class ProvisioningService:
 
     async def run(self) -> None:
         """Start the provisioning lifecycle. Returns when WiFi is connected."""
+        # Delete any leftover AP from a previous run before checking state.
+        # If the service restarts while the AP is active, wlan0 shows as
+        # "wifi:connected" (AP mode), which would fool _is_sta_connected().
+        await _nmcli("connection", "delete", _AP_CON_NAME)
         log.info("Provisioning service: checking WiFi state")
         try:
             if await self._is_sta_connected():
@@ -302,7 +306,15 @@ def _classify_nmcli_error(stderr: str) -> ProvisioningFailureReason:
 
 
 def _parse_wifi_list(output: str) -> list[WifiNetwork]:
-    """Parse terse multiline nmcli device wifi list output."""
+    """Parse nmcli multiline device wifi list output.
+
+    nmcli's multiline format puts each field on its own line as KEY:VALUE.
+    Records are separated by blank lines in some modes, but not all (the
+    separator depends on nmcli version and flags). Instead of relying on
+    blank lines, a new record is detected when SSID appears while the
+    current group already has data — SSID is always the first field
+    because we request fields in SSID,SIGNAL,SECURITY order.
+    """
     groups: list[dict[str, str]] = []
     current: dict[str, str] = {}
     for raw_line in output.splitlines():
@@ -313,7 +325,12 @@ def _parse_wifi_list(output: str) -> list[WifiNetwork]:
                 current = {}
             continue
         key, _, value = line.partition(":")
-        current[key.strip()] = value.strip()
+        k = key.strip()
+        v = value.strip()
+        if k == "SSID" and current:
+            groups.append(current)
+            current = {}
+        current[k] = v
     if current:
         groups.append(current)
 
@@ -321,7 +338,7 @@ def _parse_wifi_list(output: str) -> list[WifiNetwork]:
     networks: list[WifiNetwork] = []
     for g in groups:
         ssid = g.get("SSID", "")
-        if not ssid or ssid in seen:
+        if not ssid or ssid == "--" or ssid in seen:
             continue
         seen.add(ssid)
         try:
