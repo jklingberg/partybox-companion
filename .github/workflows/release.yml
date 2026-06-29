@@ -126,9 +126,10 @@ jobs:
 
             ### First boot
 
-            The first boot takes 30–60 seconds. The Portal is served on port 8080
-            until the port 80 binding mechanism is configured (M14). If
-            `http://partybox.local` does not resolve, try `http://partybox.local:8080`.
+            The first boot takes 30–60 seconds. The Portal is served on port 80.
+            Open `http://partybox.local` (or the Pi's IP address) in a browser.
+            On first boot without WiFi configured, the Pi broadcasts a setup AP
+            (`PartyBox Companion Setup`) — connect to it and follow the captive portal.
 
             ---
 
