@@ -50,17 +50,6 @@ class SpotifySettings(BaseModel):
     backend: str | None = None
 
 
-class WifiSettings(BaseModel):
-    """Settings for WiFi provisioning.
-
-    Override with environment variables::
-
-        COMPANION_WIFI__INTERFACE=wlan1
-    """
-
-    interface: str = "wlan0"
-
-
 class CompanionSettings(BaseSettings):
     """Top-level companion appliance settings.
 
@@ -83,4 +72,3 @@ class CompanionSettings(BaseSettings):
     data_dir: Path = Field(default_factory=lambda: Path.home() / ".local" / "share" / "companion")
     audio: AudioSettings = Field(default_factory=AudioSettings)
     spotify: SpotifySettings = Field(default_factory=SpotifySettings)
-    wifi: WifiSettings = Field(default_factory=WifiSettings)

@@ -34,7 +34,7 @@
       min-height: 100dvh;
     }
 
-    /* -- Header --------------------------------------------------------- */
+    /* ── Header ─────────────────────────────────────────────────── */
     header {
       position: sticky; top: 0; z-index: 100;
       background: var(--bg);
@@ -62,7 +62,7 @@
       user-select: none;
     }
 
-    /* -- Status dots ---------------------------------------------------- */
+    /* ── Status dots ─────────────────────────────────────────────── */
     .dot {
       width: 8px; height: 8px;
       border-radius: 50%;
@@ -76,14 +76,14 @@
 
     @keyframes blink { 0%,100% { opacity:1 } 50% { opacity:.25 } }
 
-    /* -- Layout ---------------------------------------------------------- */
+    /* ── Layout ──────────────────────────────────────────────────── */
     .page {
       padding: 32px 24px 64px;
       min-height: calc(100dvh - 58px);
     }
     .hidden { display: none !important; }
 
-    /* -- Status list ---------------------------------------------------- */
+    /* ── Status list ─────────────────────────────────────────────── */
     .sl {
       max-width: 720px; margin: 0 auto;
       background: var(--surface);
@@ -120,7 +120,7 @@
       display: flex; gap: 6px; justify-content: flex-end;
     }
 
-    /* -- Small buttons --------------------------------------------------- */
+    /* ── Small buttons ───────────────────────────────────────────── */
     .btn-sm {
       display: inline-flex; align-items: center; justify-content: center;
       height: 28px; padding: 0 10px;
@@ -138,7 +138,7 @@
     .btn-sm:hover:not(:disabled) { color: var(--text); }
     .btn-sm:disabled { opacity: .38; cursor: not-allowed; }
 
-    /* -- Footer nav ------------------------------------------------------ */
+    /* ── Footer nav ──────────────────────────────────────────────── */
     .sl-footer {
       max-width: 720px; margin: 14px auto 0;
       display: flex; gap: 14px; justify-content: flex-end;
@@ -151,7 +151,7 @@
     }
     .sl-footer button:hover { color: var(--text-2); }
 
-    /* -- Settings / card panel ------------------------------------------ */
+    /* ── Settings panel ──────────────────────────────────────────── */
     .panel-wrap { max-width: 720px; margin: 14px auto 0; }
 
     .card {
@@ -208,8 +208,7 @@
       font-size: 14px; font-weight: 500; font-family: var(--font);
       transition: opacity .14s;
     }
-    .btn-primary:hover:not(:disabled) { opacity: .88; }
-    .btn-primary:disabled { opacity: .38; cursor: not-allowed; }
+    .btn-primary:hover { opacity: .88; }
     .btn-ghost {
       display: inline-flex; align-items: center; justify-content: center;
       height: 42px; padding: 0 18px;
@@ -222,27 +221,7 @@
     }
     .btn-ghost:hover { color: var(--text); }
 
-    /* -- Provisioning screen -------------------------------------------- */
-    .net-list { margin: 0 0 4px; }
-    .net-row {
-      display: flex; align-items: center; justify-content: space-between;
-      padding: 13px 16px;
-      border: 1px solid var(--border);
-      border-radius: var(--r-sm);
-      margin-bottom: 8px;
-      background: var(--surface-hi);
-      cursor: pointer;
-      transition: border-color .15s;
-    }
-    .net-row:hover { border-color: var(--text-3); }
-    .net-row.selected { border-color: var(--accent); }
-    .net-ssid { font-size: 14px; font-weight: 500; }
-    .net-meta { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-2); flex-shrink: 0; }
-    .net-open { color: var(--text-3); }
-    .prov-hint { font-size: 14px; color: var(--text-2); margin-bottom: 20px; line-height: 1.6; }
-    .prov-msg { margin-top: 16px; font-size: 14px; text-align: center; min-height: 20px; }
-
-    /* -- Toast ----------------------------------------------------------- */
+    /* ── Toast ───────────────────────────────────────────────────── */
     #toast {
       position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%);
       background: var(--surface-hi);
@@ -257,7 +236,7 @@
       pointer-events: none;
     }
 
-    /* -- Auth modal ------------------------------------------------------ */
+    /* ── Auth modal ──────────────────────────────────────────────── */
     #auth-overlay {
       position: fixed; inset: 0;
       background: rgba(0,0,0,.72);
@@ -276,7 +255,7 @@
     .modal h2 { font-size: 18px; font-weight: 600; margin-bottom: 8px; }
     .modal p  { color: var(--text-2); font-size: 14px; margin-bottom: 22px; line-height: 1.6; }
 
-    /* -- Mock banner ---------------------------------------------------- */
+    /* ── Mock banner ─────────────────────────────────────────────── */
     #mock-banner {
       background: var(--warn);
       color: #000;
@@ -287,7 +266,7 @@
       letter-spacing: .4px;
     }
 
-    /* -- Mobile ---------------------------------------------------------- */
+    /* ── Mobile ──────────────────────────────────────────────────── */
     @media (max-width: 580px) {
       .page { padding: 20px 16px 48px; }
 
@@ -306,51 +285,24 @@
 </head>
 <body>
 
-<!-- -- Mock mode banner ----------------------------------------------- -->
-<div id="mock-banner" class="hidden">MOCK MODE -- no daemon required</div>
+<!-- ── Mock mode banner ───────────────────────────────────────────────── -->
+<div id="mock-banner" class="hidden">MOCK MODE — no daemon required</div>
 
-<!-- -- Header --------------------------------------------------------- -->
+<!-- ── Header ────────────────────────────────────────────────────────── -->
 <header>
   <div class="header-inner">
     <div class="logo">
-      <span class="logo-icon" aria-hidden="true">&#128266;</span>
+      <span class="logo-icon" aria-hidden="true">🔊</span>
       <span class="logo-name" id="device-name">PartyBox</span>
     </div>
     <div class="health-pill" aria-live="polite">
       <span class="dot spin" id="health-dot" aria-hidden="true"></span>
-      <span id="health-label">Starting&hellip;</span>
+      <span id="health-label">Starting…</span>
     </div>
   </div>
 </header>
 
-<!-- -- Provisioning screen -------------------------------------------- -->
-<main id="provisioning" class="page hidden" aria-label="WiFi setup">
-  <div class="panel-wrap" style="margin-top:0">
-    <div class="card">
-      <div class="card-head">
-        <h2>Connect to WiFi</h2>
-        <button class="btn-sm" id="scan-btn" onclick="scanNetworks()">Scan</button>
-      </div>
-      <p class="prov-hint">Select your home network to get started.</p>
-
-      <div class="net-list" id="network-list" role="list" aria-label="Available networks"></div>
-
-      <div class="field hidden" id="pw-field">
-        <label for="wifi-pw">Password for <span id="pw-ssid-label"></span></label>
-        <input id="wifi-pw" type="password" placeholder="WiFi password"
-               autocomplete="off" onkeydown="if(event.key==='Enter') connectWifi()" />
-      </div>
-
-      <div class="btn-row">
-        <button class="btn-primary" id="connect-btn" onclick="connectWifi()" disabled>Connect</button>
-      </div>
-
-      <div class="prov-msg" id="prov-msg" role="status" aria-live="polite"></div>
-    </div>
-  </div>
-</main>
-
-<!-- -- Dashboard ------------------------------------------------------- -->
+<!-- ── Dashboard ─────────────────────────────────────────────────────── -->
 <main id="dashboard" class="page hidden">
 
   <div class="sl" role="list" aria-label="Appliance status">
@@ -360,9 +312,9 @@
       <div class="sl-name">Speaker</div>
       <div class="sl-status">
         <span class="dot spin" id="sp-dot" aria-hidden="true"></span>
-        <span id="sp-status" aria-live="polite">Connecting&hellip;</span>
+        <span id="sp-status" aria-live="polite">Connecting…</span>
       </div>
-      <div class="sl-detail" id="sp-detail">&mdash;</div>
+      <div class="sl-detail" id="sp-detail">—</div>
       <div class="sl-actions">
         <button class="btn-sm hidden" id="btn-on"  onclick="sendPower('on')">Turn On</button>
         <button class="btn-sm hidden" id="btn-off" onclick="sendPower('off')">Turn Off</button>
@@ -374,9 +326,9 @@
       <div class="sl-name">Spotify Connect</div>
       <div class="sl-status">
         <span class="dot" id="svc-dot" aria-hidden="true"></span>
-        <span id="svc-status" aria-live="polite">&mdash;</span>
+        <span id="svc-status" aria-live="polite">—</span>
       </div>
-      <div class="sl-detail" id="svc-detail">&mdash;</div>
+      <div class="sl-detail" id="svc-detail">—</div>
       <div class="sl-actions">
         <button class="btn-sm hidden" id="btn-spotify-rename"  onclick="openSettings()">Rename</button>
         <button class="btn-sm hidden" id="btn-spotify-restart" onclick="restartSpotify()">Restart</button>
@@ -384,13 +336,13 @@
     </div>
 
     <!-- AirPlay -->
-    <div class="sl-row sl-dim" role="listitem" aria-label="AirPlay &mdash; coming soon">
+    <div class="sl-row sl-dim" role="listitem" aria-label="AirPlay — coming soon">
       <div class="sl-name">AirPlay</div>
       <div class="sl-status">
         <span class="dot" aria-hidden="true"></span>
         <span>Coming soon</span>
       </div>
-      <div class="sl-detail">&mdash;</div>
+      <div class="sl-detail">—</div>
       <div class="sl-actions"></div>
     </div>
 
@@ -399,9 +351,9 @@
       <div class="sl-name">System</div>
       <div class="sl-status">
         <span class="dot spin" id="sys-dot" aria-hidden="true"></span>
-        <span id="sys-status" aria-live="polite">&mdash;</span>
+        <span id="sys-status" aria-live="polite">—</span>
       </div>
-      <div class="sl-detail" id="sys-detail">&mdash;</div>
+      <div class="sl-detail" id="sys-detail">—</div>
       <div class="sl-actions">
         <button class="btn-sm" onclick="openSettings()">Settings</button>
         <a class="btn-sm" id="bundle-link" href="/api/v1/debug/bundle" download>Debug Bundle</a>
@@ -415,7 +367,7 @@
     <button onclick="toast('partybox-companion · ' + (S.health ? S.health.version : '—'))">About</button>
   </div>
 
-  <!-- -- Settings panel ----------------------------------------------- -->
+  <!-- ── Settings panel ─────────────────────────────────────────────── -->
   <div id="settings-panel" class="panel-wrap hidden">
     <div class="card">
       <div class="card-head">
@@ -440,9 +392,9 @@
         <div class="field">
           <label for="set-bitrate">Audio quality</label>
           <select id="set-bitrate">
-            <option value="96">96 kbps &mdash; Low</option>
-            <option value="160">160 kbps &mdash; Normal</option>
-            <option value="320">320 kbps &mdash; High (recommended)</option>
+            <option value="96">96 kbps — Low</option>
+            <option value="160">160 kbps — Normal</option>
+            <option value="320">320 kbps — High (recommended)</option>
           </select>
           <span class="field-hint">Changes apply after Spotify restarts (~5 seconds).</span>
         </div>
@@ -457,10 +409,10 @@
 
 </main>
 
-<!-- -- Toast ---------------------------------------------------------- -->
+<!-- ── Toast ──────────────────────────────────────────────────────────── -->
 <div id="toast" class="hidden" role="status" aria-live="polite"></div>
 
-<!-- -- Auth modal ----------------------------------------------------- -->
+<!-- ── Auth modal ────────────────────────────────────────────────────── -->
 <div id="auth-overlay" class="hidden" role="dialog" aria-labelledby="auth-title" aria-modal="true">
   <div class="modal">
     <h2 id="auth-title">API key required</h2>
@@ -478,34 +430,11 @@
 </div>
 
 <script>
-// == Operating modes ======================================================
-//
-// The Portal has two top-level modes:
-//   Mode.PROVISIONING -- appliance has no WiFi; user must choose a network
-//   Mode.NORMAL       -- appliance is on the home network; show dashboard
-//
-// setMode() is the single point of truth for which main screen is visible.
-// No other code shows or hides #provisioning or #dashboard directly.
-
-const Mode = Object.freeze({
-  UNKNOWN:      'unknown',
-  PROVISIONING: 'provisioning',
-  NORMAL:       'normal',
-});
-
-let currentMode = Mode.UNKNOWN;
-
-function setMode(mode) {
-  currentMode = mode;
-  id('provisioning').classList.toggle('hidden', mode !== Mode.PROVISIONING);
-  id('dashboard').classList.toggle('hidden', mode !== Mode.NORMAL);
-}
-
-// == Application state ====================================================
+// ── State ──────────────────────────────────────────────────────────────
 const S = {
-  health:  null,
-  speaker: null,
-  spotify: null,
+  health:  null,   // {status, version, speaker_connected}
+  speaker: null,   // {connected, address, firmware, battery}
+  spotify: null,   // {running, active, device_name}
   config:  {device_name:'PartyBox', spotify_connect_name:'PartyBox', spotify_bitrate:320},
   apiKey:  localStorage.getItem('_pb_key') || null,
   ws:      null,
@@ -513,37 +442,15 @@ const S = {
   _spotifyPoll: null,
 };
 
-// Provisioning sub-state (only relevant in Mode.PROVISIONING)
-const PV = {
-  networks:     [],
-  selectedIdx:  -1,
-  pollTimer:    null,
-};
-
 const MOCK = location.search.includes('mock');
-const MOCK_PROVISION = location.search.includes('provision');
 
 const MOCK_HEALTH  = {status:'ok', version:'0.1.0-dev', speaker_connected:true};
 const MOCK_SPEAKER = {connected:true, address:'AA:BB:CC:DD:EE:FF', firmware:'26.2.10', battery:null};
 const MOCK_CONFIG  = {device_name:'Living Room', spotify_connect_name:'Living Room', spotify_bitrate:320};
 const MOCK_SPOTIFY = {running:true, active:false, device_name:'Living Room'};
-const MOCK_NETWORKS = [
-  {ssid:'Home Network', signal:85, security:'WPA2'},
-  {ssid:'Neighbour WiFi', signal:52, security:'WPA2'},
-  {ssid:'GuestNet', signal:30, security:''},
-];
 
-// == Boot =================================================================
+// ── Boot ───────────────────────────────────────────────────────────────
 async function boot() {
-  if (MOCK && MOCK_PROVISION) {
-    id('mock-banner').classList.remove('hidden');
-    PV.networks = MOCK_NETWORKS;
-    setMode(Mode.PROVISIONING);
-    setHealthPill('spin', 'Setup mode');
-    renderNetworks();
-    return;
-  }
-
   if (MOCK) {
     id('mock-banner').classList.remove('hidden');
     S.health  = MOCK_HEALTH;
@@ -551,7 +458,7 @@ async function boot() {
     S.spotify = MOCK_SPOTIFY;
     S.config  = MOCK_CONFIG;
     applyConfig();
-    setMode(Mode.NORMAL);
+    show('dashboard');
     updateSpeaker();
     updateSpotify();
     updateSystem();
@@ -559,31 +466,6 @@ async function boot() {
     return;
   }
 
-  // Determine operating mode from WiFi provisioning state before loading
-  // the full dashboard. This check happens before any authenticated requests
-  // so the provisioning UI is always accessible even without an API key.
-  try {
-    const wifiRes = await fetch('/api/v1/wifi/status');
-    if (wifiRes.ok) {
-      const wifi = await wifiRes.json();
-      if (wifi.state === 'ap_active' || wifi.state === 'unprovisioned') {
-        enterProvisioningMode(wifi);
-        return;
-      }
-      if (wifi.state === 'connecting') {
-        // Interrupted page load during an in-progress connect attempt.
-        enterProvisioningMode(wifi);
-        setProvMsg('info', 'Connecting to WiFi…');
-        pollProvState();
-        return;
-      }
-      // state === 'connected': fall through to normal dashboard boot.
-    }
-  } catch (_) {
-    // Endpoint absent (older firmware) or unreachable -- treat as provisioned.
-  }
-
-  // Normal operation mode.
   try {
     const [hRes, cRes, spRes] = await Promise.all([
       get('/api/v1/health'),
@@ -597,7 +479,7 @@ async function boot() {
 
   applyConfig();
   await loadSpeaker();
-  setMode(Mode.NORMAL);
+  show('dashboard');
   updateSpeaker();
   updateSpotify();
   updateSystem();
@@ -606,50 +488,36 @@ async function boot() {
   startSpotifyPolling();
 }
 
-// == Provisioning mode entry ==============================================
-function enterProvisioningMode(wifi) {
-  setMode(Mode.PROVISIONING);
-  setHealthPill('spin', 'Setup mode');
-  // If a previous connection attempt failed, show the API-supplied message
-  // immediately so the user sees the error even after a page reload.
-  if (wifi.reason && wifi.message) {
-    setProvMsg('err', wifi.message);
-  }
-  if (wifi.state === 'ap_active') {
-    scanNetworks();
-  }
-}
+// ── DOM helpers ────────────────────────────────────────────────────────
+function id(x)          { return document.getElementById(x); }
+function show(el)       { if (typeof el==='string') el=id(el); el.classList.remove('hidden'); }
+function hide(el)       { if (typeof el==='string') el=id(el); el.classList.add('hidden'); }
+function setDot(el,cls) { if (typeof el==='string') el=id(el); el.className = 'dot ' + cls; }
 
-// == DOM helpers ==========================================================
-function id(x)           { return document.getElementById(x); }
-function setDot(el, cls) { if (typeof el==='string') el=id(el); el.className = 'dot ' + cls; }
-
-function setHealthPill(dotCls, label) {
-  setDot('health-dot', dotCls);
-  id('health-label').textContent = label;
-}
-
-// == Config ===============================================================
+// ── Config ─────────────────────────────────────────────────────────────
 function applyConfig() {
   const name = S.config.device_name || 'PartyBox';
   id('device-name').textContent = name;
   document.title = name + ' · Companion';
 }
 
-// == Health pill ==========================================================
+// ── Health pill ────────────────────────────────────────────────────────
 function updateHealthPill() {
   const h  = S.health;
   const sp = S.speaker;
   if (!h) {
-    setHealthPill('err', 'Offline');
+    setDot('health-dot', 'err');
+    id('health-label').textContent = 'Offline';
   } else if (sp && sp.connected) {
-    setHealthPill('ok', 'Speaker connected');
+    setDot('health-dot', 'ok');
+    id('health-label').textContent = 'Speaker connected';
   } else {
-    setHealthPill('spin', 'Speaker disconnected');
+    setDot('health-dot', 'spin');
+    id('health-label').textContent = 'Speaker disconnected';
   }
 }
 
-// == Speaker row ==========================================================
+// ── Speaker row ────────────────────────────────────────────────────────
 async function loadSpeaker() {
   if (MOCK) { S.speaker = MOCK_SPEAKER; return; }
   const r = await get('/api/v1/speaker', true);
@@ -664,19 +532,20 @@ function updateSpeaker() {
   id('sp-status').textContent = conn ? 'Connected' : 'Disconnected';
 
   if (conn) {
-    id('sp-detail').textContent = sp.firmware || sp.address || '—';
-    id('btn-on').classList.remove('hidden');
-    id('btn-off').classList.remove('hidden');
+    const detail = sp.firmware || sp.address || '—';
+    id('sp-detail').textContent = detail;
+    show('btn-on');
+    show('btn-off');
   } else {
     id('sp-detail').textContent = sp ? 'Reconnecting automatically' : '—';
-    id('btn-on').classList.add('hidden');
-    id('btn-off').classList.add('hidden');
+    hide('btn-on');
+    hide('btn-off');
   }
 
   updateHealthPill();
 }
 
-// == Power control ========================================================
+// ── Power control ──────────────────────────────────────────────────────
 async function sendPower(action) {
   const btn = id(action === 'on' ? 'btn-on' : 'btn-off');
   btn.disabled = true;
@@ -685,12 +554,12 @@ async function sendPower(action) {
   const r = await get('/api/v1/power/' + action, true, 'POST');
   btn.disabled = false;
   btn.textContent = orig;
-  if (!r)                  toast('Could not reach the daemon.');
+  if (!r)              toast('Could not reach the daemon.');
   else if (r.status === 503) toast('Speaker is not connected.');
   else if (r.status === 204) toast('Command sent.');
 }
 
-// == System row ===========================================================
+// ── System row ─────────────────────────────────────────────────────────
 function updateSystem() {
   const h = S.health;
   setDot('sys-dot', h ? 'ok' : 'err');
@@ -698,7 +567,7 @@ function updateSystem() {
   id('sys-detail').textContent = h ? 'v' + h.version : '—';
 }
 
-// == WebSocket ============================================================
+// ── WebSocket ──────────────────────────────────────────────────────────
 function connectWS() {
   if (MOCK) return;
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -729,7 +598,7 @@ function onEvent(ev) {
   }
 }
 
-// == Spotify row ==========================================================
+// ── Spotify row ────────────────────────────────────────────────────────
 function updateSpotify() {
   const sp = S.spotify;
   if (!sp) return;
@@ -773,7 +642,7 @@ async function restartSpotify() {
   }
 }
 
-// == Settings =============================================================
+// ── Settings ───────────────────────────────────────────────────────────
 function openSettings() {
   id('set-name').value         = S.config.device_name || '';
   id('set-spotify-name').value = S.config.spotify_connect_name || '';
@@ -782,11 +651,11 @@ function openSettings() {
   for (let i = 0; i < sel.options.length; i++) {
     sel.options[i].selected = sel.options[i].value === br;
   }
-  id('settings-panel').classList.remove('hidden');
+  show('settings-panel');
   id('settings-panel').scrollIntoView({behavior:'smooth', block:'nearest'});
 }
 
-function closeSettings() { id('settings-panel').classList.add('hidden'); }
+function closeSettings() { hide('settings-panel'); }
 
 async function saveSettings() {
   const newName    = id('set-name').value.trim()         || 'PartyBox';
@@ -828,18 +697,18 @@ async function saveSettings() {
   closeSettings();
 }
 
-// == Auth modal ===========================================================
-function showAuth() { id('auth-overlay').classList.remove('hidden'); id('auth-key').focus(); }
+// ── Auth modal ─────────────────────────────────────────────────────────
+function showAuth() { show('auth-overlay'); id('auth-key').focus(); }
 function submitKey() {
   const key = id('auth-key').value.trim();
   if (!key) return;
   S.apiKey = key;
   localStorage.setItem('_pb_key', key);
-  id('auth-overlay').classList.add('hidden');
+  hide('auth-overlay');
   loadSpeaker().then(() => updateSpeaker());
 }
 
-// == HTTP helpers =========================================================
+// ── HTTP helpers ───────────────────────────────────────────────────────
 async function get(path, withAuth=false, method='GET') {
   const headers = {};
   if (withAuth && S.apiKey) headers['X-Api-Key'] = S.apiKey;
@@ -851,176 +720,23 @@ async function get(path, withAuth=false, method='GET') {
   } catch (_) { return null; }
 }
 
-// == Toast ================================================================
+// ── Toast ──────────────────────────────────────────────────────────────
 function toast(msg) {
   const el = id('toast');
   el.textContent = msg;
-  el.classList.remove('hidden');
+  show(el);
   clearTimeout(S._toast);
-  S._toast = setTimeout(() => el.classList.add('hidden'), 3200);
+  S._toast = setTimeout(() => hide(el), 3200);
 }
 
-// == Utilities ============================================================
+// ── Utilities ──────────────────────────────────────────────────────────
 function esc(s) {
   return String(s)
     .replace(/&/g,'&amp;').replace(/</g,'&lt;')
     .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
-// == Provisioning =========================================================
-async function scanNetworks() {
-  const btn = id('scan-btn');
-  btn.disabled = true;
-  btn.textContent = '…';
-  const list = id('network-list');
-  list.innerHTML = '<p style="color:var(--text-3);font-size:14px;padding:4px 0">Scanning…</p>';
-
-  try {
-    const r = await fetch('/api/v1/wifi/networks');
-    if (r.ok) {
-      const data = await r.json();
-      PV.networks = data.networks || [];
-    } else {
-      PV.networks = [];
-    }
-  } catch (_) {
-    PV.networks = [];
-  }
-
-  btn.disabled = false;
-  btn.textContent = 'Scan';
-  renderNetworks();
-}
-
-function renderNetworks() {
-  const list = id('network-list');
-  if (!PV.networks.length) {
-    list.innerHTML = '<p style="color:var(--text-3);font-size:14px;padding:4px 0">No networks found — try scanning again.</p>';
-    return;
-  }
-  list.innerHTML = PV.networks.map((n, i) =>
-    '<div class="net-row' + (i === PV.selectedIdx ? ' selected' : '') + '"' +
-    ' role="button" tabindex="0" aria-label="' + esc(n.ssid) + '"' +
-    ' onclick="selectNetwork(' + i + ')"' +
-    ' onkeydown="if(event.key===\'Enter\'||event.key===\' \')selectNetwork(' + i + ')">' +
-    '<div class="net-ssid">' + esc(n.ssid) + '</div>' +
-    '<div class="net-meta">' +
-      '<span>' + n.signal + '%</span>' +
-      (n.security ? '<span>🔒 ' + esc(n.security) + '</span>' : '<span class="net-open">Open</span>') +
-    '</div></div>'
-  ).join('');
-}
-
-function selectNetwork(idx) {
-  PV.selectedIdx = idx;
-  renderNetworks();
-
-  const n = PV.networks[idx];
-  if (!n) return;
-
-  if (n.security) {
-    id('pw-ssid-label').textContent = n.ssid;
-    id('pw-field').classList.remove('hidden');
-    id('wifi-pw').value = '';
-    id('wifi-pw').focus();
-  } else {
-    id('pw-field').classList.add('hidden');
-  }
-
-  id('connect-btn').disabled = false;
-  setProvMsg('', '');
-}
-
-async function connectWifi() {
-  const n = PV.networks[PV.selectedIdx];
-  if (!n) return;
-
-  const pwField = id('pw-field');
-  const hasPassword = !pwField.classList.contains('hidden');
-  const pw = id('wifi-pw').value;
-  if (hasPassword && !pw) {
-    setProvMsg('err', 'Enter the WiFi password.');
-    return;
-  }
-
-  id('connect-btn').disabled = true;
-  id('connect-btn').textContent = 'Connecting…';
-  id('wifi-pw').disabled = true;
-  id('scan-btn').disabled = true;
-  setProvMsg('info', 'Connecting to "' + esc(n.ssid) + '"…');
-
-  try {
-    await fetch('/api/v1/wifi/connect', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ssid: n.ssid, password: pw || null}),
-    });
-  } catch (_) {
-    // Network error expected once the AP goes down -- keep polling.
-  }
-
-  pollProvState();
-}
-
-function pollProvState() {
-  if (PV.pollTimer) clearInterval(PV.pollTimer);
-  let attempts = 0;
-  PV.pollTimer = setInterval(async () => {
-    attempts++;
-    try {
-      const r = await fetch('/api/v1/wifi/status');
-      if (r.ok) {
-        const wifi = await r.json();
-
-        if (wifi.state === 'connected') {
-          clearInterval(PV.pollTimer);
-          setProvMsg('ok', 'Connected! Loading…');
-          setHealthPill('ok', 'Connected');
-          setTimeout(() => location.reload(), 1500);
-          return;
-        }
-
-        if (wifi.state === 'ap_active' && wifi.reason) {
-          // AP restored after a failed connection attempt.
-          // Use the API-supplied message so the Portal does not need to
-          // embed NetworkManager-specific failure logic.
-          clearInterval(PV.pollTimer);
-          setProvMsg('err', wifi.message || 'Could not connect. Please try again.');
-          resetProvUI();
-          return;
-        }
-      }
-    } catch (_) {
-      // Probe may fail while the AP is transitioning -- keep polling.
-    }
-
-    if (attempts > 30) {
-      clearInterval(PV.pollTimer);
-      setProvMsg('err', 'Timed out waiting for a response. Please try again.');
-      resetProvUI();
-    }
-  }, 2000);
-}
-
-function resetProvUI() {
-  id('connect-btn').disabled = (PV.selectedIdx < 0);
-  id('connect-btn').textContent = 'Connect';
-  id('wifi-pw').disabled = false;
-  id('wifi-pw').value = '';
-  id('scan-btn').disabled = false;
-}
-
-function setProvMsg(type, msg) {
-  const el = id('prov-msg');
-  if (!msg) { el.textContent = ''; el.style.color = ''; return; }
-  const color = type === 'err'  ? 'var(--danger)'
-              : type === 'ok'   ? 'var(--ok)'
-              : 'var(--text-2)';
-  el.style.color = color;
-  el.textContent = msg;
-}
-
-// == Start ================================================================
+// ── Start ──────────────────────────────────────────────────────────────
 boot();
 </script>
 </body>

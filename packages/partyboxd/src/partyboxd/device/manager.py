@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
 from dataclasses import dataclass
 
 from partybox import ConnectionFailedError, ConnectionLostError, PartyBoxDevice, Scanner
@@ -72,19 +71,11 @@ class DeviceManager:
     Callers may :meth:`subscribe` to receive device events as they occur.
     """
 
-    def __init__(
-        self,
-        settings: SpeakerSettings,
-        volume_fallback: Callable[[], int | None] | None = None,
-    ) -> None:
+    def __init__(self, settings: SpeakerSettings) -> None:
         self._settings = settings
         self._snapshot: StatusSnapshot = _DISCONNECTED
         self._device: PartyBoxDevice | None = None
         self._bus = EventBus()
-        # Optional callable that returns a software-based volume reading when
-        # the BLE opcode is not yet available. The companion layer wires this to
-        # VolumeState.level; the bare daemon leaves it as None.
-        self._volume_fallback = volume_fallback
 
     @property
     def snapshot(self) -> StatusSnapshot:
@@ -101,51 +92,6 @@ class DeviceManager:
     def unsubscribe(self, queue: asyncio.Queue[DeviceEvent]) -> None:
         """Stop delivering events to *queue*."""
         self._bus.unsubscribe(queue)
-
-    async def get_volume(self) -> int | None:
-        """Return the current speaker volume (0-100), or ``None`` if unavailable.
-
-        Resolution order:
-        1. BLE hardware read via the SDK.
-        2. Software fallback from ``volume_fallback`` (set by companion layer)
-           when the BLE opcode is not yet implemented.
-        3. ``None`` when neither source has a value.
-
-        Raises :exc:`DeviceNotConnectedError` if the speaker is not connected.
-        """
-        device = self._device
-        if device is None:
-            raise DeviceNotConnectedError()
-        try:
-            return await device.volume.get()
-        except NotImplementedError:
-            # BLE opcode not yet confirmed — fall back to software state if
-            # the companion layer has wired one in.
-            if self._volume_fallback is not None:
-                return self._volume_fallback()
-            return None
-        except (ConnectionLostError, NotConnectedError) as exc:
-            raise DeviceNotConnectedError() from exc
-
-    async def set_volume(self, percent: int) -> None:
-        """Send a volume command to the connected speaker.
-
-        Args:
-            percent: the desired volume level, 0-100.
-
-        Raises:
-            ValueError: if *percent* is outside 0-100.
-            DeviceNotConnectedError: if the speaker is not connected or the
-                connection is lost during the command.
-            NotImplementedError: if the BLE volume opcode is not yet implemented.
-        """
-        device = self._device
-        if device is None:
-            raise DeviceNotConnectedError()
-        try:
-            await device.volume.set(percent)
-        except (ConnectionLostError, NotConnectedError) as exc:
-            raise DeviceNotConnectedError() from exc
 
     async def power_on(self) -> None:
         """Send a power-on command to the connected speaker.

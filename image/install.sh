@@ -200,63 +200,6 @@ install -m 0644 \
     /etc/NetworkManager/conf.d/wifi-powersave-off.conf
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 9a. Captive portal DNS (provisioning mode)
-#
-# NetworkManager's internal dnsmasq (started for AP shared connections) reads
-# drop-ins from /etc/NetworkManager/dnsmasq-shared.d/. The captive.conf file
-# sets address=/#/10.42.0.1 so that every hostname resolves to the AP gateway,
-# causing iOS/Android captive portal probes to land on the Companion Portal.
-# ──────────────────────────────────────────────────────────────────────────────
-log "Installing captive portal DNS drop-in"
-mkdir -p /etc/NetworkManager/dnsmasq-shared.d
-install -m 0644 \
-    "${PARTYBOX_SRC_DIR}/image/config/nm-captive.conf" \
-    /etc/NetworkManager/dnsmasq-shared.d/captive.conf
-
-# ──────────────────────────────────────────────────────────────────────────────
-# 9b. polkit rule — companion user → NetworkManager D-Bus access
-#
-# ProvisioningService drives NM via nmcli, which issues D-Bus calls. By default
-# non-root users may only inspect NM state; modifying connections or bringing
-# interfaces up/down requires authorization. This rule grants the companion
-# system user unconditional (auth_admin_keep-free) access to all NM actions so
-# that the provisioning AP lifecycle can run without a password prompt and
-# without root.
-# ──────────────────────────────────────────────────────────────────────────────
-log "Installing polkit rule for companion → NetworkManager"
-mkdir -p /etc/polkit-1/rules.d
-cat > /etc/polkit-1/rules.d/51-companion-nm.rules << 'POLKIT_EOF'
-// Grant the companion system user access to the specific NetworkManager
-// D-Bus actions required for WiFi provisioning. Only these three actions
-// are granted; all other NM actions remain inaccessible to the companion user.
-//
-// org.freedesktop.NetworkManager.network-control
-//   Required for: nmcli connection add/up/delete (AP lifecycle) and
-//   nmcli device wifi connect (STA join). This is the core connection
-//   management permission and cannot be narrowed further within NM's
-//   polkit model — NM does not expose per-connection-type action IDs.
-//
-// org.freedesktop.NetworkManager.wifi.scan
-//   Required for: nmcli device wifi list (network scan).
-//
-// org.freedesktop.NetworkManager.wifi.share.open
-//   Required for: creating an AP connection with ipv4.method=shared and
-//   no WPA security. NM checks this action separately from network-control
-//   when the connection type is "shared open AP".
-polkit.addRule(function(action, subject) {
-    var allowed = [
-        "org.freedesktop.NetworkManager.network-control",
-        "org.freedesktop.NetworkManager.wifi.scan",
-        "org.freedesktop.NetworkManager.wifi.share.open",
-    ];
-    if (allowed.indexOf(action.id) !== -1 && subject.user === "companion") {
-        return polkit.Result.YES;
-    }
-});
-POLKIT_EOF
-chmod 0644 /etc/polkit-1/rules.d/51-companion-nm.rules
-
-# ──────────────────────────────────────────────────────────────────────────────
 # 10. Hostname
 #
 # "partybox" is the appliance default — it determines the mDNS address

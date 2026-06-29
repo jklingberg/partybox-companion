@@ -11,7 +11,6 @@ from partybox.protocol.constants import BATTERY_SERVICE_UUID
 from .capabilities.battery import BatteryCapability
 from .capabilities.device_info import DeviceInfoCapability
 from .capabilities.power import PowerCapability
-from .capabilities.volume import VolumeCapability
 
 
 class PartyBoxDevice:
@@ -42,7 +41,6 @@ class PartyBoxDevice:
         self._power: PowerCapability | None = None
         self._device_info: DeviceInfoCapability | None = None
         self._battery: BatteryCapability | None = None
-        self._volume: VolumeCapability | None = None
 
     @classmethod
     def _from_transport(cls, transport: ControlTransport) -> PartyBoxDevice:
@@ -59,7 +57,6 @@ class PartyBoxDevice:
         obj._device_info = DeviceInfoCapability(transport)
         has_battery = transport.has_service(BATTERY_SERVICE_UUID)
         obj._battery = BatteryCapability(transport) if has_battery else None
-        obj._volume = VolumeCapability(transport)
         return obj
 
     async def connect(self) -> None:
@@ -79,7 +76,6 @@ class PartyBoxDevice:
             self._power = None
             self._device_info = None
             self._battery = None
-            self._volume = None
         if self._candidate is None:
             raise RuntimeError("device has no candidate (created via _from_transport)")
         transport: ControlTransport = await self._candidate.connect()
@@ -87,7 +83,6 @@ class PartyBoxDevice:
         self._device_info = DeviceInfoCapability(transport)
         if transport.has_service(BATTERY_SERVICE_UUID):
             self._battery = BatteryCapability(transport)
-        self._volume = VolumeCapability(transport)
         self._transport = transport
 
     async def disconnect(self) -> None:
@@ -103,7 +98,6 @@ class PartyBoxDevice:
             self._power = None
             self._device_info = None
             self._battery = None
-            self._volume = None
 
     @property
     def is_connected(self) -> bool:
@@ -184,24 +178,6 @@ class PartyBoxDevice:
         if self._transport is None:
             raise NotConnectedError("call connect() before accessing capabilities")
         return self._battery
-
-    @property
-    def volume(self) -> VolumeCapability:
-        """Volume control capability — always present after connecting.
-
-        Unlike :attr:`battery`, volume is available on every PartyBox model.
-
-        .. note::
-            The BLE opcode for volume is not yet confirmed. :meth:`VolumeCapability.get`
-            and :meth:`VolumeCapability.set` raise :exc:`NotImplementedError` until
-            the opcode is identified from hardware captures.
-
-        Raises:
-            NotConnectedError: if :meth:`connect` has not been called.
-        """
-        if self._volume is None:
-            raise NotConnectedError("call connect() before accessing capabilities")
-        return self._volume
 
     async def __aenter__(self) -> PartyBoxDevice:
         await self.connect()
