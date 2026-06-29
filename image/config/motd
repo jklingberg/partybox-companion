@@ -1,7 +1,8 @@
-
 PartyBox Companion COMPANION_VERSION
 
-  Portal   http://partybox.local:8080
+  Portal   http://partybox.local
   Status   sudo systemctl status companion
   Logs     sudo journalctl -u companion -f
   Config   sudo nano /etc/companion/companion.env
+
+  Default SSH login: pi / raspberry  (change with: passwd)
