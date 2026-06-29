@@ -26,3 +26,8 @@ New ADRs should be added when a significant design decision is made. Superseded 
 | [014](014-audio-transport-viability.md) | Audio Transport Viability Spike | Accepted |
 | [015](015-bluetooth-control-transport.md) | Bluetooth Control Transport is BLE GATT (via bleak) | Accepted |
 | [016](016-companion-owns-spotify-lifecycle.md) | Companion Owns the Spotify Connect Lifecycle | Accepted |
+| [017](017-runtime-layout.md) | Runtime Layout | Accepted |
+| [018](018-systemd-service.md) | systemd Service Model | Accepted |
+| [019](019-distribution-approach.md) | Distribution Approach — Image Pipeline | Accepted |
+| [020](020-appliance-hardening.md) | Appliance Hardening | Accepted |
+| [021](021-network-provisioning.md) | Network Provisioning Architecture | Accepted |
