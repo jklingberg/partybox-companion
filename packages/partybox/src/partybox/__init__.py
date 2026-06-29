@@ -39,6 +39,7 @@ from partybox.device import (
     DeviceInfoCapability,
     PartyBoxDevice,
     PowerCapability,
+    VolumeCapability,
 )
 from partybox.scanner import Scanner
 
@@ -53,5 +54,6 @@ __all__ = [
     "PartyBoxDevice",
     "PowerCapability",
     "Scanner",
+    "VolumeCapability",
     "__version__",
 ]

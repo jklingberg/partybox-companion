@@ -34,7 +34,28 @@ class PowerChangedEvent:
     type: Literal["power_changed"] = "power_changed"
 
 
-DeviceEvent = ConnectedEvent | DisconnectedEvent | PowerChangedEvent
+@dataclass(frozen=True)
+class VolumeChangedEvent:
+    """Emitted when the speaker hardware reports a volume change.
+
+    DeviceManager emits this event when a BLE volume notification arrives
+    from the speaker (hardware button press, BLE SET command confirmation).
+    It is not emitted for software-side volume changes (Spotify, REST API).
+
+    ``percent`` is normalised to 0-100 before emission; the raw BLE value
+    (0-65535) is converted inside the SDK.
+
+    .. note::
+        This event is defined now to establish the notification path before
+        BLE volume is implemented.  DeviceManager does not emit it yet.
+        See ADR-022 for the intended volume authority model.
+    """
+
+    percent: int
+    type: Literal["volume_changed"] = "volume_changed"
+
+
+DeviceEvent = ConnectedEvent | DisconnectedEvent | PowerChangedEvent | VolumeChangedEvent
 
 
 class EventBus:

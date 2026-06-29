@@ -1,6 +1,6 @@
 """Device model: PartyBoxDevice and capability classes."""
 
-from .capabilities import BatteryCapability, DeviceInfoCapability, PowerCapability
+from .capabilities import BatteryCapability, DeviceInfoCapability, PowerCapability, VolumeCapability
 from .partybox import PartyBoxDevice
 
 __all__ = [
@@ -8,4 +8,5 @@ __all__ = [
     "DeviceInfoCapability",
     "PartyBoxDevice",
     "PowerCapability",
+    "VolumeCapability",
 ]
