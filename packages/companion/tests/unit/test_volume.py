@@ -16,28 +16,47 @@ def test_initial_level_is_none() -> None:
     assert vs.level is None
 
 
+def test_initial_source_is_none() -> None:
+    vs = VolumeState()
+    assert vs.source is None
+
+
 def test_update_sets_level() -> None:
     vs = VolumeState()
-    vs.update(75)
+    vs.update(75, "spotify")
     assert vs.level == 75
+
+
+def test_update_sets_source() -> None:
+    vs = VolumeState()
+    vs.update(75, "spotify")
+    assert vs.source == "spotify"
 
 
 def test_update_overwrites_previous() -> None:
     vs = VolumeState()
-    vs.update(50)
-    vs.update(25)
+    vs.update(50, "api")
+    vs.update(25, "spotify")
     assert vs.level == 25
+    assert vs.source == "spotify"
+
+
+def test_update_source_overwrites_previous() -> None:
+    vs = VolumeState()
+    vs.update(50, "api")
+    vs.update(60, "ble")
+    assert vs.source == "ble"
 
 
 def test_update_boundary_min() -> None:
     vs = VolumeState()
-    vs.update(0)
+    vs.update(0, "api")
     assert vs.level == 0
 
 
 def test_update_boundary_max() -> None:
     vs = VolumeState()
-    vs.update(100)
+    vs.update(100, "api")
     assert vs.level == 100
 
 
@@ -58,6 +77,12 @@ def test_volume_inferred_from_librespot_stderr() -> None:
     assert vs.level == 100
 
 
+def test_volume_inferred_source_is_spotify() -> None:
+    svc, vs = _service_with_state()
+    svc._infer_volume("mixer: set volume to 65535 (100%)")
+    assert vs.source == "spotify"
+
+
 def test_volume_inferred_at_midpoint() -> None:
     svc, vs = _service_with_state()
     svc._infer_volume("mixer: set volume to 32767 (50%)")
@@ -74,6 +99,7 @@ def test_volume_not_inferred_from_irrelevant_line() -> None:
     svc, vs = _service_with_state()
     svc._infer_volume("track is now playing (50 seconds in)")
     assert vs.level is None
+    assert vs.source is None
 
 
 def test_volume_inference_without_volume_state_is_noop() -> None:

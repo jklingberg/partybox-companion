@@ -118,7 +118,7 @@ class DeviceManager:
         if device is None:
             raise DeviceNotConnectedError()
         try:
-            return await device.volume.get()
+            return await device.volume.get()  # type: ignore[no-any-return]
         except (ConnectionLostError, NotConnectedError) as exc:
             raise DeviceNotConnectedError() from exc
         except NotImplementedError:

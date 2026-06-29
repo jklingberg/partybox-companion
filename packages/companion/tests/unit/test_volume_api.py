@@ -83,27 +83,27 @@ async def test_get_volume_returns_hardware_level_when_available() -> None:
     async with _make_client(manager) as client:
         r = await client.get("/api/v1/volume")
     assert r.status_code == 200
-    assert r.json() == {"level": 72}
+    assert r.json() == {"level": 72, "source": "ble"}
 
 
 async def test_get_volume_falls_back_to_state_when_ble_returns_none() -> None:
     manager = _make_manager(get_volume_result=None)
     vs = VolumeState()
-    vs.update(55)
+    vs.update(55, "spotify")
     async with _make_client(manager, vs) as client:
         r = await client.get("/api/v1/volume")
     assert r.status_code == 200
-    assert r.json() == {"level": 55}
+    assert r.json() == {"level": 55, "source": "spotify"}
 
 
 async def test_get_volume_falls_back_to_state_when_disconnected() -> None:
     manager = _make_manager(get_volume_exc=DeviceNotConnectedError())
     vs = VolumeState()
-    vs.update(30)
+    vs.update(30, "api")
     async with _make_client(manager, vs) as client:
         r = await client.get("/api/v1/volume")
     assert r.status_code == 200
-    assert r.json() == {"level": 30}
+    assert r.json() == {"level": 30, "source": "api"}
 
 
 async def test_get_volume_returns_null_when_nothing_known() -> None:
@@ -111,23 +111,23 @@ async def test_get_volume_returns_null_when_nothing_known() -> None:
     async with _make_client(manager, VolumeState()) as client:
         r = await client.get("/api/v1/volume")
     assert r.status_code == 200
-    assert r.json() == {"level": None}
+    assert r.json() == {"level": None, "source": None}
 
 
 async def test_get_volume_no_manager_returns_state() -> None:
     vs = VolumeState()
-    vs.update(40)
+    vs.update(40, "spotify")
     async with _make_client(None, vs) as client:
         r = await client.get("/api/v1/volume")
     assert r.status_code == 200
-    assert r.json() == {"level": 40}
+    assert r.json() == {"level": 40, "source": "spotify"}
 
 
 async def test_get_volume_no_manager_no_state_returns_null() -> None:
     async with _make_client(None, None) as client:
         r = await client.get("/api/v1/volume")
     assert r.status_code == 200
-    assert r.json() == {"level": None}
+    assert r.json() == {"level": None, "source": None}
 
 
 # ---------------------------------------------------------------------------
@@ -156,6 +156,7 @@ async def test_post_volume_updates_state() -> None:
     async with _make_client(manager, vs) as client:
         await client.post("/api/v1/volume", json={"level": 65})
     assert vs.level == 65
+    assert vs.source == "api"
 
 
 async def test_post_volume_updates_state_when_disconnected() -> None:
@@ -165,6 +166,7 @@ async def test_post_volume_updates_state_when_disconnected() -> None:
         r = await client.post("/api/v1/volume", json={"level": 42})
     assert r.status_code == 204
     assert vs.level == 42
+    assert vs.source == "api"
 
 
 async def test_post_volume_updates_state_when_not_implemented() -> None:
@@ -174,6 +176,7 @@ async def test_post_volume_updates_state_when_not_implemented() -> None:
         r = await client.post("/api/v1/volume", json={"level": 10})
     assert r.status_code == 204
     assert vs.level == 10
+    assert vs.source == "api"
 
 
 async def test_post_volume_invalid_level_returns_422() -> None:
@@ -195,3 +198,4 @@ async def test_post_volume_boundary_values_accepted(level: int) -> None:
         r = await client.post("/api/v1/volume", json={"level": level})
     assert r.status_code == 204
     assert vs.level == level
+    assert vs.source == "api"

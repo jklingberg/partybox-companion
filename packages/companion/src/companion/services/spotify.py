@@ -191,7 +191,7 @@ class SpotifyService:
             return
         m = _VOLUME_RE.search(line)
         if m is not None:
-            self._volume_state.update(int(m.group(1)))
+            self._volume_state.update(int(m.group(1)), "spotify")
 
     def _infer_playback_state(self, line: str) -> None:
         lower = line.lower()

@@ -37,6 +37,7 @@ class VolumeResponse(BaseModel):
     """Response body for GET /api/v1/volume."""
 
     level: int | None
+    source: str | None
 
 
 class VolumeBody(BaseModel):
@@ -235,14 +236,18 @@ def make_services_router(
         | 200  | Volume returned (``level`` is ``null`` if unknown) |
         """
         level: int | None = None
+        source: str | None = None
         if manager is not None:
             try:
                 level = await manager.get_volume()
+                if level is not None:
+                    source = "ble"
             except DeviceNotConnectedError:
                 pass
         if level is None and volume_state is not None:
             level = volume_state.level
-        return VolumeResponse(level=level)
+            source = volume_state.source
+        return VolumeResponse(level=level, source=source)
 
     # ------------------------------------------------------------------
     # POST /api/v1/volume — unauthenticated
@@ -278,6 +283,6 @@ def make_services_router(
                     detail={"error": "invalid_level", "message": str(exc)},
                 ) from exc
         if volume_state is not None:
-            volume_state.update(body.level)
+            volume_state.update(body.level, "api")
 
     return router
