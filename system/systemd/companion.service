@@ -1,8 +1,8 @@
 [Unit]
 Description=PartyBox Companion
 Documentation=https://github.com/jklingberg/partybox-companion
-After=network-online.target bluetooth.service
-Wants=network-online.target bluetooth.service
+After=network-online.target bluetooth.service NetworkManager.service
+Wants=network-online.target bluetooth.service NetworkManager.service
 
 [Service]
 Type=simple
@@ -44,9 +44,11 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
 
-# Port 80 binding: the appliance exposes the Portal on port 80 in production.
-# The mechanism (AmbientCapabilities, reverse proxy, or iptables) is determined
-# at image build time (M14). Set COMPANION_PORT=80 in companion.env once decided.
+# Port 80 binding: CAP_NET_BIND_SERVICE allows the companion user to bind port 80
+# without running as root. AmbientCapabilities grants it to the process at exec;
+# CapabilityBoundingSet restricts the process from acquiring any other capability.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 
 [Install]
 WantedBy=multi-user.target

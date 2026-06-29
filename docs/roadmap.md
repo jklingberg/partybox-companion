@@ -259,7 +259,7 @@ Turn Companion from a development process into a proper Linux service. After M12
 
 **Done when:** A Raspberry Pi boots into a fully running Companion appliance without any manual intervention. `systemctl status companion` shows `active (running)`.
 
-> **Note on hardware validation:** The service unit is complete and architecturally sound. End-to-end boot validation (`systemctl enable --now partybox-companion` → Portal accessible) will occur as part of M17 (Release Candidate) on a clean SD card flash. The unit cannot be exercised in the devcontainer (no systemd).
+> **Note on hardware validation:** The service unit is complete and architecturally sound. End-to-end boot validation (`systemctl enable --now partybox-companion` → Portal accessible) will occur as part of M18 (Release Candidate) on a clean SD card flash. The unit cannot be exercised in the devcontainer (no systemd).
 
 ---
 
@@ -322,24 +322,29 @@ Remove the last piece of Raspberry Pi knowledge from the onboarding experience. 
 
 The provisioning flow reuses the existing Portal and REST API, served during AP mode before the appliance has joined a network.
 
+**Architecture decisions:** See [ADR-021](adr/021-network-provisioning.md).
+
 **User flow:**
 
 1. Flash SD card → insert → power on
 2. If valid WiFi credentials exist: connect normally, no provisioning mode
-3. Otherwise: create a temporary access point — `PartyBox Companion Setup`
-4. User connects with a phone or laptop
-5. The OS captive portal detection triggers automatically and opens a browser
+3. Otherwise: create a temporary open access point — `PartyBox Companion Setup`
+4. User connects with a phone or laptop (no password required)
+5. The OS captive portal detection triggers automatically and opens a browser popup
 6. The Portal's provisioning screen: scan for networks, select one, enter password
 7. Appliance joins the selected network and tears down the temporary access point
 8. Normal operation resumes — Portal accessible at `http://partybox.local`
 
 **Architecture:**
 
-- **AP mode via NetworkManager** — NM creates and manages the temporary access point natively (`802-11-wireless.mode ap`); no separate hostapd required
-- **Wildcard DNS via dnsmasq** — all DNS queries from AP clients resolve to the appliance's own IP, causing iOS and Android to trigger their captive network popups automatically; HTTP redirect alone is insufficient for modern OS probing
-- **HTTP only during provisioning** — iOS Captive Network Assistant does not render HTTPS pages; the Portal must be reachable over plain HTTP on port 80 during AP mode (dependency on M15)
-- **Hold AP until STA confirmed** — the access point is not torn down until NetworkManager confirms the new connection reached `ACTIVATED` state; this prevents the failure mode where the AP disappears before the Pi has successfully joined the network
-- **Reuse Portal and REST API** — provisioning is a new state in the existing Portal, not a separate web server; new `/api/v1/wifi/*` endpoints expose NM state and credential submission to the front end
+- **AP mode via NetworkManager** — NM creates and manages the temporary access point natively (`802-11-wireless.mode ap`, `ipv4.method shared`); no separate hostapd required; NM's internal dnsmasq handles DHCP for AP clients automatically
+- **Open AP** — the setup network has no WPA password; users connect without a passphrase; security relies on the local-only nature of the AP link, not WPA
+- **Wildcard DNS via NM's internal dnsmasq** — a drop-in config in `/etc/NetworkManager/dnsmasq-shared.d/captive.conf` (`address=/#/<ap-ip>`) causes all DNS queries from AP clients to resolve to the appliance; iOS and Android use this to detect a captive portal and auto-open the browser popup; wildcard DNS is necessary — HTTP redirect alone is insufficient because OS probes are DNS-first
+- **Captive probe interception with HTTP 302** — during provisioning mode, the Portal intercepts well-known captive portal probe paths (`/generate_204`, `/hotspot-detect.html`, `/connecttest.txt`, etc.) and returns HTTP 302 redirects to the Portal root; returning 204 would signal "no captive portal" to the OS and suppress the popup
+- **HTTP on port 80** — iOS Captive Network Assistant renders pages only over HTTP on port 80; the Portal must be served on port 80 during AP mode; this brings port 80 binding into M14 (previously listed as an M16 goal); the `companion` user already has `CAP_NET_BIND_SERVICE` from M12
+- **Hold AP until STA confirmed** — the access point is not torn down until NetworkManager confirms the new connection reached `ACTIVATED` state; if the connection fails or times out, the AP remains active so the user can retry
+- **Reuse Portal and REST API** — provisioning is a new state of the existing Portal, not a separate web server; `ProvisioningService` in `companion/services/` manages the AP lifecycle; new `/api/v1/wifi/*` endpoints expose NM state and credential submission to the front end
+- **nmcli subprocess** — the provisioning service interacts with NetworkManager via `nmcli` subprocess calls; no additional Python dependencies required
 
 **New API surface:**
 
@@ -349,36 +354,98 @@ The provisioning flow reuses the existing Portal and REST API, served during AP 
 | `GET` | `/api/v1/wifi/networks` | Scan result: available SSIDs with signal strength |
 | `POST` | `/api/v1/wifi/connect` | Submit SSID + password; instructs NM to activate the connection |
 
-**State detection:** On startup, if NetworkManager reports no active WiFi STA connection, the appliance enters provisioning mode. Once a connection is saved and NM confirms activation, normal startup continues.
+**State machine:**
 
-**Done when:** A Pi flashed with the appliance image, with no WiFi credentials present, boots, creates a `PartyBox Companion Setup` access point, and a user can connect from a phone, open a browser, select their home network, enter a password, and have the Pi join that network and resume normal operation — no keyboard, monitor, terminal, or file editor required.
+```
+BOOT
+  │
+  ├─ NM has active WiFi STA? → Yes ──► NORMAL OPERATION
+  │                             No  ──► PROVISIONING
+  │
+PROVISIONING: NM creates companion-ap (open, ipv4.method shared)
+              dnsmasq wildcard DNS active
+              Portal on port 80 with captive probe interception
+  │
+AP_ACTIVE → user connects → OS auto-opens browser popup
+         → GET /api/v1/wifi/networks → selects SSID
+         → POST /api/v1/wifi/connect
+  │
+CONNECTING: NM activates STA connection
+         → poll for ACTIVATED; timeout → AP_ACTIVE (retry)
+  │
+CONNECTED: tear down companion-ap
+         → NORMAL OPERATION (Portal at http://partybox.local)
+```
+
+**Done when:** A Pi flashed with the appliance image, with no WiFi credentials present, boots, creates a `PartyBox Companion Setup` access point, and a user can connect from a phone, open a browser without typing any URL, select their home network, enter a password, and have the Pi join that network and resume normal operation — no keyboard, monitor, terminal, or file editor required.
 
 ---
 
-### M15 — First Boot Experience
+### M15 — Unified Volume Model
+
+**Packages:** `partybox`, `partyboxd`, `companion`
+
+Companion exposes one logical speaker volume, regardless of which audio service is active. The user never thinks about Spotify volume, AirPlay volume, ALSA volume, PipeWire volume, or Bluetooth attenuation. There is simply: speaker volume.
+
+**Design goal:** Companion becomes the owner of speaker state. Streaming services become producers of playback events rather than owners of hardware state. Spotify Connect, AirPlay, the Portal, the REST API, and any future integrations all operate on the same logical volume abstraction.
+
+**SDK — `VolumeCapability`:**
+
+```python
+await speaker.volume.get()       # returns 0–100
+await speaker.volume.set(percent)
+```
+
+The capability abstracts the underlying implementation. Clients never interact directly with BLE, librespot, or shairport-sync.
+
+**Hardware authority:** The PartyBox is the authoritative source of hardware volume. If the user rotates the physical volume knob, Companion updates its internal state, the Portal reflects the change, and the REST API returns the new value. Companion never fights the hardware.
+
+**Service integration:**
+
+- *Spotify Connect* — initially librespot volume changes may continue to drive playback; once BLE volume commands are confirmed, Companion translates Spotify volume events into hardware volume changes instead.
+- *AirPlay* — uses exactly the same `VolumeCapability`; no AirPlay-specific volume path exists.
+- *Future services* — every future playback backend (Internet Radio, DLNA, etc.) integrates through the same capability.
+
+**REST API:**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/volume` | Current logical volume (0–100) |
+| `POST` | `/api/v1/volume` | Set logical volume; body `{"level": <0–100>}` |
+
+The API represents logical speaker volume and must not expose implementation details (BLE opcodes, ALSA mixer names, etc.).
+
+**Portal:** A single volume control that targets the speaker, not the currently active streaming service.
+
+**Implementation strategy:** This milestone is primarily architectural. The first implementation may continue using librespot's software volume if the BLE volume opcode is not yet confirmed. Once BLE volume commands are available, the backend switches transparently without changing any public APIs or client code.
+
+**Done when:** Setting volume through any surface (Portal, REST API, physical knob) is reflected consistently across all others. No service owns volume independently.
+
+---
+
+### M16 — First Boot Experience
 
 **Package:** `companion`
 
-Close the gap between development environment and polished appliance. After M15, a user who has provisioned WiFi (via M14) can reach the Portal from a browser with no manual configuration.
+Close the gap between development environment and polished appliance. After M16, a user who has provisioned WiFi (via M14) can reach the Portal from a browser with no manual configuration.
 
-M14 gets the appliance onto the network. M15 polishes how it presents itself once there.
+M14 gets the appliance onto the network and binds port 80. M16 validates the end-to-end experience once the appliance has joined a home network.
 
 **Goals:**
-- Production networking: Portal served on port 80 (implementation: direct bind or reverse proxy — TBD)
-- mDNS hostname: `http://partybox.local` resolves without any router configuration
-- Appliance identity: Pi hostname set to `partybox` by default (hostname and `/etc/hosts` set in M13.1; this milestone validates it end-to-end)
+- mDNS hostname: `http://partybox.local` resolves without any router configuration (Avahi already installed in M13.1; this milestone validates it end-to-end with port 80)
+- Appliance identity: Pi hostname `partybox` confirmed working through a complete provisioning flow
 - Sensible defaults: all settings work out of the box without user intervention
 - Portal reachable at `http://partybox` once the router resolves the hostname
 
-**Done when:** After WiFi provisioning, the Portal is reachable at `http://partybox.local` with no terminal access required.
+**Done when:** After WiFi provisioning, the Portal is reachable at `http://partybox.local` on port 80 with no terminal access required.
 
 ---
 
-### M16 — Reliability
+### M17 — Reliability
 
 **Packages:** `companion`, `partyboxd`
 
-Build confidence in the appliance's ability to run unattended. M16 introduces no new features — it ensures every existing feature survives real-world conditions without user intervention.
+Build confidence in the appliance's ability to run unattended. M17 introduces no new features — it ensures every existing feature survives real-world conditions without user intervention.
 
 **Goals:**
 - **Reboot recovery:** after a Pi reboot, Companion reconnects to the speaker and librespot re-registers with Spotify automatically
@@ -391,7 +458,7 @@ Build confidence in the appliance's ability to run unattended. M16 introduces no
 
 ---
 
-### M17 — Release Candidate
+### M18 — Release Candidate
 
 No significant new functionality. This milestone verifies that all the pieces work together and that the project is ready to ship.
 
@@ -403,13 +470,13 @@ No significant new functionality. This milestone verifies that all the pieces wo
 - Version bumped to `1.0.0` in all packages
 - Bug fixing only — no scope additions
 
-**Done when:** Every M12–M16 milestone is complete. A clean flash-to-stream walkthrough succeeds without workarounds. The project is ready to tag.
+**Done when:** Every M12–M17 milestone is complete. A clean flash-to-stream walkthrough succeeds without workarounds. The project is ready to tag.
 
 ---
 
 ### v1.0
 
-Not a milestone. The point at which M12–M17 are complete and the release candidate is accepted.
+Not a milestone. The point at which M12–M18 are complete and the release candidate is accepted.
 
 ```
 git tag v1.0.0
@@ -429,7 +496,6 @@ git tag v1.0.0
 | AirPlay (M10) | Deferred to post-v1.0 to focus on a reliable Spotify Connect experience. shairport-sync subprocess manager follows the same pattern as librespot/SpotifyService. |
 | CLI (`partybox` command) | The Companion Portal is the primary user interface; the REST API is the primary integration surface; the SDK and examples already provide an excellent developer experience. A CLI remains valuable for debugging and automation, but it is no longer required to achieve the project's primary vision. Post-v1.0. |
 | Third-party BLE client coexistence | An opportunistic BLE connection model (connect to send, disconnect when idle) would allow the JBL app and other BLE centrals to connect to the speaker while Companion is running. Deferred because it adds reconnect latency (~1–2 s per command), complicates connection-state management in `DeviceManager`, and is not required for the core appliance use case. The persistent connection is a conscious v1.0 trade-off. Post-v1.0. |
-| Volume control via SDK | librespot and shairport-sync handle volume within their protocols. Direct hardware volume adds no value for the WiFi speaker use case in v1.0. |
 | Input source selection | Useful, but not needed to stream Spotify or AirPlay. The companion can set the correct input when a service starts. Deferred until the mechanism is confirmed via protocol analysis. |
 | Lighting control | Hardware-unique but not core to the WiFi speaker goal. Post-v1.0. |
 | Microphone / karaoke | Out of scope for a WiFi speaker. Post-v1.0. |
@@ -437,4 +503,4 @@ git tag v1.0.0
 | MQTT | REST + WebSocket covers all use cases. MQTT adds broker dependency for no v1.0 gain. |
 | Native HA custom component | HA works fine as an HTTP client. A custom component is an optimisation, not a requirement. |
 | Multi-device management | Auracast is hardware-level. One daemon, one master device. |
-| Bluetooth adapter reset from the Portal | Daemon-level Bluetooth recovery (handling a wedged controller without user intervention) is addressed in M16. A Portal-triggered "Reconnect" button backed by `POST /api/v1/bluetooth/reset` (requiring a `sudoers` entry for `systemctl restart bluetooth`) remains post-v1.0. |
+| Bluetooth adapter reset from the Portal | Daemon-level Bluetooth recovery (handling a wedged controller without user intervention) is addressed in M17. A Portal-triggered "Reconnect" button backed by `POST /api/v1/bluetooth/reset` (requiring a `sudoers` entry for `systemctl restart bluetooth`) remains post-v1.0. |
