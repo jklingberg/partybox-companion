@@ -141,13 +141,17 @@ async def _run(
     ble_volume_task = asyncio.create_task(
         _forward_ble_volume(manager, volume_state), name="ble-volume-forwarder"
     )
+    provisioning_task = asyncio.create_task(provisioning.run(), name="provisioning")
     try:
         await server.serve()
     finally:
+        provisioning_task.cancel()
         ble_volume_task.cancel()
         audio_task.cancel()
         spotify_task.cancel()
         manager_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await provisioning_task
         with suppress(asyncio.CancelledError):
             await ble_volume_task
         with suppress(asyncio.CancelledError):
