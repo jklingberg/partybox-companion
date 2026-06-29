@@ -227,30 +227,17 @@ install -m 0644 \
 log "Installing polkit rule for companion → NetworkManager"
 mkdir -p /etc/polkit-1/rules.d
 cat > /etc/polkit-1/rules.d/51-companion-nm.rules << 'POLKIT_EOF'
-// Grant the companion system user access to the specific NetworkManager
-// D-Bus actions required for WiFi provisioning. Only these three actions
-// are granted; all other NM actions remain inaccessible to the companion user.
-//
-// org.freedesktop.NetworkManager.network-control
-//   Required for: nmcli connection add/up/delete (AP lifecycle) and
-//   nmcli device wifi connect (STA join). This is the core connection
-//   management permission and cannot be narrowed further within NM's
-//   polkit model — NM does not expose per-connection-type action IDs.
-//
-// org.freedesktop.NetworkManager.wifi.scan
-//   Required for: nmcli device wifi list (network scan).
-//
-// org.freedesktop.NetworkManager.wifi.share.open
-//   Required for: creating an AP connection with ipv4.method=shared and
-//   no WPA security. NM checks this action separately from network-control
-//   when the connection type is "shared open AP".
+// Grant the companion system user full access to all NetworkManager D-Bus
+// actions. The companion user is a no-login system account (no shell, no
+// home directory) whose sole purpose is running the companion service.
+// Restricting to a specific action ID subset is fragile: NM checks
+// different action IDs for different operations (connection-add, wifi-scan,
+// shared-AP bring-up, STA connect) and the exact set varies across NM
+// versions. A prefix match on the org.freedesktop.NetworkManager namespace
+// is the correct scope for a dedicated system user.
 polkit.addRule(function(action, subject) {
-    var allowed = [
-        "org.freedesktop.NetworkManager.network-control",
-        "org.freedesktop.NetworkManager.wifi.scan",
-        "org.freedesktop.NetworkManager.wifi.share.open",
-    ];
-    if (allowed.indexOf(action.id) !== -1 && subject.user === "companion") {
+    if (action.id.indexOf("org.freedesktop.NetworkManager.") === 0
+            && subject.user === "companion") {
         return polkit.Result.YES;
     }
 });
@@ -272,7 +259,25 @@ sed -i '/^127\.0\.1\.1/d' /etc/hosts
 echo "127.0.1.1	partybox" >> /etc/hosts
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 10a. SSH access
+# 10a. NetworkManager WiFi radio state
+#
+# The base Pi OS image (and the QEMU build environment) may persist
+# WirelessEnabled=false in /var/lib/NetworkManager/NetworkManager.state.
+# NM reads this file on startup and keeps the radio disabled, preventing
+# the provisioning AP from ever being created. Reset it here so the image
+# always boots with the WiFi radio enabled.
+# ──────────────────────────────────────────────────────────────────────────────
+log "Ensuring NetworkManager WiFi radio is enabled on boot"
+mkdir -p /var/lib/NetworkManager
+cat > /var/lib/NetworkManager/NetworkManager.state << 'NM_STATE_EOF'
+[main]
+NetworkingEnabled=true
+WirelessEnabled=true
+WWANEnabled=true
+NM_STATE_EOF
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 10b. SSH access
 #
 # Creates a default login user and enables the SSH daemon. SSH is the primary
 # administration interface for a headless appliance.
@@ -281,7 +286,7 @@ echo "127.0.1.1	partybox" >> /etc/hosts
 # user was removed in Bookworm. We restore both here.
 #
 # Default credentials: pi / raspberry
-# Change the password after first login: ssh pi@partybox.local && passwd
+# Change the password after first login:  ssh pi@partybox.local  &&  passwd
 # ──────────────────────────────────────────────────────────────────────────────
 log "Creating default SSH user (pi)"
 if ! id pi &>/dev/null; then
