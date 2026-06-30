@@ -19,10 +19,20 @@ from pydantic import BaseModel, Field
 
 from companion.config import SpotifySettings
 from companion.config_store import ConfigStore
+from companion.services.audio import AudioService
+from companion.services.pairing import PairingService, PairingState
 from companion.services.spotify import SpotifyService
 from companion.volume import VolumeState
 
 _JOURNAL_LINES = 500
+
+
+class AudioStatusResponse(BaseModel):
+    """Response body for GET /api/v1/audio."""
+
+    connected: bool
+    address: str | None
+    pairing_state: str
 
 
 class SpotifyStatusResponse(BaseModel):
@@ -70,6 +80,8 @@ def make_services_router(
     config: ConfigStore,
     manager: DeviceManager | None = None,
     volume_state: VolumeState | None = None,
+    audio: AudioService | None = None,
+    pairing: PairingService | None = None,
 ) -> APIRouter:
     """Return an APIRouter with service-status and diagnostics endpoints.
 
@@ -79,6 +91,80 @@ def make_services_router(
     physical network access.
     """
     router = APIRouter(prefix="/api/v1", tags=["services"])
+
+    # ------------------------------------------------------------------
+    # GET /api/v1/audio — unauthenticated
+    # ------------------------------------------------------------------
+
+    @router.get(
+        "/audio",
+        response_model=AudioStatusResponse,
+        summary="Bluetooth audio status",
+    )
+    async def get_audio() -> AudioStatusResponse:
+        """Current state of the Bluetooth A2DP audio connection.
+
+        Always returns **200**.  ``connected`` is ``true`` when the Pi has an
+        active A2DP link to the speaker.  ``address`` is the Classic Bluetooth
+        MAC (``null`` when no pairing has been performed).  ``pairing_state``
+        reflects any in-progress pairing attempt (``idle``, ``scanning``,
+        ``pairing``, or ``failed``).
+
+        **Responses:**
+
+        | Code | Meaning |
+        |------|---------|
+        | 200  | Audio state returned |
+        """
+        a_status = audio.status if audio is not None else None
+        p_status = pairing.status if pairing is not None else None
+        return AudioStatusResponse(
+            connected=a_status.connected if a_status else False,
+            address=a_status.address if a_status else None,
+            pairing_state=(p_status.state if p_status else PairingState.IDLE),
+        )
+
+    # ------------------------------------------------------------------
+    # POST /api/v1/audio/pair — unauthenticated
+    # ------------------------------------------------------------------
+
+    @router.post(
+        "/audio/pair",
+        status_code=202,
+        summary="Start Bluetooth pairing",
+    )
+    async def post_audio_pair() -> None:
+        """Initiate a Bluetooth Classic pairing scan.
+
+        Starts a background scan for a JBL speaker in pairing mode.  The
+        caller must put the speaker into Bluetooth pairing mode **before**
+        calling this endpoint.  Poll ``GET /api/v1/audio`` to track progress.
+
+        Returns **202 Accepted** immediately; the scan runs for up to 60 s.
+        Returns **409 Conflict** if a pairing attempt is already in progress.
+
+        **Responses:**
+
+        | Code | Meaning |
+        |------|---------|
+        | 202  | Pairing scan started |
+        | 409  | Pairing already in progress |
+        | 503  | Pairing service unavailable |
+        """
+        if pairing is None:
+            raise HTTPException(
+                status_code=503,
+                detail={"error": "unavailable", "message": "Pairing service not available."},
+            )
+        started = await pairing.start()
+        if not started:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "already_pairing",
+                    "message": "A pairing attempt is already in progress.",
+                },
+            )
 
     # ------------------------------------------------------------------
     # GET /api/v1/spotify — unauthenticated
