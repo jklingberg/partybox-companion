@@ -53,7 +53,7 @@ async def test_get_config_returns_defaults_on_first_boot(tmp_path: Path) -> None
     assert r.status_code == 200
     body = r.json()
     assert body["device_name"] == "PartyBox"
-    assert body["spotify_connect_name"] == "PartyBox"
+    assert body["spotify_connect_name"] == "PartyBox Companion"
     assert body["spotify_bitrate"] == 320
 
 
@@ -203,7 +203,7 @@ def test_config_store_returns_defaults_when_no_file(tmp_path: Path) -> None:
     store = ConfigStore(tmp_path / "config.json")
     cfg = store.read()
     assert cfg.device_name == "PartyBox"
-    assert cfg.spotify_connect_name == "PartyBox"
+    assert cfg.spotify_connect_name == "PartyBox Companion"
     assert cfg.spotify_bitrate == 320
 
 
