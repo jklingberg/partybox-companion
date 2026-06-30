@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from companion.config import AudioSettings
-from companion.services.audio import AudioService, AudioStatus
+from companion.services.audio import AudioReadyChanged, AudioService, AudioStatus
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -345,3 +345,183 @@ def test_audio_settings_default_no_address() -> None:
 def test_audio_settings_accepts_address() -> None:
     s = AudioSettings(sink_address="50:1B:6A:14:FD:1D")
     assert s.sink_address == "50:1B:6A:14:FD:1D"
+
+
+# ---------------------------------------------------------------------------
+# audio_ready property
+# ---------------------------------------------------------------------------
+
+
+def test_audio_ready_initially_false() -> None:
+    svc = _service()
+    assert svc.audio_ready is False
+
+
+def test_audio_ready_reflects_status_connected() -> None:
+    """status.connected and audio_ready are always in sync."""
+    svc = _service()
+    assert svc.status.connected is svc.audio_ready
+    svc._set_audio_ready(True)
+    assert svc.status.connected is svc.audio_ready
+
+
+# ---------------------------------------------------------------------------
+# AudioReadyChanged events — _set_audio_ready transitions
+# ---------------------------------------------------------------------------
+
+
+async def test_set_audio_ready_emits_event_on_false_to_true() -> None:
+    svc = _service()
+    queue = svc.subscribe()
+    queue.get_nowait()  # consume the initial-state event (False)
+
+    svc._set_audio_ready(False)  # False → False: no event
+    assert queue.empty()
+
+    svc._set_audio_ready(True)  # False → True: event
+    assert not queue.empty()
+    assert queue.get_nowait() == AudioReadyChanged(audio_ready=True)
+
+
+async def test_set_audio_ready_emits_event_on_true_to_false() -> None:
+    svc = _service()
+    queue = svc.subscribe()
+    queue.get_nowait()  # consume the initial-state event (False)
+    svc._set_audio_ready(True)
+    queue.get_nowait()  # consume the True transition event
+
+    svc._set_audio_ready(False)  # True → False: event
+    assert not queue.empty()
+    assert queue.get_nowait() == AudioReadyChanged(audio_ready=False)
+
+
+async def test_set_audio_ready_no_event_when_unchanged() -> None:
+    """No event is emitted when the value does not change."""
+    svc = _service()
+    queue = svc.subscribe()
+    queue.get_nowait()  # consume the initial-state event (False)
+
+    svc._set_audio_ready(False)  # False → False
+    svc._set_audio_ready(False)  # still False
+    assert queue.empty()
+
+    svc._set_audio_ready(True)
+    queue.get_nowait()
+
+    svc._set_audio_ready(True)  # True → True
+    assert queue.empty()
+
+
+# ---------------------------------------------------------------------------
+# subscribe / unsubscribe
+# ---------------------------------------------------------------------------
+
+
+async def test_subscribe_delivers_current_state_immediately() -> None:
+    """subscribe() pre-populates the queue with the current state."""
+    svc = _service()
+    # Not ready at construction time
+    queue = svc.subscribe()
+    assert not queue.empty()
+    assert queue.get_nowait() == AudioReadyChanged(audio_ready=False)
+
+    # Now set ready and subscribe again
+    svc._set_audio_ready(True)
+    queue2 = svc.subscribe()
+    assert queue2.get_nowait() == AudioReadyChanged(audio_ready=True)
+
+
+async def test_subscribe_returns_queue_that_receives_events() -> None:
+    svc = _service()
+    queue = svc.subscribe()
+    queue.get_nowait()  # drain initial-state event
+
+    svc._set_audio_ready(True)
+    assert not queue.empty()
+    assert queue.get_nowait().audio_ready is True
+
+
+async def test_multiple_subscribers_each_receive_events() -> None:
+    svc = _service()
+    q1 = svc.subscribe()
+    q2 = svc.subscribe()
+    q1.get_nowait()  # drain initial-state events
+    q2.get_nowait()
+
+    svc._set_audio_ready(True)
+    assert q1.get_nowait() == AudioReadyChanged(audio_ready=True)
+    assert q2.get_nowait() == AudioReadyChanged(audio_ready=True)
+
+
+async def test_unsubscribe_stops_delivery() -> None:
+    svc = _service()
+    queue = svc.subscribe()
+    queue.get_nowait()  # drain initial-state event
+    svc.unsubscribe(queue)
+
+    svc._set_audio_ready(True)
+    assert queue.empty()
+
+
+async def test_unsubscribe_unknown_queue_is_idempotent() -> None:
+    """Calling unsubscribe with a queue that was never subscribed must not raise."""
+    svc = _service()
+    import asyncio
+
+    orphan: asyncio.Queue[object] = asyncio.Queue()
+    svc.unsubscribe(orphan)  # type: ignore[arg-type]  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# audio_ready during run() lifecycle
+# ---------------------------------------------------------------------------
+
+
+async def test_run_emits_audio_ready_true_on_connect() -> None:
+    """audio_ready transitions True when run() detects a connected A2DP sink."""
+    svc = _service()
+    queue = svc.subscribe()
+
+    responses = [
+        _mock_proc(b"Connected: yes"),  # _is_connected() → connected
+    ]
+
+    async def fake_exec(*args: object, **kwargs: object) -> MagicMock:
+        return responses.pop(0)
+
+    async def fake_sleep(delay: float) -> None:
+        raise asyncio.CancelledError
+
+    with patch("companion.services.audio.asyncio.create_subprocess_exec", side_effect=fake_exec):
+        with patch("companion.services.audio.asyncio.sleep", side_effect=fake_sleep):
+            with pytest.raises(asyncio.CancelledError):
+                await svc.run()
+
+    events = []
+    while not queue.empty():
+        events.append(queue.get_nowait())
+
+    assert AudioReadyChanged(audio_ready=True) in events
+
+
+async def test_run_emits_audio_ready_false_on_cancel() -> None:
+    """audio_ready transitions False when run() is cancelled while connected."""
+    svc = _service()
+
+    call_count = 0
+
+    async def fake_exec(*args: object, **kwargs: object) -> MagicMock:
+        return _mock_proc(b"Connected: yes")
+
+    async def fake_sleep(delay: float) -> None:
+        nonlocal call_count
+        call_count += 1
+        if call_count >= 2:
+            raise asyncio.CancelledError
+
+    with patch("companion.services.audio.asyncio.create_subprocess_exec", side_effect=fake_exec):
+        with patch("companion.services.audio.asyncio.sleep", side_effect=fake_sleep):
+            with pytest.raises(asyncio.CancelledError):
+                await svc.run()
+
+    assert svc.audio_ready is False

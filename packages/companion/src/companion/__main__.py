@@ -127,7 +127,7 @@ async def _run(
 
     provisioning = ProvisioningService(companion_settings.wifi.interface)
 
-    app = create_daemon_app(manager, daemon_settings)
+    app = create_daemon_app(manager, daemon_settings, audio_ready_fn=lambda: audio.audio_ready)
     app.include_router(make_portal_router(companion_settings, config_store))
     app.include_router(
         make_services_router(
