@@ -177,7 +177,7 @@ install -m 0644 \
 # ──────────────────────────────────────────────────────────────────────────────
 # 8. BlueZ — auto-enable Bluetooth adapter on boot (see system/README.md)
 # ──────────────────────────────────────────────────────────────────────────────
-log "Configuring BlueZ (AutoEnable=true)"
+log "Configuring BlueZ (AutoEnable=true, Channels=1)"
 BLUEZ_CONF=/etc/bluetooth/main.conf
 if [ -f "${BLUEZ_CONF}" ]; then
     # Uncomment the existing AutoEnable line if present as a comment
@@ -186,9 +186,18 @@ if [ -f "${BLUEZ_CONF}" ]; then
     if ! grep -q '^AutoEnable=true' "${BLUEZ_CONF}"; then
         printf '\n[Policy]\nAutoEnable=true\n' >> "${BLUEZ_CONF}"
     fi
+    # Disable EATT (Enhanced ATT channels). The JBL PartyBox 520 advertises
+    # EATT support but rejects EATT connections without an encrypted LE link,
+    # triggering SMP pairing which the speaker rejects. Setting Channels=1
+    # forces BlueZ to use only the standard ATT bearer (CID 0x0004), which
+    # works without encryption for the vendor GATT service.
+    sed -i 's/^#\s*Channels\s*=.*/Channels = 1/' "${BLUEZ_CONF}"
+    if ! grep -q '^Channels\s*=' "${BLUEZ_CONF}"; then
+        printf '\n[GATT]\nChannels = 1\n' >> "${BLUEZ_CONF}"
+    fi
 else
     mkdir -p /etc/bluetooth
-    printf '[Policy]\nAutoEnable=true\n' > "${BLUEZ_CONF}"
+    printf '[Policy]\nAutoEnable=true\n\n[GATT]\nChannels = 1\n' > "${BLUEZ_CONF}"
 fi
 
 # ──────────────────────────────────────────────────────────────────────────────
