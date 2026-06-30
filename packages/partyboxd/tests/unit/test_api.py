@@ -53,7 +53,7 @@ async def test_health_when_connected() -> None:
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "ok"
-    assert body["speaker_connected"] is True
+    assert body["ble_connected"] is True
 
 
 async def test_health_when_disconnected() -> None:
@@ -62,7 +62,37 @@ async def test_health_when_disconnected() -> None:
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "ok"
-    assert body["speaker_connected"] is False
+    assert body["ble_connected"] is False
+
+
+async def test_health_audio_ready_none_without_companion() -> None:
+    """audio_ready is null when partyboxd runs standalone (no audio_ready_fn)."""
+    async with _make_client(_CONNECTED) as client:
+        r = await client.get("/api/v1/health")
+    assert r.status_code == 200
+    assert r.json()["audio_ready"] is None
+
+
+async def test_health_audio_ready_true_when_fn_returns_true() -> None:
+    """audio_ready reflects the audio_ready_fn result."""
+    manager = MagicMock()
+    type(manager).snapshot = PropertyMock(return_value=_CONNECTED)
+    app = create_app(manager, _make_settings(), audio_ready_fn=lambda: True)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.get("/api/v1/health")
+    assert r.status_code == 200
+    assert r.json()["audio_ready"] is True
+
+
+async def test_health_audio_ready_false_when_fn_returns_false() -> None:
+    """audio_ready is false when audio_ready_fn returns False."""
+    manager = MagicMock()
+    type(manager).snapshot = PropertyMock(return_value=_CONNECTED)
+    app = create_app(manager, _make_settings(), audio_ready_fn=lambda: False)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.get("/api/v1/health")
+    assert r.status_code == 200
+    assert r.json()["audio_ready"] is False
 
 
 async def test_health_requires_no_api_key() -> None:

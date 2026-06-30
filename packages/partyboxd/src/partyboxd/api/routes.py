@@ -21,7 +21,8 @@ class HealthResponse(BaseModel):
 
     status: str
     version: str
-    speaker_connected: bool
+    ble_connected: bool
+    audio_ready: bool | None = None
 
 
 class SpeakerResponse(BaseModel):
@@ -72,6 +73,7 @@ def _capability_unavailable() -> HTTPException:
 def make_router(
     manager: DeviceManager,
     auth: Callable[..., Awaitable[None]],
+    audio_ready_fn: Callable[[], bool] | None = None,
 ) -> APIRouter:
     """Return an APIRouter with all partyboxd routes bound to *manager*.
 
@@ -94,8 +96,11 @@ def make_router(
     async def get_health() -> HealthResponse:
         """Daemon liveness check.
 
-        Always returns **200**. The ``speaker_connected`` field indicates
-        whether the daemon currently has an active connection to the speaker.
+        Always returns **200**.  ``ble_connected`` indicates whether the daemon
+        has an active BLE GATT connection to the speaker.  ``audio_ready``
+        indicates whether the appliance can currently produce audio (A2DP
+        connected); ``null`` when running as standalone partyboxd without
+        Companion.
 
         No authentication required — safe to poll from monitoring tools.
 
@@ -108,7 +113,8 @@ def make_router(
         return HealthResponse(
             status="ok",
             version=partyboxd.__version__,
-            speaker_connected=manager.snapshot.connected,
+            ble_connected=manager.snapshot.connected,
+            audio_ready=audio_ready_fn() if audio_ready_fn is not None else None,
         )
 
     # ------------------------------------------------------------------

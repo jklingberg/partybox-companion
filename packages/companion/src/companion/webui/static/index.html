@@ -557,7 +557,7 @@ const PV = {
 const MOCK = location.search.includes('mock');
 const MOCK_PROVISION = location.search.includes('provision');
 
-const MOCK_HEALTH  = {status:'ok', version:'0.1.0-dev', speaker_connected:true};
+const MOCK_HEALTH  = {status:'ok', version:'0.1.0-dev', ble_connected:true, audio_ready:true};
 const MOCK_SPEAKER = {connected:true, address:'AA:BB:CC:DD:EE:FF', firmware:'26.2.10', battery:null};
 const MOCK_CONFIG  = {device_name:'Living Room', spotify_connect_name:'Living Room', spotify_bitrate:320};
 const MOCK_SPOTIFY = {running:true, active:false, device_name:'Living Room'};
