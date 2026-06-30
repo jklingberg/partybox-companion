@@ -29,7 +29,7 @@ log = logging.getLogger(__name__)
 
 _SCAN_TIMEOUT = 60.0  # seconds to wait for speaker to appear
 _POLL_INTERVAL = 2.0  # seconds between bluetoothctl devices polls
-_PAIR_TIMEOUT = 20.0  # seconds for the pair command
+_PAIR_TIMEOUT = 60.0  # seconds for the pair command (allow time for SSP confirmation)
 _TRUST_TIMEOUT = 5.0
 _CONNECT_TIMEOUT = 15.0
 
@@ -89,17 +89,22 @@ class PairingService:
 
     async def _do_pair(self) -> None:
         self._state = PairingState.SCANNING
-        log.info("Pairing: scanning for speaker (%.0fs window)", _SCAN_TIMEOUT)
+        # The BR/EDR address is often already cached in BlueZ from passive
+        # discovery — use it immediately rather than requiring the user to wait
+        # for it to appear as a "new" device during the scan window.
+        current_sink = self._config.read().audio_sink_address
+        mac = await self._find_cached_jbl(current_sink)
+        if mac:
+            log.info("Pairing: using pre-discovered device %s — skipping scan", mac)
+        else:
+            log.info("Pairing: scanning for speaker (%.0fs window)", _SCAN_TIMEOUT)
+            mac = await self._scan_for_jbl(current_sink)
 
         try:
-            known = set(await _list_devices())
-            log.debug("Pairing: %d device(s) already known to BlueZ", len(known))
-
-            mac = await self._scan_for_new_jbl(known)
             if mac is None:
                 self._state = PairingState.FAILED
                 self._error = "Speaker not found. Put the speaker in pairing mode and try again."
-                log.warning("Pairing: scan timed out — no new JBL device found")
+                log.warning("Pairing: scan timed out — no JBL device found")
                 return
 
             log.info("Pairing: found speaker at %s", mac)
@@ -132,8 +137,20 @@ class PairingService:
             self._error = f"Unexpected error: {exc}"
             log.error("Pairing: unexpected error: %s", exc, exc_info=True)
 
-    async def _scan_for_new_jbl(self, known: set[str]) -> str | None:
-        """Scan for BR/EDR devices and return the MAC of the first new JBL found."""
+    async def _find_cached_jbl(self, current_sink: str | None) -> str | None:
+        """Return MAC of any JBL BR/EDR device already cached in BlueZ."""
+        devices = await _list_devices()
+        for mac, name in devices.items():
+            if mac == current_sink:
+                continue
+            if "jbl" not in name.lower():
+                continue
+            if await _is_public_address(mac):
+                return mac
+        return None
+
+    async def _scan_for_jbl(self, current_sink: str | None) -> str | None:
+        """Scan for BR/EDR devices and return the first JBL found."""
         scan_proc = await asyncio.create_subprocess_exec(
             "bluetoothctl",
             "scan",
@@ -147,13 +164,12 @@ class PairingService:
                 await asyncio.sleep(_POLL_INTERVAL)
                 devices = await _list_devices()
                 for mac, name in devices.items():
-                    if mac in known:
+                    if mac == current_sink:
                         continue
                     if "jbl" not in name.lower():
                         continue
-                    if not await _is_public_address(mac):
-                        continue
-                    return mac
+                    if await _is_public_address(mac):
+                        return mac
         finally:
             scan_proc.terminate()
             await scan_proc.wait()
@@ -162,6 +178,7 @@ class PairingService:
 
     async def _pair(self, mac: str) -> bool:
         """Run ``bluetoothctl pair <mac>``. Returns True on success."""
+        proc: asyncio.subprocess.Process | None = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 "bluetoothctl",
@@ -170,15 +187,26 @@ class PairingService:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
             )
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=_PAIR_TIMEOUT)
+            try:
+                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=_PAIR_TIMEOUT)
+            except TimeoutError:
+                # Kill the subprocess so BlueZ does not remain in InProgress state.
+                proc.kill()
+                await proc.wait()
+                log.warning("Pairing: pair command timed out for %s", mac)
+                return False
             output = stdout.decode(errors="replace").lower()
             if "failed" in output or (proc.returncode is not None and proc.returncode != 0):
                 log.warning("Pairing: pair command failed for %s: %s", mac, output.strip())
                 return False
             return True
-        except (OSError, TimeoutError) as exc:
+        except OSError as exc:
             log.warning("Pairing: pair command error for %s: %s", mac, exc)
             return False
+        finally:
+            if proc is not None and proc.returncode is None:
+                proc.kill()
+                await proc.wait()
 
 
 # ------------------------------------------------------------------

@@ -101,6 +101,38 @@ async def test_start_returns_false_when_already_pairing() -> None:
 # ---------------------------------------------------------------------------
 
 
+async def test_pre_discovered_device_skips_scan() -> None:
+    """If the speaker's BR/EDR address is already in BlueZ cache, pair immediately."""
+    audio = _audio()
+    store = _store()
+    svc = PairingService(store, audio)
+
+    scan_started = False
+
+    async def fake_exec(*args: object, **kwargs: object) -> MagicMock:
+        nonlocal scan_started
+        scan_started = True
+        return _mock_proc()
+
+    with (
+        patch(
+            "companion.services.pairing._list_devices",
+            new=AsyncMock(return_value={_SPEAKER_MAC: _SPEAKER_NAME}),
+        ),
+        patch("companion.services.pairing._is_public_address", new=AsyncMock(return_value=True)),
+        patch("companion.services.pairing.asyncio.create_subprocess_exec", side_effect=fake_exec),
+        patch("companion.services.pairing._btctl", new=AsyncMock()),
+        patch("companion.services.pairing.PairingService._pair", new=AsyncMock(return_value=True)),
+    ):
+        await svc.start()
+        if svc._task:
+            with suppress(Exception):
+                await asyncio.wait_for(asyncio.shield(svc._task), timeout=1.0)
+
+    assert audio.status.address == _SPEAKER_MAC
+    assert not scan_started  # bluetoothctl scan on was never launched
+
+
 async def test_successful_pairing_calls_update_address() -> None:
     audio = _audio()
     store = _store()
