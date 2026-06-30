@@ -89,16 +89,15 @@ class PairingService:
 
     async def _do_pair(self) -> None:
         self._state = PairingState.SCANNING
-        # The BR/EDR address is often already cached in BlueZ from passive
-        # discovery — use it immediately rather than requiring the user to wait
-        # for it to appear as a "new" device during the scan window.
-        current_sink = self._config.read().audio_sink_address
-        mac = await self._find_cached_jbl(current_sink)
+        # Do not filter by current_sink: when re-pairing the same speaker the
+        # address is already known, and excluding it would cause the scan to
+        # time out. Any JBL public-address device is a valid pairing target.
+        mac = await self._find_cached_jbl()
         if mac:
             log.info("Pairing: using pre-discovered device %s — skipping scan", mac)
         else:
             log.info("Pairing: scanning for speaker (%.0fs window)", _SCAN_TIMEOUT)
-            mac = await self._scan_for_jbl(current_sink)
+            mac = await self._scan_for_jbl()
 
         try:
             if mac is None:
@@ -112,7 +111,10 @@ class PairingService:
 
             if not await self._pair(mac):
                 self._state = PairingState.FAILED
-                self._error = "Pairing failed. Make sure the speaker is still in pairing mode."
+                self._error = (
+                    "Pairing failed. Put the speaker in pairing mode "
+                    "(press the Bluetooth button once until the LEDs flash) and try again."
+                )
                 return
 
             await _btctl("trust", mac, timeout=_TRUST_TIMEOUT)
@@ -137,19 +139,17 @@ class PairingService:
             self._error = f"Unexpected error: {exc}"
             log.error("Pairing: unexpected error: %s", exc, exc_info=True)
 
-    async def _find_cached_jbl(self, current_sink: str | None) -> str | None:
+    async def _find_cached_jbl(self) -> str | None:
         """Return MAC of any JBL BR/EDR device already cached in BlueZ."""
         devices = await _list_devices()
         for mac, name in devices.items():
-            if mac == current_sink:
-                continue
             if "jbl" not in name.lower():
                 continue
             if await _is_public_address(mac):
                 return mac
         return None
 
-    async def _scan_for_jbl(self, current_sink: str | None) -> str | None:
+    async def _scan_for_jbl(self) -> str | None:
         """Scan for BR/EDR devices and return the first JBL found."""
         scan_proc = await asyncio.create_subprocess_exec(
             "bluetoothctl",
@@ -164,8 +164,6 @@ class PairingService:
                 await asyncio.sleep(_POLL_INTERVAL)
                 devices = await _list_devices()
                 for mac, name in devices.items():
-                    if mac == current_sink:
-                        continue
                     if "jbl" not in name.lower():
                         continue
                     if await _is_public_address(mac):
@@ -196,10 +194,23 @@ class PairingService:
                 log.warning("Pairing: pair command timed out for %s", mac)
                 return False
             output = stdout.decode(errors="replace").lower()
-            if "failed" in output or (proc.returncode is not None and proc.returncode != 0):
-                log.warning("Pairing: pair command failed for %s: %s", mac, output.strip())
-                return False
-            return True
+            log.debug("Pairing: pair output for %s: %s", mac, output.strip())
+            # bluetoothctl always exits 0 regardless of success/failure, so check
+            # the output text. Require explicit confirmation rather than inferring
+            # success from the absence of "failed" — a silent empty output is not
+            # a successful pairing.
+            if "pairing successful" in output:
+                return True
+            # AlreadyExists means the device is already paired — treat as success.
+            if "alreadyexists" in output or "already paired" in output:
+                log.info("Pairing: %s was already paired", mac)
+                return True
+            log.warning(
+                "Pairing: pair command did not confirm success for %s: %s",
+                mac,
+                output.strip(),
+            )
+            return False
         except OSError as exc:
             log.warning("Pairing: pair command error for %s: %s", mac, exc)
             return False

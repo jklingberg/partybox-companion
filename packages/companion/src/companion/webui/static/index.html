@@ -435,8 +435,8 @@
         <h2>Pair Speaker</h2>
       </div>
       <p class="prov-hint">
-        Put your speaker into Bluetooth pairing mode (hold the Bluetooth button
-        until the light flashes), then tap <strong>Start Pairing</strong>.
+        Put your speaker into Bluetooth pairing mode (press the Bluetooth button
+        once until the light flashes), then tap <strong>Start Pairing</strong>.
         The appliance will scan for up to 60 seconds.
       </p>
       <div class="btn-row">
@@ -754,11 +754,13 @@ function updateAudio() {
     id('bt-status').textContent = 'Pairing failed';
     id('bt-detail').textContent = '—';
     pairBtn.classList.remove('hidden');
+    pairBtn.textContent = 'Pair Speaker';
   } else if (!au.address) {
     setDot('bt-dot', 'warn');
     id('bt-status').textContent = 'Not paired';
     id('bt-detail').textContent = '—';
     pairBtn.classList.remove('hidden');
+    pairBtn.textContent = 'Pair Speaker';
   } else if (au.connected) {
     setDot('bt-dot', 'ok');
     id('bt-status').textContent = 'Connected';
@@ -768,7 +770,8 @@ function updateAudio() {
     setDot('bt-dot', 'spin');
     id('bt-status').textContent = 'Connecting…';
     id('bt-detail').textContent = au.address;
-    pairBtn.classList.add('hidden');
+    pairBtn.classList.remove('hidden');
+    pairBtn.textContent = 'Re-pair';
   }
 
   updateHealthPill();
@@ -828,17 +831,27 @@ function startPairPoll() {
 
       const ps = data.pairing_state;
       if (ps === 'idle' && data.address) {
-        stopPairPoll();
-        setPairMsg('ok', 'Paired successfully! Audio connection is being established.');
+        if (data.connected) {
+          stopPairPoll();
+          setPairMsg('ok', 'Connected! You can now play music.');
+          id('pair-start-btn').textContent = 'Done';
+          id('pair-start-btn').disabled = false;
+          id('pair-start-btn').onclick = closePairing;
+          toast('Speaker connected.');
+          return;
+        }
+        // Paired but A2DP not yet up — keep polling until connected.
+        setPairMsg('ok', 'Paired! Establishing audio connection…');
         id('pair-start-btn').textContent = 'Done';
         id('pair-start-btn').disabled = false;
         id('pair-start-btn').onclick = closePairing;
-        toast('Speaker paired.');
         return;
       }
       if (ps === 'failed') {
         stopPairPoll();
-        setPairMsg('err', 'Pairing failed. Make sure the speaker is in pairing mode and try again.');
+        setPairMsg('err', S.audio && S.audio.error
+          ? S.audio.error
+          : 'Pairing failed. Make sure the speaker is in pairing mode and try again.');
         id('pair-start-btn').disabled = false;
         id('pair-start-btn').textContent = 'Try Again';
         id('pair-start-btn').onclick = startPairing;
@@ -846,12 +859,12 @@ function startPairPoll() {
       }
     } catch (_) {}
 
-    if (attempts > 40) {  // ~80 s safety net
+    if (attempts > 90) {  // ~3 min safety net
       stopPairPoll();
-      setPairMsg('err', 'Timed out. Please try again.');
+      setPairMsg('err', 'Timed out waiting for audio connection. Try playing music to reconnect.');
       id('pair-start-btn').disabled = false;
-      id('pair-start-btn').textContent = 'Try Again';
-      id('pair-start-btn').onclick = startPairing;
+      id('pair-start-btn').textContent = 'Done';
+      id('pair-start-btn').onclick = closePairing;
     }
   }, 2000);
 }

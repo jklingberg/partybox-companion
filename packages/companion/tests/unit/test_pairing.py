@@ -235,6 +235,55 @@ async def test_scan_timeout_transitions_to_failed() -> None:
 
 
 # ---------------------------------------------------------------------------
+# _pair output parsing
+# ---------------------------------------------------------------------------
+
+
+async def test_pair_returns_true_on_success_output() -> None:
+    svc = _service()
+    output = b"Attempting to pair...\n[CHG] Device ... Paired: yes\nPairing successful\n"
+    with patch(
+        "companion.services.pairing.asyncio.create_subprocess_exec",
+        return_value=_mock_proc(output),
+    ):
+        assert await svc._pair(_SPEAKER_MAC) is True
+
+
+async def test_pair_returns_false_on_auth_failed() -> None:
+    svc = _service()
+    output = (
+        b"Attempting to pair...\n"
+        b"[CHG] Device ... Connected: yes\n"
+        b"Failed to pair: org.bluez.Error.AuthenticationFailed\n"
+    )
+    with patch(
+        "companion.services.pairing.asyncio.create_subprocess_exec",
+        return_value=_mock_proc(output),
+    ):
+        assert await svc._pair(_SPEAKER_MAC) is False
+
+
+async def test_pair_returns_false_on_empty_output() -> None:
+    """Empty output must not be treated as success."""
+    svc = _service()
+    with patch(
+        "companion.services.pairing.asyncio.create_subprocess_exec",
+        return_value=_mock_proc(b""),
+    ):
+        assert await svc._pair(_SPEAKER_MAC) is False
+
+
+async def test_pair_returns_true_on_already_paired() -> None:
+    svc = _service()
+    output = b"Failed to pair: org.bluez.Error.AlreadyExists\n"
+    with patch(
+        "companion.services.pairing.asyncio.create_subprocess_exec",
+        return_value=_mock_proc(output),
+    ):
+        assert await svc._pair(_SPEAKER_MAC) is True
+
+
+# ---------------------------------------------------------------------------
 # _list_devices parser
 # ---------------------------------------------------------------------------
 
