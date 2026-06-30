@@ -89,36 +89,6 @@ async def _forward_ble_volume(manager: DeviceManager, volume_state: VolumeState)
         manager.unsubscribe(queue)
 
 
-async def _reset_bt_controller() -> None:
-    """Reset the HCI controller to clear wedged state from prior sessions.
-
-    After many failed GATT connection attempts the BCM controller can get wedged
-    and reject new connections with ATT "Unlikely Error". A software reset clears
-    that state. Safe to run on every start — on a fresh boot it's a no-op in
-    effect; after a wedge it allows the first connection to succeed.
-    """
-    log = logging.getLogger(__name__)
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "hciconfig",
-            "hci0",
-            "reset",
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        await proc.wait()
-        rc = proc.returncode
-        if rc is None or rc != 0:
-            log.warning("hciconfig hci0 reset returned %s — controller may be in a bad state", rc)
-        else:
-            log.info("Bluetooth controller reset (hci0)")
-            await asyncio.sleep(2.0)
-    except FileNotFoundError:
-        log.debug("hciconfig not found — skipping Bluetooth controller reset")
-    except Exception as exc:
-        log.warning("Bluetooth controller reset failed: %s", exc)
-
-
 def main() -> None:
     level = os.environ.get("COMPANION_LOG_LEVEL", "INFO").upper()
     logging.config.dictConfig(_make_log_config(level))
@@ -165,7 +135,6 @@ async def _run(
     )
     server = uvicorn.Server(server_config)
 
-    await _reset_bt_controller()
     manager_task = asyncio.create_task(manager.run(), name="device-manager")
     spotify_task = asyncio.create_task(spotify.run(), name="spotify-service")
     audio_task = asyncio.create_task(audio.run(), name="audio-service")

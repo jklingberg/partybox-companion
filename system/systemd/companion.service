@@ -17,6 +17,10 @@ Environment=COMPANION_DATA_DIR=/var/lib/companion
 # and uncomment the settings you want to change. The file is silently ignored if absent.
 EnvironmentFile=-/etc/companion/companion.env
 
+# Reset the HCI controller before starting to clear wedged state from prior failed
+# connections. The '+' prefix runs this as root regardless of User=companion.
+ExecStartPre=+/usr/bin/hciconfig hci0 reset
+
 ExecStart=/opt/partybox-companion/bin/partybox-companion
 
 Restart=on-failure

@@ -17,7 +17,7 @@ class PortalConfig(BaseModel):
     """Appliance configuration persisted across restarts."""
 
     device_name: str = "PartyBox"
-    spotify_connect_name: str = "PartyBox"
+    spotify_connect_name: str = "PartyBox Companion"
     spotify_bitrate: Literal[96, 160, 320] = 320
 
 
