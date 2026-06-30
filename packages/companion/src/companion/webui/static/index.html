@@ -369,6 +369,19 @@
       </div>
     </div>
 
+    <!-- Bluetooth Audio -->
+    <div class="sl-row" role="listitem">
+      <div class="sl-name">Bluetooth Audio</div>
+      <div class="sl-status">
+        <span class="dot spin" id="bt-dot" aria-hidden="true"></span>
+        <span id="bt-status" aria-live="polite">Loading&hellip;</span>
+      </div>
+      <div class="sl-detail" id="bt-detail">&mdash;</div>
+      <div class="sl-actions">
+        <button class="btn-sm hidden" id="btn-pair" onclick="openPairing()">Pair Speaker</button>
+      </div>
+    </div>
+
     <!-- Spotify Connect -->
     <div class="sl-row" role="listitem">
       <div class="sl-name">Spotify Connect</div>
@@ -413,6 +426,25 @@
   <div class="sl-footer">
     <button onclick="toast('Diagnostics coming in a future update.')">Diagnostics</button>
     <button onclick="toast('partybox-companion · ' + (S.health ? S.health.version : '—'))">About</button>
+  </div>
+
+  <!-- -- Pairing panel ------------------------------------------------ -->
+  <div id="pairing-panel" class="panel-wrap hidden">
+    <div class="card">
+      <div class="card-head">
+        <h2>Pair Speaker</h2>
+      </div>
+      <p class="prov-hint">
+        Put your speaker into Bluetooth pairing mode (hold the Bluetooth button
+        until the light flashes), then tap <strong>Start Pairing</strong>.
+        The appliance will scan for up to 60 seconds.
+      </p>
+      <div class="btn-row">
+        <button class="btn-primary" id="pair-start-btn" onclick="startPairing()">Start Pairing</button>
+        <button class="btn-ghost" onclick="closePairing()">Cancel</button>
+      </div>
+      <div class="prov-msg" id="pair-msg" role="status" aria-live="polite"></div>
+    </div>
   </div>
 
   <!-- -- Settings panel ----------------------------------------------- -->
@@ -506,11 +538,13 @@ const S = {
   health:  null,
   speaker: null,
   spotify: null,
+  audio:   null,
   config:  {device_name:'PartyBox', spotify_connect_name:'PartyBox', spotify_bitrate:320},
   apiKey:  localStorage.getItem('_pb_key') || null,
   ws:      null,
   _toast:  null,
   _spotifyPoll: null,
+  _pairPoll: null,
 };
 
 // Provisioning sub-state (only relevant in Mode.PROVISIONING)
@@ -527,6 +561,7 @@ const MOCK_HEALTH  = {status:'ok', version:'0.1.0-dev', speaker_connected:true};
 const MOCK_SPEAKER = {connected:true, address:'AA:BB:CC:DD:EE:FF', firmware:'26.2.10', battery:null};
 const MOCK_CONFIG  = {device_name:'Living Room', spotify_connect_name:'Living Room', spotify_bitrate:320};
 const MOCK_SPOTIFY = {running:true, active:false, device_name:'Living Room'};
+const MOCK_AUDIO   = {connected:true, address:'50:1B:6A:14:FD:1D', pairing_state:'idle'};
 const MOCK_NETWORKS = [
   {ssid:'Home Network', signal:85, security:'WPA2'},
   {ssid:'Neighbour WiFi', signal:52, security:'WPA2'},
@@ -549,10 +584,12 @@ async function boot() {
     S.health  = MOCK_HEALTH;
     S.speaker = MOCK_SPEAKER;
     S.spotify = MOCK_SPOTIFY;
+    S.audio   = MOCK_AUDIO;
     S.config  = MOCK_CONFIG;
     applyConfig();
     setMode(Mode.NORMAL);
     updateSpeaker();
+    updateAudio();
     updateSpotify();
     updateSystem();
     updateHealthPill();
@@ -585,20 +622,23 @@ async function boot() {
 
   // Normal operation mode.
   try {
-    const [hRes, cRes, spRes] = await Promise.all([
+    const [hRes, cRes, spRes, aRes] = await Promise.all([
       get('/api/v1/health'),
       get('/api/v1/config'),
       get('/api/v1/spotify'),
+      get('/api/v1/audio'),
     ]);
     if (hRes  && hRes.ok)  S.health  = await hRes.json();
     if (cRes  && cRes.ok)  S.config  = await cRes.json();
     if (spRes && spRes.ok) S.spotify = await spRes.json();
+    if (aRes  && aRes.ok)  S.audio   = await aRes.json();
   } catch (_) {}
 
   applyConfig();
   await loadSpeaker();
   setMode(Mode.NORMAL);
   updateSpeaker();
+  updateAudio();
   updateSpotify();
   updateSystem();
   updateHealthPill();
@@ -639,13 +679,22 @@ function applyConfig() {
 // == Health pill ==========================================================
 function updateHealthPill() {
   const h  = S.health;
-  const sp = S.speaker;
+  const au = S.audio;
   if (!h) {
     setHealthPill('err', 'Offline');
-  } else if (sp && sp.connected) {
-    setHealthPill('ok', 'Speaker connected');
+    return;
+  }
+  if (!au || au.address === null) {
+    setHealthPill('warn', 'Speaker not paired');
+    return;
+  }
+  const ps = au.pairing_state;
+  if (ps === 'scanning') { setHealthPill('spin', 'Scanning…'); return; }
+  if (ps === 'pairing')  { setHealthPill('spin', 'Pairing…');  return; }
+  if (au.connected) {
+    setHealthPill('ok', 'Ready');
   } else {
-    setHealthPill('spin', 'Speaker disconnected');
+    setHealthPill('spin', 'Connecting audio…');
   }
 }
 
@@ -674,6 +723,147 @@ function updateSpeaker() {
   }
 
   updateHealthPill();
+}
+
+// == Bluetooth Audio row ==================================================
+function updateAudio() {
+  const au = S.audio;
+  const pairBtn = id('btn-pair');
+
+  if (!au) {
+    setDot('bt-dot', 'spin');
+    id('bt-status').textContent = 'Loading…';
+    id('bt-detail').textContent = '—';
+    pairBtn.classList.add('hidden');
+    return;
+  }
+
+  const ps = au.pairing_state;
+  if (ps === 'scanning') {
+    setDot('bt-dot', 'spin');
+    id('bt-status').textContent = 'Scanning for speaker…';
+    id('bt-detail').textContent = '—';
+    pairBtn.classList.add('hidden');
+  } else if (ps === 'pairing') {
+    setDot('bt-dot', 'spin');
+    id('bt-status').textContent = 'Pairing…';
+    id('bt-detail').textContent = au.address || '—';
+    pairBtn.classList.add('hidden');
+  } else if (ps === 'failed') {
+    setDot('bt-dot', 'err');
+    id('bt-status').textContent = 'Pairing failed';
+    id('bt-detail').textContent = '—';
+    pairBtn.classList.remove('hidden');
+  } else if (!au.address) {
+    setDot('bt-dot', 'warn');
+    id('bt-status').textContent = 'Not paired';
+    id('bt-detail').textContent = '—';
+    pairBtn.classList.remove('hidden');
+  } else if (au.connected) {
+    setDot('bt-dot', 'ok');
+    id('bt-status').textContent = 'Connected';
+    id('bt-detail').textContent = au.address;
+    pairBtn.classList.add('hidden');
+  } else {
+    setDot('bt-dot', 'spin');
+    id('bt-status').textContent = 'Connecting…';
+    id('bt-detail').textContent = au.address;
+    pairBtn.classList.add('hidden');
+  }
+
+  updateHealthPill();
+}
+
+// == Pairing flow =========================================================
+function openPairing() {
+  setPairMsg('', '');
+  id('pair-start-btn').disabled = false;
+  id('pair-start-btn').textContent = 'Start Pairing';
+  id('pairing-panel').classList.remove('hidden');
+  id('pairing-panel').scrollIntoView({behavior:'smooth', block:'nearest'});
+}
+
+function closePairing() {
+  stopPairPoll();
+  id('pairing-panel').classList.add('hidden');
+}
+
+async function startPairing() {
+  const btn = id('pair-start-btn');
+  btn.disabled = true;
+  btn.textContent = 'Scanning…';
+  setPairMsg('info', 'Scanning for speaker — this may take up to 60 seconds…');
+
+  try {
+    const r = await fetch('/api/v1/audio/pair', {method:'POST', headers:{'Content-Length':'0'}});
+    if (r.status === 409) {
+      setPairMsg('info', 'A pairing attempt is already in progress.');
+    } else if (!r.ok) {
+      setPairMsg('err', 'Could not start pairing. Please try again.');
+      btn.disabled = false;
+      btn.textContent = 'Start Pairing';
+      return;
+    }
+  } catch (_) {
+    setPairMsg('err', 'Could not reach the appliance. Please try again.');
+    btn.disabled = false;
+    btn.textContent = 'Start Pairing';
+    return;
+  }
+
+  startPairPoll();
+}
+
+function startPairPoll() {
+  stopPairPoll();
+  let attempts = 0;
+  S._pairPoll = setInterval(async () => {
+    attempts++;
+    try {
+      const r = await fetch('/api/v1/audio');
+      if (!r.ok) return;
+      const data = await r.json();
+      S.audio = data;
+      updateAudio();
+
+      const ps = data.pairing_state;
+      if (ps === 'idle' && data.address) {
+        stopPairPoll();
+        setPairMsg('ok', 'Paired successfully! Audio connection is being established.');
+        id('pair-start-btn').textContent = 'Done';
+        id('pair-start-btn').disabled = false;
+        id('pair-start-btn').onclick = closePairing;
+        toast('Speaker paired.');
+        return;
+      }
+      if (ps === 'failed') {
+        stopPairPoll();
+        setPairMsg('err', 'Pairing failed. Make sure the speaker is in pairing mode and try again.');
+        id('pair-start-btn').disabled = false;
+        id('pair-start-btn').textContent = 'Try Again';
+        id('pair-start-btn').onclick = startPairing;
+        return;
+      }
+    } catch (_) {}
+
+    if (attempts > 40) {  // ~80 s safety net
+      stopPairPoll();
+      setPairMsg('err', 'Timed out. Please try again.');
+      id('pair-start-btn').disabled = false;
+      id('pair-start-btn').textContent = 'Try Again';
+      id('pair-start-btn').onclick = startPairing;
+    }
+  }, 2000);
+}
+
+function stopPairPoll() {
+  if (S._pairPoll) { clearInterval(S._pairPoll); S._pairPoll = null; }
+}
+
+function setPairMsg(type, msg) {
+  const el = id('pair-msg');
+  el.textContent = msg;
+  el.style.color = type === 'err' ? 'var(--danger)' : type === 'ok' ? 'var(--ok)' : 'var(--text-2)';
 }
 
 // == Power control ========================================================

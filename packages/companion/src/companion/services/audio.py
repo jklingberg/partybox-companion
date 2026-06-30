@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 
 from companion.config import AudioSettings
 
@@ -24,6 +25,14 @@ _RETRY_BASE = 10.0  # initial retry delay after a failed/lost connection
 _RETRY_MAX = 300.0  # back off up to 5 minutes when another device is competing
 
 
+@dataclass(frozen=True)
+class AudioStatus:
+    """Point-in-time snapshot of A2DP audio connection state."""
+
+    connected: bool
+    address: str | None
+
+
 class AudioService:
     """Maintains the Bluetooth Classic A2DP connection to the speaker.
 
@@ -32,7 +41,10 @@ class AudioService:
         service = AudioService(settings.audio)
         task = asyncio.create_task(service.run())
 
-    If no ``sink_address`` is configured the task exits immediately.
+    If no ``sink_address`` is configured at construction time, :meth:`run`
+    waits until :meth:`update_address` is called — typically by
+    :class:`~companion.services.pairing.PairingService` after a successful
+    first-time pairing.
 
     Uses exponential backoff when repeated connect attempts fail so that phone
     competition or speaker unavailability does not hammer the Bluetooth
@@ -40,18 +52,42 @@ class AudioService:
     """
 
     def __init__(self, settings: AudioSettings) -> None:
-        self._address = settings.sink_address
+        self._address: str | None = settings.sink_address
+        self._connected = False
+        self._address_ready = asyncio.Event()
+        if self._address is not None:
+            self._address_ready.set()
+
+    @property
+    def status(self) -> AudioStatus:
+        return AudioStatus(connected=self._connected, address=self._address)
+
+    def update_address(self, address: str) -> None:
+        """Set the A2DP sink address and wake the connection loop.
+
+        Called by PairingService after a successful first-time pairing.
+        Safe to call while :meth:`run` is suspended waiting for an address.
+        """
+        self._address = address
+        self._address_ready.set()
 
     async def run(self) -> None:
-        """Ensure A2DP is connected; reconnect on drop. Runs until cancelled."""
-        if self._address is None:
-            log.debug("No audio sink address configured; A2DP management disabled")
-            return
+        """Ensure A2DP is connected; reconnect on drop. Runs until cancelled.
+
+        If no address is configured, waits until :meth:`update_address` is
+        called rather than returning immediately.  This keeps the Supervisor
+        from treating a no-address startup as an unexpected exit.
+        """
+        if not self._address_ready.is_set():
+            log.info("A2DP: no sink address configured; waiting for pairing")
+            await self._address_ready.wait()
+
         log.info("Audio service starting (sink=%s)", self._address)
         retry_delay = _RETRY_BASE
         try:
             while True:
                 if not await self._is_connected():
+                    self._connected = False
                     log.info(
                         "A2DP sink not connected, connecting to %s (retry in %.0fs)",
                         self._address,
@@ -63,9 +99,11 @@ class AudioService:
                 else:
                     if retry_delay > _RETRY_BASE:
                         log.info("A2DP connection stable, backoff reset")
+                    self._connected = True
                     retry_delay = _RETRY_BASE
                     await asyncio.sleep(_CHECK_INTERVAL)
         except asyncio.CancelledError:
+            self._connected = False
             log.info("Audio service stopping")
             raise
 

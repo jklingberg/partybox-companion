@@ -1,7 +1,8 @@
 """Unit tests for AudioService.
 
 No Bluetooth hardware or bluetoothctl binary is required. Tests cover:
-- run() exits immediately when no address is configured
+- run() waits for update_address() when no address is configured
+- status reflects connection state
 - run() connects when the sink is not connected
 - run() skips connect when already connected
 - Clean cancellation
@@ -17,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from companion.config import AudioSettings
-from companion.services.audio import AudioService
+from companion.services.audio import AudioService, AudioStatus
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -37,13 +38,69 @@ def _mock_proc(stdout: bytes = b"", returncode: int = 0) -> MagicMock:
 
 
 # ---------------------------------------------------------------------------
-# run() — no address
+# status
 # ---------------------------------------------------------------------------
 
 
-async def test_run_exits_immediately_when_no_address() -> None:
+def test_status_initially_not_connected() -> None:
+    svc = _service()
+    assert svc.status == AudioStatus(connected=False, address="AA:BB:CC:DD:EE:FF")
+
+
+def test_status_no_address() -> None:
     svc = _service(address=None)
-    await svc.run()  # must return without blocking
+    assert svc.status == AudioStatus(connected=False, address=None)
+
+
+# ---------------------------------------------------------------------------
+# run() — no address: waits for update_address()
+# ---------------------------------------------------------------------------
+
+
+async def test_run_waits_when_no_address() -> None:
+    """run() must block (not return) when no address is configured."""
+    from contextlib import suppress
+
+    svc = _service(address=None)
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0)  # let run() reach await self._address_ready.wait()
+    assert not task.done()  # still suspended — proved it's waiting
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+
+
+async def test_update_address_sets_value_and_wakes_run() -> None:
+    """update_address() persists the address and unblocks a waiting run()."""
+    from contextlib import suppress
+
+    svc = _service(address=None)
+    assert svc.status.address is None
+
+    entered_loop = asyncio.Event()
+
+    async def fake_exec(*args: object, **kwargs: object) -> MagicMock:
+        entered_loop.set()
+        # Return a proc that looks disconnected; sleep patch will cancel the loop
+        return _mock_proc(b"Connected: no")
+
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0)  # run() is waiting for address
+
+    with (
+        patch("companion.services.audio.asyncio.create_subprocess_exec", side_effect=fake_exec),
+        patch(
+            "companion.services.audio.asyncio.sleep",
+            side_effect=asyncio.CancelledError,
+        ),
+    ):
+        svc.update_address("BB:CC:DD:EE:FF:00")
+        # run() will resume, enter the loop, call _is_connected(), then sleep (→ cancel)
+        with suppress(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=2.0)
+
+    assert svc.status.address == "BB:CC:DD:EE:FF:00"
+    assert entered_loop.is_set()
 
 
 # ---------------------------------------------------------------------------
