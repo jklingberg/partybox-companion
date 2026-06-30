@@ -19,6 +19,16 @@ EnvironmentFile=-/etc/companion/companion.env
 
 # Reset the HCI controller before starting to clear wedged state from prior failed
 # connections. The '+' prefix runs this as root regardless of User=companion.
+#
+# hciconfig is deprecated upstream (BlueZ ≥ 5.56 prefers btmgmt), but there is
+# no direct btmgmt equivalent for a low-level HCI reset without disconnecting all
+# active connections first. hciconfig still ships in bluez on Raspberry Pi OS and
+# the behaviour here is well-understood. Migrating to btmgmt or a bluetoothctl
+# sequence should be a deliberate decision when Pi OS drops hciconfig.
+#
+# Scope: this addresses wedged state at startup only. A controller wedge that
+# occurs during long-running operation (e.g. after an extended failed-reconnect
+# cycle) is not handled here — that is part of M17's runtime recovery strategy.
 ExecStartPre=+/usr/bin/hciconfig hci0 reset
 
 ExecStart=/opt/partybox-companion/bin/partybox-companion
