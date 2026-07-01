@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Block direct pushes to main. Use a pull request instead.
+set -euo pipefail
+
+while IFS=' ' read -r _local_ref _local_sha remote_ref _remote_sha; do
+    if [[ "$remote_ref" == "refs/heads/main" ]]; then
+        echo "ERROR: Direct push to main is not allowed." >&2
+        echo "       Create a branch and open a pull request instead." >&2
+        exit 1
+    fi
+done
+
+exit 0

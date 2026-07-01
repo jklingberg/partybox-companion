@@ -15,5 +15,9 @@ uv sync --all-extras
 uv tool install pre-commit
 pre-commit install
 
+# Install the no-direct-push-to-main hook. The source lives in .githooks/ so
+# it is tracked in the repo; post-create copies it into .git/hooks/ at setup.
+install -m 755 .githooks/pre-push .git/hooks/pre-push
+
 # Install Claude Code globally.
 npm install -g @anthropic-ai/claude-code
