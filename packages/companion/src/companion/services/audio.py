@@ -12,6 +12,18 @@ AudioService owns the ``audio_ready`` concept — whether the appliance is
 currently capable of producing audio — and publishes changes via a subscription
 bus so that other services can react without polling and without knowing about
 Bluetooth internals.  See ADR-026.
+
+**Expected idle state — ``Connected: no`` is normal.** A2DP is a
+connection-oriented BR/EDR profile: the ACL link is established when needed
+and released when idle. JBL PartyBox speakers drop the BR/EDR link after a
+period of inactivity (no audio). ``AudioService`` runs a retry loop that
+re-establishes A2DP before audio is needed; the ``/api/v1/audio`` endpoint
+reflects the *current* link state, not whether bonding is intact. A bonded,
+powered-on speaker that reports ``connected: false`` is in the expected idle
+state — the service will reconnect automatically on the next check cycle.
+
+The BLE GATT control connection (used by the ``partybox`` SDK for EQ, power,
+etc.) is also established on-demand and is unrelated to this A2DP state.
 """
 
 from __future__ import annotations
@@ -134,6 +146,7 @@ class AudioService:
         self._audio_ready = False
         self._address_ready = asyncio.Event()
         self._bus = _AudioEventBus()
+        self._reconnect_now = asyncio.Event()
         if self._address is not None:
             self._address_ready.set()
 
@@ -169,13 +182,15 @@ class AudioService:
         self._bus.unsubscribe(queue)
 
     def update_address(self, address: str) -> None:
-        """Set the A2DP sink address and wake the connection loop.
+        """Set or update the A2DP sink address and interrupt any backoff sleep.
 
-        Called by PairingService after a successful first-time pairing.
-        Safe to call while :meth:`run` is suspended waiting for an address.
+        Called by PairingService after a successful pairing.  When called while
+        the service is sleeping between failed connect attempts, the sleep is
+        cut short and a fresh attempt begins immediately (backoff reset).
         """
         self._address = address
         self._address_ready.set()
+        self._reconnect_now.set()
 
     async def run(self) -> None:
         """Ensure A2DP is connected; reconnect on drop. Runs until cancelled.
@@ -202,8 +217,11 @@ class AudioService:
                         retry_delay,
                     )
                     await self._connect()
-                    await asyncio.sleep(retry_delay)
-                    retry_delay = min(retry_delay * 2, _RETRY_MAX)
+                    if await self._wait_retry(retry_delay):
+                        log.info("A2DP: re-pair detected, retrying immediately")
+                        retry_delay = _RETRY_BASE
+                    else:
+                        retry_delay = min(retry_delay * 2, _RETRY_MAX)
                 else:
                     if retry_delay > _RETRY_BASE:
                         log.info("A2DP connection stable, backoff reset")
@@ -240,17 +258,49 @@ class AudioService:
         except (OSError, TimeoutError):
             return False
 
+    async def _wait_retry(self, delay: float) -> bool:
+        """Sleep delay seconds; return True if woken early by update_address().
+
+        Clears _reconnect_now before waiting so only a call made AFTER this
+        point (i.e. a new pairing) can interrupt the sleep.
+        """
+        self._reconnect_now.clear()
+        try:
+            await asyncio.wait_for(self._reconnect_now.wait(), timeout=delay)
+            return True
+        except TimeoutError:
+            return False
+
     async def _connect(self) -> None:
         assert self._address is not None
+        proc: asyncio.subprocess.Process | None = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 "bluetoothctl",
                 "connect",
                 self._address,
-                stdout=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
             )
-            await asyncio.wait_for(proc.wait(), timeout=_CONNECT_TIMEOUT)
-            log.info("A2DP connection established to %s", self._address)
-        except (OSError, TimeoutError) as exc:
-            log.warning("A2DP connect failed: %s", exc)
+            try:
+                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=_CONNECT_TIMEOUT)
+            except TimeoutError:
+                proc.kill()
+                await proc.wait()
+                log.warning("A2DP connect timed out for %s", self._address)
+                return
+            output = stdout.decode(errors="replace")
+            if "Failed to connect" in output or "not available" in output.lower():
+                log.warning(
+                    "A2DP connect failed for %s: %s",
+                    self._address,
+                    output.strip(),
+                )
+            else:
+                log.info("A2DP connection established to %s", self._address)
+        except OSError as exc:
+            log.warning("A2DP connect error for %s: %s", self._address, exc)
+        finally:
+            if proc is not None and proc.returncode is None:
+                proc.kill()
+                await proc.wait()

@@ -28,4 +28,5 @@ repos:
         additional_dependencies:
           - pydantic-settings>=2.2
           - fastapi>=0.100
+          - dbus-fast>=4.0
         args: [--ignore-missing-imports]
