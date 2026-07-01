@@ -44,10 +44,13 @@ _RETRY_MAX = 60.0  # cap backoff at 60 s — 5 min was too slow to recover
 _QUEUE_MAX = 64
 
 # WirePlumber health: after this many consecutive profile-unavailable failures
-# (~15 min at max backoff) the A2DP endpoint registration has been lost and we
-# restart WirePlumber to recover it. A cooldown prevents restart storms.
-_WP_RESTART_THRESHOLD = 15
-_WP_RESTART_COOLDOWN = 1200.0  # 20 minutes between automatic restarts
+# the A2DP endpoint registration has been lost and we restart WirePlumber.
+# profile-unavailable is a LOCAL BlueZ error (no registered A2DP handler) —
+# if WirePlumber's endpoints are intact but the speaker is off, BlueZ returns a
+# different error (br-connection-create-failed). So this signal is reliable.
+# 3 failures = ~70 s of backoff waits (10+20+40) before restart is triggered.
+_WP_RESTART_THRESHOLD = 3
+_WP_RESTART_COOLDOWN = 300.0  # 5 minutes between automatic restarts
 
 
 # ---------------------------------------------------------------------------
