@@ -343,14 +343,63 @@ log "Configuring PipeWire user session for pi (audio pipeline)"
 mkdir -p /var/lib/systemd/linger
 touch /var/lib/systemd/linger/pi
 
-# (2) Enable PipeWire, PipeWire-Pulse, and WirePlumber user services
+# (2) Enable PipeWire, PipeWire-Pulse, and WirePlumber user services.
+# wireplumber-bluetooth.service is masked: Pi OS ships it with preset=enabled,
+# but it conflicts with the Bluetooth support already built into wireplumber.service
+# (wireplumber.conf loads bluetooth.lua). Running both instances simultaneously
+# causes RegisterProfile() failures and WpSiAudioAdapter activation aborts.
 mkdir -p /home/pi/.config/systemd/user/default.target.wants
 for svc in pipewire.socket pipewire-pulse.socket wireplumber.service; do
     ln -sf "/usr/lib/systemd/user/${svc}" \
         "/home/pi/.config/systemd/user/default.target.wants/${svc}"
 done
+ln -sf /dev/null /home/pi/.config/systemd/user/wireplumber-bluetooth.service
+
+# Ensure wireplumber.service starts after bluetooth.service so the hci0 adapter
+# is fully ready when WirePlumber registers A2DP media endpoints. Without this
+# ordering, WirePlumber races BlueZ on boot and silently fails to register
+# endpoints, causing br-connection-profile-unavailable until WirePlumber is restarted.
+mkdir -p /home/pi/.config/systemd/user/wireplumber.service.d
+cp "${PARTYBOX_SRC_DIR}/image/config/wireplumber-bluetooth-after.conf" \
+    /home/pi/.config/systemd/user/wireplumber.service.d/bluetooth-after.conf
+chown -R pi:pi /home/pi/.config/systemd
+
+# (3) WirePlumber appliance overrides — disable hw-volume mirroring and keep
+#     A2DP transport alive when librespot is idle between tracks.
+#     Appended after the system 50-bluez-config.lua so system defaults are
+#     extended, not replaced.  See image/config/wireplumber-appliance.lua.
+mkdir -p /home/pi/.config/wireplumber/bluetooth.lua.d
+cp "${PARTYBOX_SRC_DIR}/image/config/wireplumber-appliance.lua" \
+    /home/pi/.config/wireplumber/bluetooth.lua.d/51-appliance.lua
 
 chown -R pi:pi /home/pi/.config
+
+# (4) logind: set UserRuntimeDirectoryMode=0755 so /run/user/1000/ is
+#     traversable by the companion service account. systemd-logind creates
+#     /run/user/1000/ with mode 0700 by default; that blocks companion from
+#     reaching the PipeWire-pulse socket at /run/user/1000/pulse/native even
+#     though the socket itself is world-writable. companion.service also has
+#     an ExecStartPre chmod as belt-and-suspenders for the current session.
+mkdir -p /etc/systemd/logind.conf.d
+cp "${PARTYBOX_SRC_DIR}/image/config/logind-runtime-dir-mode.conf" \
+    /etc/systemd/logind.conf.d/runtime-dir-mode.conf
+
+# (5) Clear WirePlumber state on every boot.
+#
+# WirePlumber 0.4.x persists node/device records in ~/.local/state/wireplumber/.
+# After a power cycle or reboot, this state can be inconsistent with the
+# speaker's fresh BlueZ state, causing AVDTP negotiation to fail with
+# br-connection-unknown — A2DP appears to connect (ACL up, endpoints negotiated)
+# but the media stream setup fails silently. Clearing the state directory on
+# boot forces WirePlumber to reinitialise from scratch each time, which is safe
+# for the appliance since node volume and other preferences are set via the
+# 51-appliance.lua policy file rather than the state database.
+#
+# tmpfiles.d 'R!' action removes the path at boot time only (not on
+# systemd-tmpfiles --create runs during normal operation).
+cat > /etc/tmpfiles.d/wireplumber-state.conf << 'EOF'
+R! /home/pi/.local/state/wireplumber - - - - -
+EOF
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 11. SD card longevity
