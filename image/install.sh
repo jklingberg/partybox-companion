@@ -378,6 +378,15 @@ install -m 0644 \
 # ModemManager.service
 #   Manages mobile broadband modems. Not installed on Pi OS Lite, but
 #   included here in case a dependency pulls it in.
+#
+# userconf-pi
+#   Pi OS Bookworm's first-user-setup mechanism. It displays an SSH banner
+#   ("SSH may not work until a valid user has been set up — rptl.io/newuser")
+#   on every login. Our install.sh creates the pi and companion users
+#   directly, making this mechanism both inapplicable and misleading.
+#   The package postinst creates /etc/ssh/sshd_config.d/rename_user.conf
+#   outside of dpkg's file manifest, so purge alone does not remove it —
+#   the explicit rm is required.
 # ──────────────────────────────────────────────────────────────────────────────
 log "Disabling unnecessary background services"
 for svc in \
@@ -390,6 +399,9 @@ for svc in \
 do
     systemctl disable "${svc}" 2>/dev/null || true
 done
+
+apt-get remove -y --purge userconf-pi 2>/dev/null || true
+rm -f /etc/ssh/sshd_config.d/rename_user.conf
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 13. Headless boot

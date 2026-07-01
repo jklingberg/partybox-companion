@@ -103,6 +103,21 @@ Manages mobile broadband modems (3G/4G/5G). Not installed on Pi OS Lite, but inc
 
 **Decision:** Disabled if present.
 
+#### `userconf-pi`
+
+Pi OS Bookworm's first-user-setup mechanism. When the OS boots without a user having been pre-configured via Raspberry Pi Imager, `userconf-pi` prompts at the console and — critically — sets an SSH banner via `/etc/ssh/sshd_config.d/rename_user.conf`:
+
+```
+Please note that SSH may not work until a valid user has been set up.
+See http://rptl.io/newuser for details.
+```
+
+This banner is misleading on the appliance: `install.sh` creates the `pi` and `companion` users directly, so SSH works without the `userconf-pi` flow ever running. The banner appears on every SSH login regardless, which is confusing during troubleshooting.
+
+**Note on removal:** the `rename_user.conf` file is created by the package's postinst script and is not recorded in dpkg's file manifest. `apt-get remove --purge` alone does not remove it; an explicit `rm` is required alongside the purge.
+
+**Decision:** Purged (`apt-get remove --purge userconf-pi`); `rename_user.conf` explicitly deleted.
+
 ---
 
 ### Headless boot
