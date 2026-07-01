@@ -37,3 +37,4 @@ New ADRs should be added when a significant design decision is made. Superseded 
 | [025](025-appliance-naming-model.md) | Appliance Naming Model — Single Identity with Optional Service Overrides | Accepted |
 | [026](026-bluetooth-audio-pairing.md) | Bluetooth Classic A2DP Pairing and Audio Readiness | Accepted |
 | [027](027-bluetooth-bonding-architecture.md) | Bluetooth Bonding Architecture — D-Bus Discovery, Scoped Bondable Mode, Immediate Pairing | Accepted |
+| [028](028-audio-readiness-model.md) | Audio Readiness Model and A2DP Connection Management | Accepted |

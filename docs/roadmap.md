@@ -289,7 +289,7 @@ Establish the release engineering foundation: the pipeline that turns a git tag 
 
 ---
 
-#### M13.2 — Image Polish *(complete)*
+#### M13.2 — Image Polish ✅
 
 **Delivered:**
 - `image/config/base-image.env` — Pi OS base image pinned to a specific dated release; upgrades are a single-file diff
@@ -300,7 +300,7 @@ Establish the release engineering foundation: the pipeline that turns a git tag 
 
 ---
 
-#### M13.3 — Appliance Hardening *(complete)*
+#### M13.3 — Appliance Hardening ✅
 
 Harden the appliance for unattended operation.
 
@@ -314,7 +314,7 @@ Harden the appliance for unattended operation.
 
 ---
 
-### M14 — Network Provisioning
+### M14 — Network Provisioning ✅
 
 **Package:** `companion`
 
@@ -381,7 +381,7 @@ CONNECTED: tear down companion-ap
 
 ---
 
-### M15 — Unified Volume Model
+### M15 — Unified Volume Model ✅
 
 **Packages:** `partybox`, `partyboxd`, `companion`
 
@@ -423,7 +423,7 @@ The API represents logical speaker volume and must not expose implementation det
 
 ---
 
-### M16 — First Boot Experience
+### M16 — First Boot Experience ✅
 
 **Package:** `companion`
 
