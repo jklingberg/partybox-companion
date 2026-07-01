@@ -262,6 +262,13 @@ class BluezClient:
         FDDF service data yields a valid address — including a device
         already known to BlueZ from a previous session. Does not wait out
         the full timeout once a match is found.
+
+        **First-match-wins.** If two JBL/Harman speakers are simultaneously
+        in pairing mode within range, the appliance pairs with whichever
+        FDDF advertisement arrives first. There is no disambiguation or
+        user-confirmation step — consistent with the ``NoInputNoOutput``
+        agent capability. This is intentional for v1.0 (one speaker, one
+        user, one button press); multi-speaker selection is deferred.
         """
         found: asyncio.Future[str] = asyncio.get_event_loop().create_future()
         property_subscriptions: list[tuple[ProxyInterface, Callable[..., None]]] = []
