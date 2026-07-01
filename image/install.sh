@@ -141,6 +141,11 @@ rm -f "${UV_TGZ}" && rm -rf "/tmp/uv-${UV_ARCH}"
 log "Installing partybox-companion (locked)"
 (
     cd "${PARTYBOX_SRC_DIR}"
+    # hatch-vcs derives the version from git tags. The QEMU chroot used for
+    # image builds has no git history, so without this hint it falls back to
+    # 0.0.0.dev0. SETUPTOOLS_SCM_PRETEND_VERSION is the standard override
+    # that tells hatch-vcs to use the supplied version string verbatim.
+    export SETUPTOOLS_SCM_PRETEND_VERSION="${COMPANION_VERSION}"
     UV_PROJECT_ENVIRONMENT="${INSTALL_PREFIX}" \
         uv sync --frozen --no-dev --no-editable
 )
@@ -311,6 +316,41 @@ systemctl enable ssh
 mkdir -p /etc/ssh/sshd_config.d
 printf 'PasswordAuthentication yes\n' \
     > /etc/ssh/sshd_config.d/10-partybox.conf
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 10c. PipeWire user session for the pi user (A2DP audio pipeline)
+#
+# Spotify Connect (librespot) outputs audio via the PulseAudio-compatible
+# socket that PipeWire-pulse creates in the pi user's XDG_RUNTIME_DIR.
+# The main wireplumber.service (loaded with bluetooth.lua) registers A2DP
+# media endpoints with BlueZ and creates PipeWire sink nodes for connected
+# Bluetooth speakers — no separate wireplumber-bluetooth instance is needed.
+#
+# Two steps make this work on a headless appliance with no active login:
+#
+# (1) loginctl enable-linger: tells systemd to start and maintain the pi user's
+#     session (user@1000.service) at boot, keeping PipeWire and WirePlumber
+#     alive without requiring an SSH login. Implemented by creating the linger
+#     marker file directly (loginctl is not available in a chroot).
+#
+# (2) User service symlinks: the equivalent of `systemctl --user enable` for
+#     each service. Created manually because systemctl --user cannot run in a
+#     QEMU chroot without a live systemd user instance.
+# ──────────────────────────────────────────────────────────────────────────────
+log "Configuring PipeWire user session for pi (audio pipeline)"
+
+# (1) Enable linger — creates /var/lib/systemd/linger/pi
+mkdir -p /var/lib/systemd/linger
+touch /var/lib/systemd/linger/pi
+
+# (2) Enable PipeWire, PipeWire-Pulse, and WirePlumber user services
+mkdir -p /home/pi/.config/systemd/user/default.target.wants
+for svc in pipewire.socket pipewire-pulse.socket wireplumber.service; do
+    ln -sf "/usr/lib/systemd/user/${svc}" \
+        "/home/pi/.config/systemd/user/default.target.wants/${svc}"
+done
+
+chown -R pi:pi /home/pi/.config
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 11. SD card longevity

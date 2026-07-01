@@ -1,8 +1,8 @@
 [Unit]
 Description=PartyBox Companion
 Documentation=https://github.com/jklingberg/partybox-companion
-After=network-online.target bluetooth.service NetworkManager.service
-Wants=network-online.target bluetooth.service NetworkManager.service
+After=network-online.target bluetooth.service NetworkManager.service user@1000.service
+Wants=network-online.target bluetooth.service NetworkManager.service user@1000.service
 
 [Service]
 Type=simple
