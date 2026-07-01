@@ -14,6 +14,7 @@ No Bluetooth hardware or bluetoothctl binary is required. Tests cover:
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -34,6 +35,7 @@ def _mock_proc(stdout: bytes = b"", returncode: int = 0) -> MagicMock:
     proc.returncode = returncode
     proc.communicate = AsyncMock(return_value=(stdout, b""))
     proc.wait = AsyncMock(return_value=returncode)
+    proc.kill = MagicMock()
     return proc
 
 
@@ -59,8 +61,6 @@ def test_status_no_address() -> None:
 
 async def test_run_waits_when_no_address() -> None:
     """run() must block (not return) when no address is configured."""
-    from contextlib import suppress
-
     svc = _service(address=None)
     task = asyncio.create_task(svc.run())
     await asyncio.sleep(0)  # let run() reach await self._address_ready.wait()
@@ -72,8 +72,6 @@ async def test_run_waits_when_no_address() -> None:
 
 async def test_update_address_sets_value_and_wakes_run() -> None:
     """update_address() persists the address and unblocks a waiting run()."""
-    from contextlib import suppress
-
     svc = _service(address=None)
     assert svc.status.address is None
 
@@ -81,21 +79,19 @@ async def test_update_address_sets_value_and_wakes_run() -> None:
 
     async def fake_exec(*args: object, **kwargs: object) -> MagicMock:
         entered_loop.set()
-        # Return a proc that looks disconnected; sleep patch will cancel the loop
         return _mock_proc(b"Connected: no")
+
+    async def fake_wait_retry(delay: float) -> bool:
+        raise asyncio.CancelledError
 
     task = asyncio.create_task(svc.run())
     await asyncio.sleep(0)  # run() is waiting for address
 
     with (
         patch("companion.services.audio.asyncio.create_subprocess_exec", side_effect=fake_exec),
-        patch(
-            "companion.services.audio.asyncio.sleep",
-            side_effect=asyncio.CancelledError,
-        ),
+        patch.object(svc, "_wait_retry", side_effect=fake_wait_retry),
     ):
         svc.update_address("BB:CC:DD:EE:FF:00")
-        # run() will resume, enter the loop, call _is_connected(), then sleep (→ cancel)
         with suppress(asyncio.CancelledError):
             await asyncio.wait_for(task, timeout=2.0)
 
@@ -119,54 +115,57 @@ async def test_run_connects_when_not_connected() -> None:
     async def fake_exec(*args: object, **kwargs: object) -> MagicMock:
         return call_results.pop(0)
 
-    sleep_calls: list[float] = []
+    retry_calls: list[float] = []
 
-    async def fake_sleep(delay: float) -> None:
-        sleep_calls.append(delay)
+    async def fake_wait_retry(delay: float) -> bool:
+        retry_calls.append(delay)
         raise asyncio.CancelledError
 
-    with patch("companion.services.audio.asyncio.create_subprocess_exec", side_effect=fake_exec):
-        with patch("companion.services.audio.asyncio.sleep", side_effect=fake_sleep):
-            with pytest.raises(asyncio.CancelledError):
-                await svc.run()
+    with (
+        patch("companion.services.audio.asyncio.create_subprocess_exec", side_effect=fake_exec),
+        patch.object(svc, "_wait_retry", side_effect=fake_wait_retry),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await svc.run()
 
-    assert len(sleep_calls) == 1  # slept after connect attempt
+    assert len(retry_calls) == 1  # waited once after connect attempt
 
 
 async def test_run_backoff_doubles_on_repeated_failures() -> None:
     """retry_delay doubles after each failed connect cycle."""
     svc = _service()
 
-    # Always not connected
     async def fake_exec(*args: object, **kwargs: object) -> MagicMock:
         return _mock_proc(b"Connected: no")
 
-    sleep_calls: list[float] = []
+    retry_calls: list[float] = []
     call_count = 0
 
-    async def fake_sleep(delay: float) -> None:
+    async def fake_wait_retry(delay: float) -> bool:
         nonlocal call_count
-        sleep_calls.append(delay)
+        retry_calls.append(delay)
         call_count += 1
         if call_count >= 3:
             raise asyncio.CancelledError
+        return False  # timed out — backoff should increase
 
-    with patch("companion.services.audio.asyncio.create_subprocess_exec", side_effect=fake_exec):
-        with patch("companion.services.audio.asyncio.sleep", side_effect=fake_sleep):
-            with pytest.raises(asyncio.CancelledError):
-                await svc.run()
+    with (
+        patch("companion.services.audio.asyncio.create_subprocess_exec", side_effect=fake_exec),
+        patch.object(svc, "_wait_retry", side_effect=fake_wait_retry),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await svc.run()
 
-    # Delays should double: 10, 20, 40 ...
-    assert sleep_calls[0] == 10.0
-    assert sleep_calls[1] == 20.0
-    assert sleep_calls[2] == 40.0
+    assert retry_calls[0] == 10.0
+    assert retry_calls[1] == 20.0
+    assert retry_calls[2] == 40.0
 
 
 async def test_run_backoff_resets_on_success() -> None:
     """retry_delay resets to base once connection is stable."""
     svc = _service()
 
-    # _is_connected and _connect both call create_subprocess_exec, so interleave:
+    # _is_connected and _connect both call create_subprocess_exec:
     # check→connect→check→connect→check(stable)
     responses = [
         _mock_proc(b"Connected: no"),  # _is_connected() #1 → not connected
@@ -179,6 +178,12 @@ async def test_run_backoff_resets_on_success() -> None:
     async def fake_exec(*args: object, **kwargs: object) -> MagicMock:
         return responses.pop(0)
 
+    retry_calls: list[float] = []
+
+    async def fake_wait_retry(delay: float) -> bool:
+        retry_calls.append(delay)
+        return False  # simulate timeout (not woken by re-pair)
+
     sleep_calls: list[float] = []
     call_count = 0
 
@@ -186,18 +191,52 @@ async def test_run_backoff_resets_on_success() -> None:
         nonlocal call_count
         sleep_calls.append(delay)
         call_count += 1
-        if call_count >= 3:
+        if call_count >= 1:
             raise asyncio.CancelledError
 
-    with patch("companion.services.audio.asyncio.create_subprocess_exec", side_effect=fake_exec):
-        with patch("companion.services.audio.asyncio.sleep", side_effect=fake_sleep):
-            with pytest.raises(asyncio.CancelledError):
-                await svc.run()
+    with (
+        patch("companion.services.audio.asyncio.create_subprocess_exec", side_effect=fake_exec),
+        patch.object(svc, "_wait_retry", side_effect=fake_wait_retry),
+        patch("companion.services.audio.asyncio.sleep", side_effect=fake_sleep),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await svc.run()
 
-    # 10s, 20s after failures; then _CHECK_INTERVAL (30s) after success
-    assert sleep_calls[0] == 10.0
-    assert sleep_calls[1] == 20.0
-    assert sleep_calls[2] == 30.0
+    # Two retry waits (10s, 20s), then _CHECK_INTERVAL (30s) after success
+    assert retry_calls == [10.0, 20.0]
+    assert sleep_calls == [30.0]
+
+
+async def test_run_update_address_resets_backoff() -> None:
+    """update_address() while sleeping resets retry_delay to base."""
+    svc = _service()
+
+    async def fake_exec(*args: object, **kwargs: object) -> MagicMock:
+        return _mock_proc(b"Connected: no")
+
+    retry_calls: list[float] = []
+    call_count = 0
+
+    async def fake_wait_retry(delay: float) -> bool:
+        nonlocal call_count
+        retry_calls.append(delay)
+        call_count += 1
+        if call_count == 1:
+            return False  # first retry: timed out → backoff doubles to 20s
+        if call_count == 2:
+            return True  # second retry: woken by re-pair → backoff resets
+        raise asyncio.CancelledError
+
+    with (
+        patch("companion.services.audio.asyncio.create_subprocess_exec", side_effect=fake_exec),
+        patch.object(svc, "_wait_retry", side_effect=fake_wait_retry),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await svc.run()
+
+    assert retry_calls[0] == 10.0  # initial delay
+    assert retry_calls[1] == 20.0  # doubled after timeout
+    assert retry_calls[2] == 10.0  # reset after re-pair wakeup
 
 
 async def test_run_skips_connect_when_already_connected() -> None:
@@ -306,7 +345,17 @@ async def test_connect_succeeds() -> None:
     svc = _service()
     with patch(
         "companion.services.audio.asyncio.create_subprocess_exec",
-        return_value=_mock_proc(),
+        return_value=_mock_proc(b"Connection successful\n"),
+    ):
+        await svc._connect()  # must not raise
+
+
+async def test_connect_logs_failure_on_error_output() -> None:
+    """_connect() warns when bluetoothctl output contains 'Failed to connect'."""
+    svc = _service()
+    with patch(
+        "companion.services.audio.asyncio.create_subprocess_exec",
+        return_value=_mock_proc(b"Failed to connect: org.bluez.Error.Failed\n"),
     ):
         await svc._connect()  # must not raise
 
@@ -324,7 +373,10 @@ async def test_connect_handles_timeout() -> None:
     svc = _service()
 
     proc = MagicMock()
-    proc.wait = AsyncMock(side_effect=TimeoutError)
+    proc.returncode = None
+    proc.kill = MagicMock()
+    proc.wait = AsyncMock()
+    proc.communicate = AsyncMock(side_effect=TimeoutError)
     with patch(
         "companion.services.audio.asyncio.create_subprocess_exec",
         return_value=proc,
