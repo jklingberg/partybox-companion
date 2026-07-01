@@ -92,6 +92,14 @@ if ! id companion &>/dev/null; then
 fi
 usermod -aG bluetooth companion
 
+# Allow the companion service to restart WirePlumber (running in the pi user
+# session) without a password.  AudioService uses this to recover from
+# WirePlumber A2DP endpoint loss that occurs after extended idle periods.
+cat > /etc/sudoers.d/companion-wireplumber <<'EOF'
+companion ALL=(root) NOPASSWD: /usr/bin/systemctl --user -M pi@ restart wireplumber
+EOF
+chmod 440 /etc/sudoers.d/companion-wireplumber
+
 # ──────────────────────────────────────────────────────────────────────────────
 # 4. uv (Python toolchain)
 #
