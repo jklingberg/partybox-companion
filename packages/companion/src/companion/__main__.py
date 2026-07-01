@@ -40,6 +40,8 @@ from companion.webui.router import make_portal_router
 from companion.wifi.middleware import CaptivePortalMiddleware
 from companion.wifi.router import make_wifi_router
 
+log = logging.getLogger(__name__)
+
 
 def _make_log_config(level: str) -> dict[str, object]:
     # When stdout is connected to journald, it adds timestamps and priority.
@@ -69,6 +71,67 @@ def _make_log_config(level: str) -> dict[str, object]:
             "uvicorn.access": {"level": "WARNING"},
         },
     }
+
+
+_AUDIO_GRACE_SECONDS = 60.0
+
+
+async def _gate_spotify_on_audio(audio: AudioService, spotify: SpotifyService) -> None:
+    """Gate SpotifyService on audio readiness.
+
+    librespot advertises a Spotify Connect device over Zeroconf.  If it runs
+    while A2DP is absent, Spotify clients can select "PartyBox Companion" and
+    receive silence.  This gate ensures Spotify is visible only when the
+    appliance can actually produce audio.
+
+    Subscribes to AudioService events; the BehaviorSubject-style subscribe()
+    delivers the current state immediately, so the gate reaches the correct
+    initial state without waiting for the next audio transition.
+
+    Start: Spotify starts as soon as audio becomes ready.
+    Stop: Spotify stops _AUDIO_GRACE_SECONDS after audio goes away, giving the
+    A2DP link time to recover from transient drops before removing the Spotify
+    Connect device from clients' device lists.
+
+    SpotifyService.run() owns subprocess crash-recovery internally; this gate
+    does not supervise it.  If spotify.run() ever exits other than by
+    cancellation that is a violated invariant; let this coroutine propagate so
+    the Supervisor can restart it.  See ADR-026.
+    """
+    queue = audio.subscribe()
+    spotify_task: asyncio.Task[None] | None = None
+
+    try:
+        while True:
+            event = await queue.get()
+
+            if event.audio_ready:
+                if spotify_task is None:
+                    log.info("audio gate: audio ready — starting Spotify Connect")
+                    spotify_task = asyncio.create_task(spotify.run(), name="spotify-service")
+            else:
+                if spotify_task is not None:
+                    log.info(
+                        "audio gate: audio unavailable — %.0fs grace before stopping Spotify",
+                        _AUDIO_GRACE_SECONDS,
+                    )
+                    try:
+                        recovery = await asyncio.wait_for(queue.get(), timeout=_AUDIO_GRACE_SECONDS)
+                    except TimeoutError:
+                        log.info("audio gate: grace period expired — stopping Spotify Connect")
+                        spotify_task.cancel()
+                        with suppress(asyncio.CancelledError):
+                            await spotify_task
+                        spotify_task = None
+                    else:
+                        if recovery.audio_ready:
+                            log.info("audio gate: audio restored within grace period")
+    finally:
+        audio.unsubscribe(queue)
+        if spotify_task is not None:
+            spotify_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await spotify_task
 
 
 async def _forward_ble_volume(manager: DeviceManager, volume_state: VolumeState) -> None:
@@ -152,7 +215,7 @@ async def _run(
 
     supervisor = Supervisor()
     supervisor.register("device-manager", manager.run)
-    supervisor.register("spotify-service", spotify.run)
+    supervisor.register("spotify-audio-gate", lambda: _gate_spotify_on_audio(audio, spotify))
     supervisor.register("audio-service", audio.run)
     supervisor.register(
         "ble-volume-forwarder",
