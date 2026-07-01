@@ -98,6 +98,8 @@ Rejected as fragile — the `--transport` flag availability varies by bluetoothc
 
 The LE advertisement from the PartyBox 520 does not reliably encode the classic BT address in the expected AD type (`0x1B`). The scan-and-filter approach is more robust.
 
+> **Correction ([ADR-027](027-bluetooth-bonding-architecture.md)):** this was checking the wrong AD structure. `0x1B` ("LE Bluetooth Device Address") is unrelated and absent; the BR/EDR address is reliably present in AD type `0x16` (Service Data) under Harman's vendor UUID `0xfddf`. ADR-027 makes LE service-data extraction the canonical discovery mechanism.
+
 ### Gate librespot on A2DP readiness (Spotify deregisters when audio unavailable)
 
 Correct long-term behaviour, but deferred to M17.4. Gating Spotify on A2DP requires a dependency edge between `SpotifyService` and `AudioService` that the Supervisor does not yet model (see ADR-024 deferred design questions). M16 establishes the pairing flow and exposes audio state; M17 wires the lifecycle dependency.
