@@ -109,6 +109,65 @@ When adding a new protocol command:
 
 Document observations (what bytes appear on the wire). Do not transcribe or paraphrase proprietary source. Never commit APK files, JADX exports, or decompiled source — `research/` is gitignored for this reason.
 
+## Raspberry Pi (hardware)
+
+### SSH access
+
+The appliance Pi is reachable at `pi@partybox.local` (mDNS, preferred) or `pi@partybox` (router DNS).
+
+**Claude uses key-based SSH only.** Password prompts are interactive and cannot be answered non-interactively. If SSH asks for a password, stop and tell the user to run this once from their own machine:
+
+```bash
+ssh-copy-id pi@partybox.local
+```
+
+Do not attempt `sshpass`, expect scripts, or any other workaround. Once the key is in place, all SSH commands work without further action.
+
+### Deploying source changes to the Pi
+
+The appliance venv lives at `/opt/partybox-companion/` and is a `--no-editable` install (source copied into site-packages). To deploy a change without rebuilding the full image, rsync the relevant package directly into site-packages and restart the service.
+
+```bash
+# Deploy companion package changes
+rsync -av --delete packages/companion/src/companion/ \
+    pi@partybox.local:/opt/partybox-companion/lib/python3.11/site-packages/companion/
+
+# Deploy partyboxd package changes
+rsync -av --delete packages/partyboxd/src/partyboxd/ \
+    pi@partybox.local:/opt/partybox-companion/lib/python3.11/site-packages/partyboxd/
+
+# Deploy partybox SDK changes
+rsync -av --delete packages/partybox/src/partybox/ \
+    pi@partybox.local:/opt/partybox-companion/lib/python3.11/site-packages/partybox/
+
+# Restart the service after any change
+ssh pi@partybox.local "sudo systemctl restart companion"
+```
+
+This is sufficient for Python source changes. For dependency changes (`pyproject.toml`, `uv.lock`) or changes to `install.sh`-managed files (systemd unit, BlueZ config, Avahi record), a full image rebuild and reflash is required.
+
+### Service and log commands
+
+```bash
+# Service status
+ssh pi@partybox.local "systemctl status companion"
+
+# Restart
+ssh pi@partybox.local "sudo systemctl restart companion"
+
+# Health check
+ssh pi@partybox.local "curl -s http://localhost:8080/api/v1/health"
+
+# Follow logs
+ssh pi@partybox.local "journalctl -u companion -f"
+
+# Last 100 lines
+ssh pi@partybox.local "journalctl -u companion -n 100 --no-pager"
+
+# Bluetooth adapter reset (if GATT connections fail but scanning works)
+ssh pi@partybox.local "sudo systemctl restart bluetooth"
+```
+
 ## Commit messages
 
 Conventional Commits with these scopes: `bluetooth`, `protocol`, `device`, `capabilities`, `api`, `cli`, `services`, `config`, `webui`, `docs`, `ci`

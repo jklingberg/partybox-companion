@@ -223,44 +223,49 @@ The Pi runs the full `partybox-companion` appliance. All packages are installed 
 editable installs under `~/partybox-companion/.venv`, so copying source files to the
 Pi is sufficient for most changes — no reinstall is needed.
 
-**SSH access:** `ssh jonathan@partybox`
+**SSH access:** `ssh pi@partybox.local` (mDNS, preferred) or `ssh pi@partybox` (router DNS).
+
+SSH requires key-based authentication — password prompts cannot be answered non-interactively by tools or scripts. Run this once from your dev machine to install your key:
+
+```bash
+ssh-copy-id pi@partybox.local
+```
 
 **Deploy changed source files:**
 
-```bash
-# From the repo root on your dev machine — adjust paths to taste
-rsync -av packages/companion/src/ jonathan@partybox:~/partybox-companion/packages/companion/src/
-rsync -av packages/partyboxd/src/ jonathan@partybox:~/partybox-companion/packages/partyboxd/src/
-rsync -av packages/partybox/src/  jonathan@partybox:~/partybox-companion/packages/partybox/src/
-```
-
-**If dependencies changed** (i.e. `pyproject.toml` or `uv.lock` changed), sync the
-lock file and re-run `uv sync`:
+The appliance venv is a `--no-editable` install at `/opt/partybox-companion/`. Source files are copied directly into site-packages, so rsync there is sufficient for Python changes — no reinstall required.
 
 ```bash
-rsync -av uv.lock pyproject.toml jonathan@partybox:~/partybox-companion/
-ssh jonathan@partybox "cd ~/partybox-companion && ~/.local/bin/uv sync --all-extras"
+# From the repo root
+rsync -av --delete packages/companion/src/companion/ \
+    pi@partybox.local:/opt/partybox-companion/lib/python3.11/site-packages/companion/
+rsync -av --delete packages/partyboxd/src/partyboxd/ \
+    pi@partybox.local:/opt/partybox-companion/lib/python3.11/site-packages/partyboxd/
+rsync -av --delete packages/partybox/src/partybox/ \
+    pi@partybox.local:/opt/partybox-companion/lib/python3.11/site-packages/partybox/
 ```
+
+**If dependencies changed** (`pyproject.toml` or `uv.lock`), a full image rebuild and reflash is required — the venv is built at image creation time and cannot be updated in-place without `uv`.
 
 **Restart the companion:**
 
 ```bash
-ssh jonathan@partybox "sudo systemctl restart companion"
+ssh pi@partybox.local "sudo systemctl restart companion"
 ```
 
 Check health after restart:
 
 ```bash
-ssh jonathan@partybox "curl -s http://localhost:8080/api/v1/health"
+ssh pi@partybox.local "curl -s http://localhost:8080/api/v1/health"
 ```
 
 **Logs:**
 
 ```bash
-ssh jonathan@partybox "journalctl -u companion -f"
+ssh pi@partybox.local "journalctl -u companion -f"
 
 # Last 100 lines
-ssh jonathan@partybox "journalctl -u companion -n 100 --no-pager"
+ssh pi@partybox.local "journalctl -u companion -n 100 --no-pager"
 ```
 
 **Bluetooth adapter wedge (scanner works, GATT connections fail):**
@@ -270,7 +275,7 @@ speaker is visible, but every GATT connection attempt fails. Restarting the Blue
 stack recovers it without touching the speaker:
 
 ```bash
-ssh jonathan@partybox "sudo systemctl restart bluetooth"
+ssh pi@partybox.local "sudo systemctl restart bluetooth"
 ```
 
 If that doesn't help, power-cycle the speaker as a last resort.
