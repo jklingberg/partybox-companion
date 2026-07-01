@@ -167,18 +167,58 @@ without breaking the boolean semantics that existing consumers depend on.
 
 ---
 
-## Foundation for M17.3
+## M17.3 — Spotify audio gate
 
-M17.3 will implement Spotify lifecycle gating on `audio_ready`:
+M17.3 implements Spotify lifecycle gating via `_gate_spotify_on_audio` in
+`companion/__main__.py`.  The gate is registered with the Supervisor as
+`spotify-audio-gate`, replacing the previous direct `spotify-service`
+registration.
 
 ```
 audio_ready == True  → start librespot → Spotify Connect visible
-audio_ready == False → stop librespot  → Spotify Connect advertisement removed
+audio_ready == False → wait grace period → stop librespot → Connect invisible
 ```
 
-`SpotifyService` will subscribe to `AudioService` events and react to state
-transitions without knowing anything about Bluetooth.  The subscription
-mechanism is already in place as of M17.2; M17.3 adds the reaction.
+### State machine
+
+```
+IDLE (no spotify_task)
+  + AudioReadyChanged(True)   → RUNNING: create spotify_task
+  + AudioReadyChanged(False)  → no-op
+
+RUNNING (spotify_task exists)
+  + AudioReadyChanged(True)   → no-op (already running)
+  + AudioReadyChanged(False)  → GRACE: wait _AUDIO_GRACE_SECONDS
+
+GRACE (spotify_task exists, timer running)
+  + AudioReadyChanged(True) within grace  → RUNNING: cancel timer, keep task
+  + timeout                               → IDLE: cancel spotify_task
+```
+
+### Grace period
+
+`_AUDIO_GRACE_SECONDS = 60.0`.  `AudioService` polls A2DP every 30 s when
+connected; a transient drop and reconnect takes approximately 30 s (check
+interval) + 10 s (retry delay) + 15 s (connect attempt) = ~55 s.  A 60 s grace
+period covers most transient blips while ensuring Spotify de-registers within
+~90 s of a real speaker power-off (30 s detection + 60 s grace).
+
+### Responsibility model
+
+- `SpotifyService.run()` owns librespot subprocess crash-recovery internally.
+  Its contract: runs until cancelled; handles librespot exits; only exits via
+  `CancelledError`.  The gate does not supervise it.
+- `_gate_spotify_on_audio` owns start/stop based on `audio_ready`.  If
+  `spotify.run()` exits other than by cancellation that is a violated
+  invariant; the gate propagates so the Supervisor can restart it and the
+  BehaviorSubject subscription restores the correct state immediately.
+- `Supervisor` owns the gate coroutine (`spotify-audio-gate`).
+
+### Package placement
+
+The gate lives in `companion/__main__.py`, the orchestration entry point,
+alongside the analogous `_forward_ble_volume` coroutine.  Neither `AudioService`
+nor `SpotifyService` knows about the other; the gate is the only coupling point.
 
 ---
 
@@ -218,7 +258,10 @@ initial-state delivery from `subscribe()`.
 | Speaker powered back on | A2DP reconnects; `AudioReadyChanged(True)` emitted |
 | Temporary out-of-range | Same as powered off; recovers automatically when back in range |
 | Repeated reconnect cycles | Exponential backoff prevents radio hammering; each reconnect emits correct events |
-| **Process restart with speaker connected** | `AudioService` always initialises `_audio_ready = False`. The first `_is_connected()` poll (≤ 5 s) rediscovers the live A2DP connection and emits `AudioReadyChanged(True)`. Subscribers (M17.3 SpotifyService) receive the current state immediately from `subscribe()` and start librespot once `True` arrives. No manual intervention required after `systemctl restart partybox-companion`. |
+| **Process restart with speaker connected** | `AudioService` always initialises `_audio_ready = False`. The first `_is_connected()` poll (≤ 5 s) rediscovers the live A2DP connection and emits `AudioReadyChanged(True)`. The gate receives the current state immediately from `subscribe()` and starts librespot once `True` arrives. No manual intervention required after `systemctl restart partybox-companion`. |
+| **Speaker on → Spotify visible** | Gate receives `AudioReadyChanged(True)`; starts librespot; Spotify Connect device appears in clients. |
+| **Speaker off → Spotify hidden after grace** | Gate receives `AudioReadyChanged(False)`; waits 60 s; cancels librespot; Spotify Connect device disappears from clients. |
+| **Transient A2DP drop → Spotify unaffected** | Gate receives `AudioReadyChanged(False)`, starts 60 s grace; `AudioReadyChanged(True)` arrives within grace; librespot continues running without interruption. |
 
 ### Deferred
 
