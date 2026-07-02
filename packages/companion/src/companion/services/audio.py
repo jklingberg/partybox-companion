@@ -43,15 +43,6 @@ _RETRY_BASE = 10.0  # initial retry delay after a failed/lost connection
 _RETRY_MAX = 60.0  # cap backoff at 60 s — 5 min was too slow to recover
 _QUEUE_MAX = 64
 
-# WirePlumber health: after this many consecutive profile-unavailable failures
-# the A2DP endpoint registration has been lost and we restart WirePlumber.
-# profile-unavailable is a LOCAL BlueZ error (no registered A2DP handler) —
-# if WirePlumber's endpoints are intact but the speaker is off, BlueZ returns a
-# different error (br-connection-create-failed). So this signal is reliable.
-# 3 failures = ~70 s of backoff waits (10+20+40) before restart is triggered.
-_WP_RESTART_THRESHOLD = 3
-_WP_RESTART_COOLDOWN = 300.0  # 5 minutes between automatic restarts
-
 
 # ---------------------------------------------------------------------------
 # Audio events
@@ -156,8 +147,6 @@ class AudioService:
         self._address_ready = asyncio.Event()
         self._bus = _AudioEventBus()
         self._reconnect_now = asyncio.Event()
-        self._profile_unavail_streak = 0
-        self._last_wp_restart: float = 0.0
         if self._address is not None:
             self._address_ready.set()
 
@@ -227,12 +216,7 @@ class AudioService:
                         self._address,
                         retry_delay,
                     )
-                    profile_unavail = await self._connect()
-                    if profile_unavail:
-                        self._profile_unavail_streak += 1
-                        await self._maybe_restart_wireplumber()
-                    else:
-                        self._profile_unavail_streak = 0
+                    await self._connect()
                     # If _connect() succeeded, skip the backoff sleep and loop
                     # immediately so audio_ready=True is set before the speaker
                     # can drop the connection due to idle timeout.
@@ -247,7 +231,6 @@ class AudioService:
                 else:
                     if retry_delay > _RETRY_BASE:
                         log.info("A2DP connection stable, backoff reset")
-                    self._profile_unavail_streak = 0
                     self._set_audio_ready(True)
                     retry_delay = _RETRY_BASE
                     await asyncio.sleep(_CHECK_INTERVAL)
@@ -275,10 +258,8 @@ class AudioService:
     async def _run_subprocess(address: str, command: str = "connect") -> tuple[bool, str]:
         """Run an A2DP helper command in a subprocess.
 
-        bleak (used by DeviceManager) holds its own dbus-fast MessageBus in
-        the same asyncio loop.  Any second MessageBus in the same loop
-        misroutes D-Bus responses.  Running all BlueZ calls in isolated
-        subprocesses sidesteps this entirely.
+        bleak holds its own dbus-fast MessageBus in the asyncio loop.  Running
+        BlueZ calls in a subprocess avoids any interaction between the two buses.
 
         command="connect" — returns (True, "") on success, (False, msg) on failure.
         command="check"   — returns (True, "") if connected, (False, "") if not.
@@ -286,15 +267,18 @@ class AudioService:
         import sys as _sys
 
         timeout = 35.0 if command == "connect" else 10.0
-        proc = await asyncio.create_subprocess_exec(
-            _sys.executable,
-            "-m",
-            "companion.services._a2dp_connect",
-            address,
-            command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                _sys.executable,
+                "-m",
+                "companion.services._a2dp_connect",
+                address,
+                command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except OSError as exc:
+            return False, f"subprocess error: {exc}"
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except TimeoutError:
@@ -327,74 +311,29 @@ class AudioService:
         except TimeoutError:
             return False
 
-    async def _connect(self) -> bool:
-        """Attempt A2DP connection. Returns True when failure is profile-unavailable.
+    async def _connect(self) -> None:
+        """Attempt A2DP connection.
 
-        A ``profile-unavailable`` result means BlueZ has no registered A2DP
-        handler — WirePlumber's endpoint registration has been lost, not a
-        speaker-side rejection.  The caller uses this signal to track how long
-        the degraded state has lasted and trigger a WirePlumber restart when
-        the streak exceeds :data:`_WP_RESTART_THRESHOLD`.
+        ``profile-unavailable`` means BlueZ has no registered A2DP handler —
+        WirePlumber's endpoint registration has been lost.  ``br-connection-unknown``
+        is a distinct failure: endpoints are registered but BlueZ's internal
+        transport negotiation failed (speaker SEPs appear then are immediately
+        deleted).  Both are logged and the caller retries with backoff.
         """
         assert self._address is not None
         ok, msg = await self._run_subprocess(self._address, "connect")
         if ok:
             log.info("A2DP connection established to %s", self._address)
-            return False
-        if "profile-unavailable" in msg or "br-connection-unknown" in msg or "NotAvailable" in msg:
+            return
+        if "profile-unavailable" in msg or "NotAvailable" in msg:
             log.warning(
-                "A2DP connect rejected by speaker (profile unavailable) for %s",
+                "A2DP connect rejected (profile unavailable) for %s"
+                " — WirePlumber endpoints not registered; restart companion to recover",
                 self._address,
             )
-            return True
+            return
         log.warning("A2DP connect failed for %s: %s", self._address, msg)
         await self._disconnect()
-        return False
-
-    async def _maybe_restart_wireplumber(self) -> None:
-        """Restart WirePlumber when A2DP endpoint loss is sustained.
-
-        Called after every profile-unavailable failure.  No-ops until
-        :data:`_WP_RESTART_THRESHOLD` consecutive failures have accumulated
-        and :data:`_WP_RESTART_COOLDOWN` seconds have elapsed since the last
-        automatic restart.  Sleeps 10 s after restarting to give WirePlumber
-        time to re-register its A2DP endpoints with BlueZ.
-        """
-        if self._profile_unavail_streak < _WP_RESTART_THRESHOLD:
-            return
-        loop = asyncio.get_running_loop()
-        if loop.time() - self._last_wp_restart < _WP_RESTART_COOLDOWN:
-            return
-        log.warning(
-            "WirePlumber A2DP endpoints lost (%d consecutive failures); restarting WirePlumber",
-            self._profile_unavail_streak,
-        )
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "sudo",
-                "systemctl",
-                "--user",
-                "-M",
-                "pi@",
-                "restart",
-                "wireplumber",
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=15.0)
-            if proc.returncode != 0:
-                log.warning(
-                    "WirePlumber restart failed (rc=%d): %s",
-                    proc.returncode,
-                    stderr.decode(errors="replace").strip(),
-                )
-            else:
-                log.info("WirePlumber restarted; waiting for endpoint registration")
-        except Exception as exc:
-            log.warning("WirePlumber restart error: %s", exc)
-        self._last_wp_restart = loop.time()
-        self._profile_unavail_streak = 0
-        await asyncio.sleep(10.0)
 
     async def _disconnect(self) -> None:
         """Disconnect from the device. No-op if already disconnected."""

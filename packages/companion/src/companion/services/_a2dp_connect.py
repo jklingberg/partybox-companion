@@ -1,12 +1,12 @@
 """Subprocess helper: manage A2DP profile for a given MAC address.
 
-Running in a subprocess avoids the dbus-fast / bleak event-loop routing
-conflict: bleak holds its own MessageBus in the companion asyncio loop, and a
-second MessageBus in the same loop misroutes D-Bus responses.
+Running in a subprocess avoids interaction between bleak's dbus-fast MessageBus
+(held in the companion asyncio loop) and any BlueZ calls made from that loop.
 
 Commands (argv[2]):
   (none)   — connect A2DP profile; prints "ok" or "err:<message>"
-  check    — check Device1.Connected; prints "true" or "false"
+  check    — check for an established A2DP Sink MediaTransport1 on the
+             device; prints "true" or "false"
 """
 
 from __future__ import annotations
@@ -54,15 +54,23 @@ async def _check(address: str) -> None:
 
     bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
     try:
-        path = _device_path(address)
-        introspection = await bus.introspect(_BLUEZ, path)
-        obj = bus.get_proxy_object(_BLUEZ, path, introspection)
-        device: ProxyInterface = obj.get_interface("org.bluez.Device1")
-        connected = await asyncio.wait_for(
-            device.get_connected(unpack_variants=True),  # type: ignore[attr-defined]
+        introspection = await bus.introspect(_BLUEZ, "/")
+        obj = bus.get_proxy_object(_BLUEZ, "/", introspection)
+        manager: ProxyInterface = obj.get_interface("org.freedesktop.DBus.ObjectManager")
+        objects = await asyncio.wait_for(
+            manager.call_get_managed_objects(),  # type: ignore[attr-defined]
             timeout=5,
         )
-        print("true" if connected else "false", flush=True)
+        device_prefix = _device_path(address) + "/"
+        for object_path, interfaces in objects.items():
+            transport = interfaces.get("org.bluez.MediaTransport1")
+            if transport is None or not object_path.startswith(device_prefix):
+                continue
+            uuid = transport["UUID"].value
+            if uuid.lower() == _A2DP_SINK_UUID:
+                print("true", flush=True)
+                return
+        print("false", flush=True)
     except Exception:
         print("false", flush=True)
     finally:
