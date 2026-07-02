@@ -15,6 +15,12 @@ Python 3.14 was evaluated to determine whether the project should standardize on
 
 Standardize on **Python 3.14** everywhere: `pyproject.toml` (`requires-python`, ruff `target-version`, mypy `python_version`), a repo-root `.python-version` pin, CI, the devcontainer, and the Pi appliance image.
 
+### Project policy, not just a one-time migration
+
+PartyBox Companion intentionally supports **exactly one Python version**: the version pinned by the appliance image (currently 3.14, tracked by the repo-root `.python-version`). Backwards compatibility with older Python releases is not a project goal — this follows the same design filter the project already applies everywhere else (see `docs/roadmap.md`): one appliance, one supported configuration, no compatibility layers carried for their own sake.
+
+A consequence of this: `requires-python = ">=3.14"` in the three `pyproject.toml` files is a **packaging-convention lower bound**, not a statement that 3.15, 3.16, etc. are supported. Only 3.14 is actively validated — against real dependency versions, against `mypy`/`ruff` targets, and on real appliance hardware. Newer Python releases require the same deliberate evaluation this ADR represents (compatibility check → migration PR → hardware validation) before the pin moves; they are not adopted implicitly just because `>=` permits them.
+
 ### Compatibility findings
 
 - **Runtime dependencies** — `bleak` (3.0.2), `dbus-fast` (5.0.22), `fastapi`/`uvicorn`/`pydantic`/`pydantic-settings`/`structlog`/`typer`/`rich` all install and run cleanly under 3.14; `dbus-fast` ships official `cp314` wheels. `aiohttp` and `zeroconf`, mentioned as candidates for review, are not actually dependencies of this project.
@@ -44,6 +50,16 @@ Validated on the real appliance Pi, not just in the devcontainer/CI:
 - With that fix, `companion.service` started cleanly under Python 3.14.6, reconnected BLE GATT to the real PartyBox 520 (`ble_connected: true`), and the A2DP retry loop drove real `dbus-fast` calls against system BlueZ, getting an expected rejection response rather than a Python exception — confirming no annotation-introspection regression in `bluez_dbus.py`.
 - `test_pairing_agent_class_is_constructible` (the regression test from M16 covering the exact `dbus-fast` × annotation-evaluation hazard this ADR flagged as a risk) passes under 3.14.
 - **Not exercised:** a fresh `Pair()` through the `org.bluez.Agent1` flow — the speaker was already bonded, and forcing an unpair/re-pair cycle to test this specific path was judged disruptive to a live appliance and out of scope for this change. `bluez_dbus.py`'s pairing flow was already unverified against real hardware before this migration (see M16 implementation notes); that gap is pre-existing and unrelated to Python 3.14.
+
+### Lessons learned
+
+The `UV_PYTHON_INSTALL_DIR` bug (above) is the clearest evidence in this migration for why appliance changes get hardware validation rather than stopping at CI:
+
+- **Invisible in CI** — the GitHub Actions runner is ephemeral and root for the whole job; there's no restricted service account to fail against, and nothing restarts a systemd unit.
+- **Invisible in the devcontainer** — it's a single unprivileged user (`vscode`) with no separate, more-restricted account standing in for `companion`.
+- **Only reproducible under the actual production shape**: root running the installer, a distinct no-login system account running the service, `ProtectHome` in effect. That specific combination only exists on the real Pi.
+
+The general principle: any change that touches how the appliance is installed or how the service account resolves its own runtime environment needs to be exercised as that account, on that OS, not just type-checked and unit-tested. This is the same category of gap M16 already flagged for `bluez_dbus.py`'s pairing flow (never hardware-verified) — worth keeping in mind for future install.sh or systemd-unit changes.
 
 ## Open items
 
