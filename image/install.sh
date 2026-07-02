@@ -223,6 +223,19 @@ install -m 0644 \
     "${PARTYBOX_SRC_DIR}/system/avahi/partyboxd.service" \
     /etc/avahi/services/partyboxd.service
 
+# Restrict Avahi to IPv4. This is a product decision, not a bug fix: the
+# appliance's HTTP API only needs to be reachable over the stable IPv4 LAN
+# address, and publishing an AAAA record adds no capability any client
+# relies on. (An earlier hypothesis attributed reported partybox.local
+# flakiness to IPv6 prefix/address rotation causing AAAA churn; that did
+# not hold up under investigation — the Pi's global IPv6 address was
+# confirmed stable across multiple hours and reboots — so treat this as
+# scope reduction, not a resolved root cause for that report.)
+AVAHI_CONF=/etc/avahi/avahi-daemon.conf
+if [ -f "${AVAHI_CONF}" ]; then
+    sed -i 's/^use-ipv6=yes/use-ipv6=no/' "${AVAHI_CONF}"
+fi
+
 # ──────────────────────────────────────────────────────────────────────────────
 # 8. BlueZ — auto-enable Bluetooth adapter on boot (see system/README.md)
 # ──────────────────────────────────────────────────────────────────────────────
