@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 from typing import TypeAlias
 
@@ -43,6 +44,16 @@ _POST_CONNECT_SETTLE = 5.0  # wait after ConnectProfile ok before re-checking
 _RETRY_BASE = 10.0  # initial retry delay after a failed/lost connection
 _RETRY_MAX = 60.0  # cap backoff at 60 s — 5 min was too slow to recover
 _QUEUE_MAX = 64
+
+# Flap protection: a controller exhibiting HCI transport errors (see ADR-028
+# "WirePlumber endpoint degradation investigation") can accept ConnectProfile
+# repeatedly while the resulting MediaTransport1 is torn down seconds later.
+# Without this, each reconnect is treated as an independent success and the
+# retry loop hammers the controller at full speed, adding to the traffic that
+# provoked the errors in the first place.
+_FLAP_WINDOW = 20.0  # a connection lasting less than this counts as a flap
+_FLAP_LIMIT = 3  # consecutive flaps before an extended cooldown
+_FLAP_COOLDOWN = 120.0  # backoff applied once flapping is detected
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +159,8 @@ class AudioService:
         self._address_ready = asyncio.Event()
         self._bus = _AudioEventBus()
         self._reconnect_now = asyncio.Event()
+        self._connected_at: float | None = None
+        self._flap_count = 0
         if self._address is not None:
             self._address_ready.set()
 
@@ -212,6 +225,19 @@ class AudioService:
             while True:
                 if not await self._is_connected():
                     self._set_audio_ready(False)
+                    if self._flap_count >= _FLAP_LIMIT:
+                        log.warning(
+                            "A2DP flapping detected (%d short-lived connections to %s)"
+                            " — cooling down %.0fs instead of retrying immediately",
+                            self._flap_count,
+                            self._address,
+                            _FLAP_COOLDOWN,
+                        )
+                        self._flap_count = 0
+                        if await self._wait_retry(_FLAP_COOLDOWN):
+                            log.info("A2DP: re-pair detected, retrying immediately")
+                        retry_delay = _RETRY_BASE
+                        continue
                     log.info(
                         "A2DP sink not connected, connecting to %s (retry in %.0fs)",
                         self._address,
@@ -254,10 +280,24 @@ class AudioService:
     # ------------------------------------------------------------------
 
     def _set_audio_ready(self, val: bool) -> None:
-        """Update audio_ready and emit AudioReadyChanged on any transition."""
-        if val != self._audio_ready:
-            self._audio_ready = val
-            self._bus.emit(AudioReadyChanged(audio_ready=val))
+        """Update audio_ready and emit AudioReadyChanged on any transition.
+
+        Also tracks flapping — see the `_FLAP_*` constants — by comparing how
+        long the connection lasted against `_FLAP_WINDOW`.
+        """
+        if val == self._audio_ready:
+            return
+        self._audio_ready = val
+        now = time.monotonic()
+        if val:
+            self._connected_at = now
+        else:
+            if self._connected_at is not None and now - self._connected_at < _FLAP_WINDOW:
+                self._flap_count += 1
+            else:
+                self._flap_count = 0
+            self._connected_at = None
+        self._bus.emit(AudioReadyChanged(audio_ready=val))
 
     async def _is_connected(self) -> bool:
         assert self._address is not None

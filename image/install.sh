@@ -92,14 +92,6 @@ if ! id companion &>/dev/null; then
 fi
 usermod -aG bluetooth companion
 
-# Allow the companion service to restart WirePlumber (running in the pi user
-# session) without a password.  AudioService uses this to recover from
-# WirePlumber A2DP endpoint loss that occurs after extended idle periods.
-cat > /etc/sudoers.d/companion-wireplumber <<'EOF'
-companion ALL=(root) NOPASSWD: /usr/bin/systemctl --user -M pi@ restart wireplumber
-EOF
-chmod 440 /etc/sudoers.d/companion-wireplumber
-
 # ──────────────────────────────────────────────────────────────────────────────
 # 4. uv (Python toolchain)
 #
@@ -371,6 +363,12 @@ mkdir -p /home/pi/.config/systemd/user/wireplumber.service.d
 cp "${PARTYBOX_SRC_DIR}/image/config/wireplumber-bluetooth-after.conf" \
     /home/pi/.config/systemd/user/wireplumber.service.d/bluetooth-after.conf
 chown -R pi:pi /home/pi/.config/systemd
+
+# companion.service's ExecStartPre polls for A2DP endpoint registration instead
+# of a fixed sleep after restarting PipeWire — see wait-for-a2dp-endpoints.sh
+# and ADR-028 "WirePlumber endpoint degradation investigation".
+install -m 755 "${PARTYBOX_SRC_DIR}/image/config/wait-for-a2dp-endpoints.sh" \
+    /usr/local/bin/wait-for-a2dp-endpoints.sh
 
 # (3) WirePlumber appliance overrides — disable hw-volume mirroring and keep
 #     A2DP transport alive when librespot is idle between tracks.

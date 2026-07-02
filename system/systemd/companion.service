@@ -38,18 +38,32 @@ ExecStartPre=+/usr/bin/hciconfig hci0 reset
 # and any edge case where logind recreates the directory at 0700.
 ExecStartPre=+/bin/chmod 755 /run/user/1000
 
-# Restart WirePlumber so it registers A2DP profiles cleanly before AudioService
-# starts. At boot, BlueZ auto-connects A2DP immediately after the hci0 adapter
-# comes up; WirePlumber starts mid-connection, creates a WpSiAudioAdapter, and
-# then gets 'Object activation aborted: proxy destroyed' when the connection
-# collapses. This leaves WirePlumber without registered media endpoints, so
-# bluetoothctl connect fails with br-connection-profile-unavailable.
+# Restart PipeWire so WirePlumber registers A2DP profiles cleanly before
+# AudioService starts. At boot, BlueZ auto-connects A2DP immediately after the
+# hci0 adapter comes up; WirePlumber starts mid-connection, creates a
+# WpSiAudioAdapter, and then gets 'Object activation aborted: proxy destroyed'
+# when the connection collapses. This leaves WirePlumber without registered
+# media endpoints, so bluetoothctl connect fails with
+# br-connection-profile-unavailable.
+#
+# Restarting pipewire.service rather than wireplumber.service directly: WP has
+# BindsTo=pipewire.service, so a PipeWire restart always cascades to
+# WirePlumber (and filter-chain.service), but the reverse is not true — a
+# WirePlumber-only restart can leave a degraded PipeWire session graph in
+# place. See ADR-028 "WirePlumber endpoint degradation investigation" for the
+# evidence this was insufficient in some observed failure states.
 #
 # Sleeping 5 s after the HCI reset above lets the auto-connect attempt complete
-# or time out, then the WirePlumber restart starts against a quiescent adapter.
+# or time out, then the PipeWire restart starts against a quiescent adapter.
 ExecStartPre=+/bin/sleep 5
-ExecStartPre=+/usr/bin/systemctl --user -M pi@ restart wireplumber
-ExecStartPre=+/bin/sleep 10
+ExecStartPre=+/usr/bin/systemctl --user -M pi@ restart pipewire
+
+# Poll for the A2DP Sink endpoint (0000110b) to appear on the adapter instead
+# of sleeping a fixed duration — WirePlumber registers its BlueZ media
+# endpoints asynchronously after starting. Bounded at 15 s and always exits 0;
+# see image/config/wait-for-a2dp-endpoints.sh for why a timeout doesn't fail
+# startup.
+ExecStartPre=+/usr/local/bin/wait-for-a2dp-endpoints.sh 15
 
 ExecStart=/opt/partybox-companion/bin/partybox-companion
 
