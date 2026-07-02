@@ -6,6 +6,7 @@ All tests use helpers that operate on plain data without invoking nmcli.
 from __future__ import annotations
 
 from companion.services.provisioning import (
+    _AP_SSID,
     ProvisioningFailureReason,
     ProvisioningService,
     ProvisioningState,
@@ -92,6 +93,18 @@ def test_parse_no_blank_line_separators() -> None:
     result = _parse_wifi_list(output)
     assert [n.ssid for n in result] == ["HomeNet", "GuestNet"]
     assert result[0].signal == 80
+
+
+def test_parse_excludes_own_ap_ssid() -> None:
+    # The companion AP SSID must not appear in the network selection list.
+    output = _make_output(
+        {"SSID": _AP_SSID, "SIGNAL": "99", "SECURITY": ""},
+        {"SSID": "HomeNet", "SIGNAL": "75", "SECURITY": "WPA2"},
+    )
+    result = _parse_wifi_list(output, exclude={_AP_SSID})
+    assert all(n.ssid != _AP_SSID for n in result)
+    assert len(result) == 1
+    assert result[0].ssid == "HomeNet"
 
 
 def test_parse_invalid_signal_defaults_to_zero() -> None:

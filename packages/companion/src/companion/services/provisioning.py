@@ -114,7 +114,7 @@ class ProvisioningService:
         except OSError:
             log.warning("Provisioning: nmcli not available -- cannot scan networks")
             return []
-        return _parse_wifi_list((stdout or b"").decode(errors="replace"))
+        return _parse_wifi_list((stdout or b"").decode(errors="replace"), exclude={_AP_SSID})
 
     async def run(self) -> None:
         """Start the provisioning lifecycle. Runs until cancelled."""
@@ -307,7 +307,9 @@ def _classify_nmcli_error(stderr: str) -> ProvisioningFailureReason:
     return ProvisioningFailureReason.UNKNOWN
 
 
-def _parse_wifi_list(output: str) -> list[WifiNetwork]:
+def _parse_wifi_list(
+    output: str, *, exclude: frozenset[str] | set[str] = frozenset()
+) -> list[WifiNetwork]:
     """Parse nmcli multiline device wifi list output.
 
     nmcli's multiline format puts each field on its own line as KEY:VALUE.
@@ -316,6 +318,9 @@ def _parse_wifi_list(output: str) -> list[WifiNetwork]:
     blank lines, a new record is detected when SSID appears while the
     current group already has data — SSID is always the first field
     because we request fields in SSID,SIGNAL,SECURITY order.
+
+    SSIDs in *exclude* are removed from the result (used to hide the
+    companion's own AP SSID from the network selection list).
     """
     groups: list[dict[str, str]] = []
     current: dict[str, str] = {}
@@ -340,7 +345,7 @@ def _parse_wifi_list(output: str) -> list[WifiNetwork]:
     networks: list[WifiNetwork] = []
     for g in groups:
         ssid = g.get("SSID", "")
-        if not ssid or ssid == "--" or ssid in seen:
+        if not ssid or ssid == "--" or ssid in seen or ssid in exclude:
             continue
         seen.add(ssid)
         try:
