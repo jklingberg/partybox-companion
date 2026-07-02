@@ -471,6 +471,7 @@ No significant new functionality. This milestone verifies that all the pieces wo
 
 **Goals:**
 - End-to-end validation on real hardware: flash a fresh SD card → boot → reach Portal → stream Spotify → reboot → stream again
+- Fresh-pairing validation: exercise `bluez_dbus.py`'s `org.bluez.Agent1` flow end to end — `Pair()`, agent registration, first-time bonding — against a not-yet-bonded speaker under Python 3.14. This path has never been hardware-verified (see M16 implementation notes and [ADR-029](adr/029-python-3-14-standardization.md)); everything validated so far is reconnect against an already-bonded device, not first pairing.
 - Documentation review: README, setup guide, and API reference are accurate and complete
 - API freeze: no breaking changes to `/api/v1/*` after this point
 - `CHANGELOG.md` drafted with user-visible changes since M6

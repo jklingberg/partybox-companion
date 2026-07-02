@@ -62,8 +62,8 @@ Steps (in order):
 1. **System packages** — `pipewire`, `bluez`, `avahi-daemon`, and runtime dependencies
 2. **librespot** — installed from the [raspotify](https://github.com/dtcooper/raspotify) apt repository; `raspotify.service` is disabled immediately (Companion manages the lifecycle — see ADR-016)
 3. **companion user** — system user with no login shell, in the `bluetooth` group
-4. **uv** — installed to `/usr/local/bin`; used to create the Python venv
-5. **Companion venv** — `uv venv /opt/partybox-companion --python python3`; installs partybox, partyboxd, companion from source
+4. **uv** — installed to `/usr/local/bin`; manages the Python interpreter and creates the venv
+5. **Python 3.14 + Companion venv** — `uv python install` fetches a standalone Python 3.14 build (per the repo's `.python-version` pin — Pi OS Bookworm's apt `python3` stops at 3.11 and never reaches 3.14), then `uv sync` installs partybox, partyboxd, companion from source into `/opt/partybox-companion`
 6. **systemd service** — `companion.service` copied and enabled (auto-starts on boot)
 7. **Avahi** — mDNS service record so `partybox.local` resolves
 8. **BlueZ** — `AutoEnable=true` so the Bluetooth adapter powers on automatically

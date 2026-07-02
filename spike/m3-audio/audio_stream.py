@@ -174,7 +174,7 @@ async def main() -> int:
         interrupted = False
         try:
             await monitor_task
-        except (KeyboardInterrupt, asyncio.CancelledError):
+        except KeyboardInterrupt, asyncio.CancelledError:
             interrupted = True
             rec.event("interrupted")
         finally:

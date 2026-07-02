@@ -44,11 +44,10 @@ jobs:
         working-directory: packages/companion
 
   test:
-    name: Test ${{ matrix.package }} (Python ${{ matrix.python-version }})
+    name: Test ${{ matrix.package }}
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.11", "3.12"]
         package: [partybox, partyboxd, companion]
     steps:
       - uses: actions/checkout@v4
@@ -62,7 +61,6 @@ jobs:
         working-directory: packages/${{ matrix.package }}
       - name: Upload coverage
         uses: codecov/codecov-action@v4
-        if: matrix.python-version == '3.11'
         with:
           file: packages/${{ matrix.package }}/coverage.xml
           flags: ${{ matrix.package }}

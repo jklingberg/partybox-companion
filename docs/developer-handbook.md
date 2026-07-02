@@ -37,7 +37,7 @@ After that, the terminal is ready. `uv run pytest`, `uv run ruff`, and `uv run m
 
 | Tool | Source |
 |---|---|
-| Python 3.12 | `mcr.microsoft.com/devcontainers/python:3.12-bookworm` |
+| Python 3.14 | `mcr.microsoft.com/devcontainers/python:3.14-bookworm` |
 | uv | `ghcr.io/astral-sh/uv:0.11.24` (pinned; copied at build time) |
 | GitHub CLI (`gh`) | devcontainer feature |
 | Node.js LTS | devcontainer feature (Claude Code dependency) |
@@ -55,7 +55,7 @@ After that, the terminal is ready. `uv run pytest`, `uv run ruff`, and `uv run m
 
 Use this when working on hardware integration, running tests against a real PartyBox, or if you prefer not to use Docker.
 
-**Prerequisites:** Linux or macOS, Python 3.11+, [uv](https://docs.astral.sh/uv/).
+**Prerequisites:** Linux or macOS, Python 3.14, [uv](https://docs.astral.sh/uv/).
 
 ```bash
 # Install uv
@@ -238,11 +238,11 @@ The appliance venv is a `--no-editable` install at `/opt/partybox-companion/`. S
 ```bash
 # From the repo root
 rsync -av --delete packages/companion/src/companion/ \
-    pi@partybox.local:/opt/partybox-companion/lib/python3.11/site-packages/companion/
+    pi@partybox.local:/opt/partybox-companion/lib/python3.14/site-packages/companion/
 rsync -av --delete packages/partyboxd/src/partyboxd/ \
-    pi@partybox.local:/opt/partybox-companion/lib/python3.11/site-packages/partyboxd/
+    pi@partybox.local:/opt/partybox-companion/lib/python3.14/site-packages/partyboxd/
 rsync -av --delete packages/partybox/src/partybox/ \
-    pi@partybox.local:/opt/partybox-companion/lib/python3.11/site-packages/partybox/
+    pi@partybox.local:/opt/partybox-companion/lib/python3.14/site-packages/partybox/
 ```
 
 **If dependencies changed** (`pyproject.toml` or `uv.lock`), a full image rebuild and reflash is required — the venv is built at image creation time and cannot be updated in-place without `uv`.

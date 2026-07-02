@@ -71,7 +71,7 @@ async def _collect_journal_logs() -> str:
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10.0)
         output = stdout.decode(errors="replace")
         return output if output.strip() else "(no journal entries found)\n"
-    except (OSError, TimeoutError):
+    except OSError, TimeoutError:
         return "(journalctl not available)\n"
 
 
@@ -361,7 +361,7 @@ def make_services_router(
         if manager is not None:
             try:
                 await manager.set_volume(body.level)
-            except (DeviceNotConnectedError, NotImplementedError):
+            except DeviceNotConnectedError, NotImplementedError:
                 pass
             except ValueError as exc:
                 raise HTTPException(

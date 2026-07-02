@@ -211,7 +211,7 @@ class SpotifyService:
         try:
             proc.terminate()
             await asyncio.wait_for(proc.wait(), timeout=5.0)
-        except (TimeoutError, ProcessLookupError):
+        except TimeoutError, ProcessLookupError:
             try:
                 proc.kill()
             except ProcessLookupError:
