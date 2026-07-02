@@ -55,7 +55,6 @@ apt-get install -y --no-install-recommends \
     bluez \
     avahi-daemon \
     openssh-server \
-    python3 \
     curl \
     ca-certificates \
     gnupg
@@ -126,7 +125,21 @@ install -m 755 "/tmp/uv-${UV_ARCH}/uv" /usr/local/bin/uv
 rm -f "${UV_TGZ}" && rm -rf "/tmp/uv-${UV_ARCH}"
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 5. Python venv + Companion packages
+# 5. Python interpreter + venv + Companion packages
+#
+# Raspberry Pi OS Bookworm's apt python3 package stops at 3.11 and will never
+# reach 3.14 — Debian only bumps the default Python once per OS release. uv
+# manages its own standalone interpreter instead, matching the repo-root
+# .python-version pin (3.14), independent of whatever apt ships.
+#
+# UV_PYTHON_INSTALL_DIR pins the interpreter to a world-readable system path.
+# uv's default install location is under $HOME/.local/share/uv/python — since
+# this script runs as root, that default would be /root/.local/..., which is
+# mode 0700 and unreadable by the companion service account (see ADR-018:
+# ProtectHome, no login shell). Without this override, companion.service fails
+# at startup with "Permission denied" resolving the venv's python symlink —
+# caught via hardware validation, not CI, since the devcontainer runs as a
+# single unprivileged user with no equivalent restricted service account.
 #
 # Installs partybox, partyboxd, and companion from the repository source,
 # with ALL transitive dependency versions pinned to uv.lock for reproducible
@@ -138,9 +151,12 @@ rm -f "${UV_TGZ}" && rm -rf "/tmp/uv-${UV_ARCH}"
 # site-packages rather than creating .pth symlinks — the source tree is deleted
 # after install so symlinks would be dangling. --no-dev excludes test/lint deps.
 # ──────────────────────────────────────────────────────────────────────────────
+export UV_PYTHON_INSTALL_DIR=/opt/uv/python
 log "Installing partybox-companion (locked)"
 (
     cd "${PARTYBOX_SRC_DIR}"
+    log "Installing Python (per .python-version)"
+    uv python install
     # hatch-vcs derives the version from git tags. The QEMU chroot used for
     # image builds has no git history, so without this hint it falls back to
     # 0.0.0.dev0. SETUPTOOLS_SCM_PRETEND_VERSION is the standard override

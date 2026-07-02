@@ -9,7 +9,7 @@ description = "Turn any PartyBox into a true WiFi speaker — full appliance pac
 readme = "README.md"
 license = { file = "../../LICENSE" }
 authors = [{ name = "Jonathan Klingberg" }]
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 keywords = ["partybox", "smart-speaker", "spotify", "airplay", "appliance", "raspberry-pi"]
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
@@ -18,8 +18,7 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Home Automation",
     "Topic :: Multimedia :: Sound/Audio",
     "Typing :: Typed",

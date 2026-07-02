@@ -32,7 +32,6 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from typing import TypeAlias
 
 from companion.config import AudioSettings
 from companion.services.bluez_dbus import BluezClient
@@ -76,7 +75,7 @@ class AudioReadyChanged:
     audio_ready: bool
 
 
-AudioServiceEvent: TypeAlias = AudioReadyChanged
+type AudioServiceEvent = AudioReadyChanged
 
 
 class _AudioEventBus:

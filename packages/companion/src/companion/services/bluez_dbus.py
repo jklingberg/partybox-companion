@@ -196,7 +196,7 @@ class BluezClient:
     def __init__(self) -> None:
         self._bus: MessageBus | None = None
 
-    async def __aenter__(self) -> "BluezClient":
+    async def __aenter__(self) -> BluezClient:
         self._bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
         return self
 
@@ -245,7 +245,7 @@ class BluezClient:
     # Agent — required before Pair() will proceed at all
     # ------------------------------------------------------------------
 
-    def pairing_agent(self) -> "_AgentScope":
+    def pairing_agent(self) -> _AgentScope:
         return _AgentScope(self)
 
     async def _register_agent(self) -> None:
@@ -410,7 +410,7 @@ class BluezClient:
         device = await self._device(mac)
         try:
             return bool(await asyncio.wait_for(_get_property(device, "connected"), timeout=5.0))
-        except (DBusError, TimeoutError):
+        except DBusError, TimeoutError:
             return False
 
     async def connect_a2dp(self, mac: str) -> None:

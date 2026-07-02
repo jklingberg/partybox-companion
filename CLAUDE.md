@@ -167,15 +167,15 @@ RSYNC="sshpass -p raspberry rsync -e 'ssh -o StrictHostKeyChecking=no'"
 
 # Deploy companion package changes
 $RSYNC -av --delete packages/companion/src/companion/ \
-    pi@partybox.local:/opt/partybox-companion/lib/python3.11/site-packages/companion/
+    pi@partybox.local:/opt/partybox-companion/lib/python3.14/site-packages/companion/
 
 # Deploy partyboxd package changes
 $RSYNC -av --delete packages/partyboxd/src/partyboxd/ \
-    pi@partybox.local:/opt/partybox-companion/lib/python3.11/site-packages/partyboxd/
+    pi@partybox.local:/opt/partybox-companion/lib/python3.14/site-packages/partyboxd/
 
 # Deploy partybox SDK changes
 $RSYNC -av --delete packages/partybox/src/partybox/ \
-    pi@partybox.local:/opt/partybox-companion/lib/python3.11/site-packages/partybox/
+    pi@partybox.local:/opt/partybox-companion/lib/python3.14/site-packages/partybox/
 
 # Restart the service after any change
 $SSH pi@partybox.local "sudo systemctl restart companion"

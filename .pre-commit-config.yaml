@@ -1,3 +1,11 @@
+# Hooks that run Python source (debug-statements, mypy) need an interpreter
+# that can parse this project's syntax — e.g. PEP 758 unparenthesized except
+# clauses, valid only from 3.14. Without this pin, pre-commit falls back to
+# whatever ambient python3 was on PATH when hook environments were first
+# created, which can predate a Python bump and fail with "Could not parse ast".
+default_language_version:
+  python: python3.14
+
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.6.0

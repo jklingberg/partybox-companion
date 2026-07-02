@@ -98,7 +98,7 @@ class BleControl:
             while True:
                 await transport.receive()
                 self.notifications += 1
-        except (ConnectionLostError, NotConnectedError):
+        except ConnectionLostError, NotConnectedError:
             self.dropped = True
 
 
