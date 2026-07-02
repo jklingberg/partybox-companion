@@ -76,8 +76,13 @@ apt-get install -y --no-install-recommends \
 # (and therefore every A2DP media endpoint) roughly once a second, forever —
 # manifesting as audio_ready never becoming true and Spotify Connect staying
 # gated indefinitely (M17.3). wireplumber 0.5.x is the version meant to pair
-# with pipewire 1.x. Pinned to an exact version for the same reproducibility
-# reasons as UV_VERSION below — bump deliberately, not implicitly.
+# with pipewire 1.x. Pinned to an exact version for the same reasons as
+# UV_VERSION below: not only build reproducibility, but because this specific
+# version was validated against real hardware (PartyBox 520) before being
+# adopted. Floating to whatever bookworm-backports carries at build time
+# would reintroduce exactly the kind of untested version pairing that caused
+# this bug in the first place. A future bump must go through the same
+# hardware validation this one did, not be assumed safe by default.
 log "Installing wireplumber 0.5.8 from bookworm-backports"
 apt-get install -y --no-install-recommends -t bookworm-backports \
     wireplumber=0.5.8-1~bpo12+1
