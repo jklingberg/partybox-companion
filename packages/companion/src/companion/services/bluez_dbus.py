@@ -79,7 +79,7 @@ _FDDF_ADDRESS_LENGTH = 6
 
 _PAIR_TIMEOUT = 60.0
 _TRUST_TIMEOUT = 5.0
-_CONNECT_TIMEOUT = 15.0
+_CONNECT_TIMEOUT = 30.0
 
 
 def extract_bredr_address(service_data: bytes) -> str | None:
@@ -97,6 +97,19 @@ def extract_bredr_address(service_data: bytes) -> str | None:
 
 class PairingFailedError(Exception):
     """A pair/trust/connect D-Bus call failed or timed out."""
+
+
+class A2dpConnectError(Exception):
+    """Device1.Connect() failed."""
+
+
+class A2dpProfileUnavailableError(A2dpConnectError):
+    """Speaker rejected A2DP — recovery window may still be active.
+
+    The speaker drops the A2DP AVDTP session and then needs ~20 s before it
+    will accept a new one.  Callers should NOT call disconnect() after this
+    error; the ACL link is already torn down by the speaker.
+    """
 
 
 class _PairingAgent(ServiceInterface):
@@ -387,6 +400,69 @@ class BluezClient:
         except (DBusError, TimeoutError) as exc:
             # Non-fatal: AudioService independently retries A2DP connection.
             log.warning("Pairing: connect failed for %s: %s", mac, exc)
+
+    # ------------------------------------------------------------------
+    # A2DP connection management (used by AudioService)
+    # ------------------------------------------------------------------
+
+    async def is_connected(self, mac: str) -> bool:
+        """Read Device1.Connected — True when any profile is connected."""
+        device = await self._device(mac)
+        try:
+            return bool(await asyncio.wait_for(_get_property(device, "connected"), timeout=5.0))
+        except (DBusError, TimeoutError):
+            return False
+
+    async def connect_a2dp(self, mac: str) -> None:
+        """Call Device1.ConnectProfile(A2DP_SINK_UUID) and raise on failure.
+
+        Uses ConnectProfile rather than Connect so that only the A2DP Audio
+        Sink profile is requested.  Calling Connect() triggers BlueZ to
+        negotiate ALL profiles simultaneously, which causes a deadlock-like
+        stall when WirePlumber — the A2DP endpoint owner — is busy handling
+        other BlueZ callbacks on the same connection.  ConnectProfile is what
+        WirePlumber itself uses for auto-connect and completes reliably.
+
+        Raises :exc:`A2dpProfileUnavailableError` when the speaker rejects A2DP
+        (the ACL link is already gone; don't call disconnect after this).
+
+        Raises :exc:`A2dpConnectError` for any other failure (a stale ACL may
+        still be up; callers should call disconnect_a2dp to clean up).
+        """
+        _A2DP_SINK_UUID = "0000110b-0000-1000-8000-00805f9b34fb"
+        device = await self._device(mac)
+        try:
+            await asyncio.wait_for(
+                _call(device, "connect_profile", _A2DP_SINK_UUID),
+                timeout=_CONNECT_TIMEOUT,
+            )
+        except TimeoutError as exc:
+            # The asyncio timeout fired, but BlueZ keeps negotiating in the
+            # background (dbus-fast cancels the task, not the D-Bus call).
+            # Check connectivity: if it's up, treat the slow success as good.
+            if await self.is_connected(mac):
+                return
+            raise A2dpConnectError(f"connect timed out for {mac}") from exc
+        except DBusError as exc:
+            msg = str(exc)
+            if (
+                "br-connection-profile-unavailable" in msg
+                or "br-connection-unknown" in msg
+                or "NotAvailable" in msg
+            ):
+                raise A2dpProfileUnavailableError(msg) from exc
+            if "AlreadyConnected" in msg or "br-connection-busy" in msg or "InProgress" in msg:
+                return  # already connected or connecting — success
+            raise A2dpConnectError(msg) from exc
+
+    async def disconnect_a2dp(self, mac: str) -> None:
+        """Call Device1.Disconnect(). No-op if already disconnected."""
+        device = await self._device(mac)
+        try:
+            await asyncio.wait_for(_call(device, "disconnect"), timeout=5.0)
+        except DBusError as exc:
+            if "NotConnected" not in str(exc):
+                log.debug("A2DP disconnect for %s: %s", mac, exc)
 
 
 class _AgentScope:

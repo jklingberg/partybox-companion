@@ -117,7 +117,7 @@ class ProvisioningService:
         return _parse_wifi_list((stdout or b"").decode(errors="replace"))
 
     async def run(self) -> None:
-        """Start the provisioning lifecycle. Returns when WiFi is connected."""
+        """Start the provisioning lifecycle. Runs until cancelled."""
         # Delete any leftover AP from a previous run before checking state.
         # If the service restarts while the AP is active, wlan0 shows as
         # "wifi:connected" (AP mode), which would fool _is_sta_connected().
@@ -127,9 +127,11 @@ class ProvisioningService:
             if await self._is_sta_connected():
                 log.info("WiFi already connected -- provisioning not needed")
                 self._state = ProvisioningState.CONNECTED
+                await asyncio.Event().wait()  # block until cancelled
                 return
             log.info("No active WiFi connection -- entering provisioning mode")
             await self._provision()
+            await asyncio.Event().wait()  # block until cancelled after provisioning
         except asyncio.CancelledError:
             log.info("Provisioning service: cancelled -- cleaning up AP")
             await _nmcli("connection", "delete", _AP_CON_NAME)

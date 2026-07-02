@@ -107,10 +107,9 @@ async def test_update_address_sets_value_and_wakes_run() -> None:
 async def test_run_connects_when_not_connected() -> None:
     svc = _service()
 
-    connected_proc = _mock_proc(b"Connected: no")
-    connect_proc = _mock_proc()
-
-    call_results = [connected_proc, connect_proc]
+    # Three subprocess calls per failed iteration:
+    # _is_connected() → _connect() → _is_connected() post-connect
+    call_results = [_mock_proc(b"false"), _mock_proc(b""), _mock_proc(b"false")]
 
     async def fake_exec(*args: object, **kwargs: object) -> MagicMock:
         return call_results.pop(0)
@@ -129,6 +128,41 @@ async def test_run_connects_when_not_connected() -> None:
             await svc.run()
 
     assert len(retry_calls) == 1  # waited once after connect attempt
+
+
+async def test_run_settle_sleep_after_successful_connect() -> None:
+    """After _connect() succeeds, _POST_CONNECT_SETTLE sleep fires before next check."""
+    svc = _service()
+    events = svc.subscribe()
+
+    # Iteration 1: _is_connected() → False, _connect() → ok (b"ok"), settle sleep → cancel
+    call_results = [_mock_proc(b"false"), _mock_proc(b"ok")]
+
+    async def fake_exec(*args: object, **kwargs: object) -> MagicMock:
+        return call_results.pop(0)
+
+    sleep_calls: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleep_calls.append(delay)
+        raise asyncio.CancelledError
+
+    with (
+        patch("companion.services.audio.asyncio.create_subprocess_exec", side_effect=fake_exec),
+        patch("companion.services.audio.asyncio.sleep", side_effect=fake_sleep),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await svc.run()
+
+    from companion.services.audio import _POST_CONNECT_SETTLE, AudioReadyChanged
+
+    assert sleep_calls == [_POST_CONNECT_SETTLE]
+    # subscribe() pre-populates with initial state; collect all events emitted
+    emitted = []
+    while not events.empty():
+        emitted.append(events.get_nowait())
+    # audio_ready=True was emitted before the settle sleep (and False after cancellation)
+    assert AudioReadyChanged(audio_ready=True) in emitted
 
 
 async def test_run_backoff_doubles_on_repeated_failures() -> None:
@@ -165,14 +199,16 @@ async def test_run_backoff_resets_on_success() -> None:
     """retry_delay resets to base once connection is stable."""
     svc = _service()
 
-    # _is_connected and _connect both call create_subprocess_exec:
-    # check→connect→check→connect→check(stable)
+    # Each failed iteration: _is_connected() → _connect() → _is_connected() post-connect
+    # Successful iteration: _is_connected() → True → sleep(_CHECK_INTERVAL)
     responses = [
-        _mock_proc(b"Connected: no"),  # _is_connected() #1 → not connected
-        _mock_proc(b""),  # _connect() #1
-        _mock_proc(b"Connected: no"),  # _is_connected() #2 → not connected
-        _mock_proc(b""),  # _connect() #2
-        _mock_proc(b"Connected: yes"),  # _is_connected() #3 → stable
+        _mock_proc(b"false"),  # _is_connected() #1 → not connected
+        _mock_proc(b""),  # _connect() #1 → fail
+        _mock_proc(b"false"),  # _is_connected() post-connect #1 → still not connected
+        _mock_proc(b"false"),  # _is_connected() #2 → not connected
+        _mock_proc(b""),  # _connect() #2 → fail
+        _mock_proc(b"false"),  # _is_connected() post-connect #2 → still not connected
+        _mock_proc(b"true"),  # _is_connected() #3 → connected → audio_ready=True
     ]
 
     async def fake_exec(*args: object, **kwargs: object) -> MagicMock:
@@ -202,9 +238,9 @@ async def test_run_backoff_resets_on_success() -> None:
         with pytest.raises(asyncio.CancelledError):
             await svc.run()
 
-    # Two retry waits (10s, 20s), then _CHECK_INTERVAL (30s) after success
+    # Two retry waits (10s, 20s), then _CHECK_INTERVAL (60s) after success
     assert retry_calls == [10.0, 20.0]
-    assert sleep_calls == [30.0]
+    assert sleep_calls == [60.0]
 
 
 async def test_run_update_address_resets_backoff() -> None:
@@ -242,7 +278,7 @@ async def test_run_update_address_resets_backoff() -> None:
 async def test_run_skips_connect_when_already_connected() -> None:
     svc = _service()
 
-    connected_proc = _mock_proc(b"Connected: yes")
+    connected_proc = _mock_proc(b"true")
 
     async def fake_exec(*args: object, **kwargs: object) -> MagicMock:
         return connected_proc
@@ -277,7 +313,7 @@ async def test_run_cancels_cleanly() -> None:
     svc = _service()
 
     async def fake_exec(*args: object, **kwargs: object) -> MagicMock:
-        return _mock_proc(b"Connected: yes")
+        return _mock_proc(b"true")
 
     async def fake_sleep(delay: float) -> None:
         raise asyncio.CancelledError
@@ -298,7 +334,7 @@ async def test_is_connected_true() -> None:
     svc = _service()
     with patch(
         "companion.services.audio.asyncio.create_subprocess_exec",
-        return_value=_mock_proc(b"Device AA:BB:CC:DD:EE:FF\n\tConnected: yes\n"),
+        return_value=_mock_proc(b"true"),
     ):
         assert await svc._is_connected() is True
 
@@ -307,7 +343,7 @@ async def test_is_connected_false() -> None:
     svc = _service()
     with patch(
         "companion.services.audio.asyncio.create_subprocess_exec",
-        return_value=_mock_proc(b"Device AA:BB:CC:DD:EE:FF\n\tConnected: no\n"),
+        return_value=_mock_proc(b"false"),
     ):
         assert await svc._is_connected() is False
 
@@ -329,6 +365,8 @@ async def test_is_connected_handles_timeout() -> None:
 
     proc = MagicMock()
     proc.communicate = slow_communicate
+    proc.kill = MagicMock()
+    proc.wait = AsyncMock()
     with patch(
         "companion.services.audio.asyncio.create_subprocess_exec",
         return_value=proc,
@@ -535,7 +573,7 @@ async def test_run_emits_audio_ready_true_on_connect() -> None:
     queue = svc.subscribe()
 
     responses = [
-        _mock_proc(b"Connected: yes"),  # _is_connected() → connected
+        _mock_proc(b"true"),  # _is_connected() → connected
     ]
 
     async def fake_exec(*args: object, **kwargs: object) -> MagicMock:
@@ -563,7 +601,7 @@ async def test_run_emits_audio_ready_false_on_cancel() -> None:
     call_count = 0
 
     async def fake_exec(*args: object, **kwargs: object) -> MagicMock:
-        return _mock_proc(b"Connected: yes")
+        return _mock_proc(b"true")
 
     async def fake_sleep(delay: float) -> None:
         nonlocal call_count

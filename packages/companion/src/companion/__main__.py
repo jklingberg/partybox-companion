@@ -73,7 +73,7 @@ def _make_log_config(level: str) -> dict[str, object]:
     }
 
 
-_AUDIO_GRACE_SECONDS = 60.0
+_AUDIO_GRACE_SECONDS = 300.0
 
 
 async def _gate_spotify_on_audio(audio: AudioService, spotify: SpotifyService) -> None:

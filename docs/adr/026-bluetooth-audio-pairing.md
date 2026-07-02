@@ -102,7 +102,7 @@ The LE advertisement from the PartyBox 520 does not reliably encode the classic 
 
 ### Gate librespot on A2DP readiness (Spotify deregisters when audio unavailable)
 
-Correct long-term behaviour, but deferred to M17.4. Gating Spotify on A2DP requires a dependency edge between `SpotifyService` and `AudioService` that the Supervisor does not yet model (see ADR-024 deferred design questions). M16 establishes the pairing flow and exposes audio state; M17 wires the lifecycle dependency.
+Correct long-term behaviour, but deferred to M17.4. Gating Spotify on A2DP requires a dependency edge between `SpotifyService` and `AudioService` that the Supervisor does not yet model (see ADR-024 deferred design questions). M16 establishes the pairing flow and exposes audio state; M17 wires the lifecycle dependency. The `audio_ready` abstraction, event bus, Spotify gate, and A2DP connection management architecture are documented in [ADR-028](028-audio-readiness-model.md).
 
 ---
 

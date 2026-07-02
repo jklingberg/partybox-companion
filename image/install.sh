@@ -92,6 +92,14 @@ if ! id companion &>/dev/null; then
 fi
 usermod -aG bluetooth companion
 
+# Allow the companion service to restart WirePlumber (running in the pi user
+# session) without a password.  AudioService uses this to recover from
+# WirePlumber A2DP endpoint loss that occurs after extended idle periods.
+cat > /etc/sudoers.d/companion-wireplumber <<'EOF'
+companion ALL=(root) NOPASSWD: /usr/bin/systemctl --user -M pi@ restart wireplumber
+EOF
+chmod 440 /etc/sudoers.d/companion-wireplumber
+
 # ──────────────────────────────────────────────────────────────────────────────
 # 4. uv (Python toolchain)
 #
@@ -141,6 +149,11 @@ rm -f "${UV_TGZ}" && rm -rf "/tmp/uv-${UV_ARCH}"
 log "Installing partybox-companion (locked)"
 (
     cd "${PARTYBOX_SRC_DIR}"
+    # hatch-vcs derives the version from git tags. The QEMU chroot used for
+    # image builds has no git history, so without this hint it falls back to
+    # 0.0.0.dev0. SETUPTOOLS_SCM_PRETEND_VERSION is the standard override
+    # that tells hatch-vcs to use the supplied version string verbatim.
+    export SETUPTOOLS_SCM_PRETEND_VERSION="${COMPANION_VERSION}"
     UV_PROJECT_ENVIRONMENT="${INSTALL_PREFIX}" \
         uv sync --frozen --no-dev --no-editable
 )
@@ -311,6 +324,90 @@ systemctl enable ssh
 mkdir -p /etc/ssh/sshd_config.d
 printf 'PasswordAuthentication yes\n' \
     > /etc/ssh/sshd_config.d/10-partybox.conf
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 10c. PipeWire user session for the pi user (A2DP audio pipeline)
+#
+# Spotify Connect (librespot) outputs audio via the PulseAudio-compatible
+# socket that PipeWire-pulse creates in the pi user's XDG_RUNTIME_DIR.
+# The main wireplumber.service (loaded with bluetooth.lua) registers A2DP
+# media endpoints with BlueZ and creates PipeWire sink nodes for connected
+# Bluetooth speakers — no separate wireplumber-bluetooth instance is needed.
+#
+# Two steps make this work on a headless appliance with no active login:
+#
+# (1) loginctl enable-linger: tells systemd to start and maintain the pi user's
+#     session (user@1000.service) at boot, keeping PipeWire and WirePlumber
+#     alive without requiring an SSH login. Implemented by creating the linger
+#     marker file directly (loginctl is not available in a chroot).
+#
+# (2) User service symlinks: the equivalent of `systemctl --user enable` for
+#     each service. Created manually because systemctl --user cannot run in a
+#     QEMU chroot without a live systemd user instance.
+# ──────────────────────────────────────────────────────────────────────────────
+log "Configuring PipeWire user session for pi (audio pipeline)"
+
+# (1) Enable linger — creates /var/lib/systemd/linger/pi
+mkdir -p /var/lib/systemd/linger
+touch /var/lib/systemd/linger/pi
+
+# (2) Enable PipeWire, PipeWire-Pulse, and WirePlumber user services.
+# wireplumber-bluetooth.service is masked: Pi OS ships it with preset=enabled,
+# but it conflicts with the Bluetooth support already built into wireplumber.service
+# (wireplumber.conf loads bluetooth.lua). Running both instances simultaneously
+# causes RegisterProfile() failures and WpSiAudioAdapter activation aborts.
+mkdir -p /home/pi/.config/systemd/user/default.target.wants
+for svc in pipewire.socket pipewire-pulse.socket wireplumber.service; do
+    ln -sf "/usr/lib/systemd/user/${svc}" \
+        "/home/pi/.config/systemd/user/default.target.wants/${svc}"
+done
+ln -sf /dev/null /home/pi/.config/systemd/user/wireplumber-bluetooth.service
+
+# Ensure wireplumber.service starts after bluetooth.service so the hci0 adapter
+# is fully ready when WirePlumber registers A2DP media endpoints. Without this
+# ordering, WirePlumber races BlueZ on boot and silently fails to register
+# endpoints, causing br-connection-profile-unavailable until WirePlumber is restarted.
+mkdir -p /home/pi/.config/systemd/user/wireplumber.service.d
+cp "${PARTYBOX_SRC_DIR}/image/config/wireplumber-bluetooth-after.conf" \
+    /home/pi/.config/systemd/user/wireplumber.service.d/bluetooth-after.conf
+chown -R pi:pi /home/pi/.config/systemd
+
+# (3) WirePlumber appliance overrides — disable hw-volume mirroring and keep
+#     A2DP transport alive when librespot is idle between tracks.
+#     Appended after the system 50-bluez-config.lua so system defaults are
+#     extended, not replaced.  See image/config/wireplumber-appliance.lua.
+mkdir -p /home/pi/.config/wireplumber/bluetooth.lua.d
+cp "${PARTYBOX_SRC_DIR}/image/config/wireplumber-appliance.lua" \
+    /home/pi/.config/wireplumber/bluetooth.lua.d/51-appliance.lua
+
+chown -R pi:pi /home/pi/.config
+
+# (4) logind: set UserRuntimeDirectoryMode=0755 so /run/user/1000/ is
+#     traversable by the companion service account. systemd-logind creates
+#     /run/user/1000/ with mode 0700 by default; that blocks companion from
+#     reaching the PipeWire-pulse socket at /run/user/1000/pulse/native even
+#     though the socket itself is world-writable. companion.service also has
+#     an ExecStartPre chmod as belt-and-suspenders for the current session.
+mkdir -p /etc/systemd/logind.conf.d
+cp "${PARTYBOX_SRC_DIR}/image/config/logind-runtime-dir-mode.conf" \
+    /etc/systemd/logind.conf.d/runtime-dir-mode.conf
+
+# (5) Clear WirePlumber state on every boot.
+#
+# WirePlumber 0.4.x persists node/device records in ~/.local/state/wireplumber/.
+# After a power cycle or reboot, this state can be inconsistent with the
+# speaker's fresh BlueZ state, causing AVDTP negotiation to fail with
+# br-connection-unknown — A2DP appears to connect (ACL up, endpoints negotiated)
+# but the media stream setup fails silently. Clearing the state directory on
+# boot forces WirePlumber to reinitialise from scratch each time, which is safe
+# for the appliance since node volume and other preferences are set via the
+# 51-appliance.lua policy file rather than the state database.
+#
+# tmpfiles.d 'R!' action removes the path at boot time only (not on
+# systemd-tmpfiles --create runs during normal operation).
+cat > /etc/tmpfiles.d/wireplumber-state.conf << 'EOF'
+R! /home/pi/.local/state/wireplumber - - - - -
+EOF
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 11. SD card longevity

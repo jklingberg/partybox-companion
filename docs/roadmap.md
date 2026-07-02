@@ -289,7 +289,7 @@ Establish the release engineering foundation: the pipeline that turns a git tag 
 
 ---
 
-#### M13.2 — Image Polish *(complete)*
+#### M13.2 — Image Polish ✅
 
 **Delivered:**
 - `image/config/base-image.env` — Pi OS base image pinned to a specific dated release; upgrades are a single-file diff
@@ -300,7 +300,7 @@ Establish the release engineering foundation: the pipeline that turns a git tag 
 
 ---
 
-#### M13.3 — Appliance Hardening *(complete)*
+#### M13.3 — Appliance Hardening ✅
 
 Harden the appliance for unattended operation.
 
@@ -314,7 +314,7 @@ Harden the appliance for unattended operation.
 
 ---
 
-### M14 — Network Provisioning
+### M14 — Network Provisioning ✅
 
 **Package:** `companion`
 
@@ -381,7 +381,7 @@ CONNECTED: tear down companion-ap
 
 ---
 
-### M15 — Unified Volume Model
+### M15 — Unified Volume Model ✅
 
 **Packages:** `partybox`, `partyboxd`, `companion`
 
@@ -423,7 +423,7 @@ The API represents logical speaker volume and must not expose implementation det
 
 ---
 
-### M16 — First Boot Experience
+### M16 — First Boot Experience ✅
 
 **Package:** `companion`
 
@@ -448,11 +448,18 @@ M14 gets the appliance onto the network and binds port 80. M16 validates the end
 Build confidence in the appliance's ability to run unattended. M17 introduces no new features — it ensures every existing feature survives real-world conditions without user intervention.
 
 **Goals:**
-- **Reboot recovery:** after a Pi reboot, Companion reconnects to the speaker and librespot re-registers with Spotify automatically
-- **Bluetooth recovery:** if the speaker is power-cycled or goes out of range, Companion reconnects when it returns; if the BT controller wedges, the daemon recovers without requiring `systemctl restart bluetooth` from the user
-- **Spotify visibility tied to speaker reachability:** librespot starts (and registers with Zeroconf) only after A2DP is confirmed available; it deregisters when A2DP has been unavailable long enough to indicate the speaker is off or out of range — selecting a Connect device that produces no audio is a confusing user experience
-- **Crash recovery:** any component that exits unexpectedly is restarted with backoff; repeated failures surface in Portal diagnostics rather than being silently swallowed
+- **Reboot recovery:** after a Pi reboot, Companion reconnects to the speaker and librespot re-registers with Spotify automatically ✓
+- **Bluetooth recovery — speaker power cycle:** if the speaker is power-cycled or goes out of range, Companion reconnects when it returns ✓
+- **Bluetooth recovery — controller wedge:** if the BT controller wedges, the daemon recovers without requiring `systemctl restart bluetooth` from the user — partially addressed (HCI reset in `ExecStartPre`); WirePlumber endpoint degradation after extended idle is a known remaining issue (see open items below)
+- **Spotify visibility tied to speaker reachability:** librespot starts (and registers with Zeroconf) only after A2DP is confirmed available; it deregisters when A2DP has been unavailable long enough to indicate the speaker is off or out of range ✓
+- **Crash recovery:** any component that exits unexpectedly is restarted with backoff; repeated failures surface in Portal diagnostics rather than being silently swallowed ✓
 - **Extended run:** 30-minute streaming session (deferred from M3) validated with combined A2DP + BLE + librespot
+
+**Validated (2026-07-02):** A2DP auto-connect is working end-to-end — speaker power-on via BLE GATT triggers A2DP connect within ~2 s; `audio_ready: true` is stable; music plays through the PartyBox 520 via Spotify Connect without manual intervention after reboot or speaker power cycle.
+
+**Open items before M17 is complete:**
+- WirePlumber endpoint degradation after extended idle (~1 h of disconnect/reconnect cycles): `profile-unavailable` accumulates until `companion` is restarted; root cause and condition-based recovery are under investigation. Workaround: `sudo systemctl restart companion` always recovers.
+- 30-minute extended streaming session validation (combined A2DP + BLE + librespot)
 
 **Done when:** The appliance survives a reboot, a speaker power cycle, and a 30-minute streaming session without user intervention.
 

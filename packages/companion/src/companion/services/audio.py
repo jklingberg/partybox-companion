@@ -34,13 +34,14 @@ from dataclasses import dataclass
 from typing import TypeAlias
 
 from companion.config import AudioSettings
+from companion.services.bluez_dbus import BluezClient
 
 log = logging.getLogger(__name__)
 
-_CHECK_INTERVAL = 30.0  # seconds between health checks when connected
-_CONNECT_TIMEOUT = 15.0  # seconds to wait for bluetoothctl connect
+_CHECK_INTERVAL = 60.0  # seconds between health checks when connected
+_POST_CONNECT_SETTLE = 5.0  # wait after ConnectProfile ok before re-checking
 _RETRY_BASE = 10.0  # initial retry delay after a failed/lost connection
-_RETRY_MAX = 300.0  # back off up to 5 minutes when another device is competing
+_RETRY_MAX = 60.0  # cap backoff at 60 s — 5 min was too slow to recover
 _QUEUE_MAX = 64
 
 
@@ -216,7 +217,22 @@ class AudioService:
                         self._address,
                         retry_delay,
                     )
-                    await self._connect()
+                    if await self._connect():
+                        # ConnectProfile returned ok — trust it and wait briefly
+                        # before the top-of-loop _is_connected() check.
+                        # MediaTransport1 is created asynchronously after
+                        # ConnectProfile returns; without this settle sleep the
+                        # check runs before the transport object appears in
+                        # GetManagedObjects and would immediately re-trigger a
+                        # connect attempt, hammering the speaker.
+                        self._set_audio_ready(True)
+                        retry_delay = _RETRY_BASE
+                        await asyncio.sleep(_POST_CONNECT_SETTLE)
+                        continue
+                    # connect failed — still check in case speaker auto-connected
+                    if await self._is_connected():
+                        retry_delay = _RETRY_BASE
+                        continue
                     if await self._wait_retry(retry_delay):
                         log.info("A2DP: re-pair detected, retrying immediately")
                         retry_delay = _RETRY_BASE
@@ -245,18 +261,52 @@ class AudioService:
 
     async def _is_connected(self) -> bool:
         assert self._address is not None
+        ok, _ = await self._run_subprocess(self._address, "check")
+        return ok
+
+    @staticmethod
+    async def _run_subprocess(address: str, command: str = "connect") -> tuple[bool, str]:
+        """Run an A2DP helper command in a subprocess.
+
+        bleak holds its own dbus-fast MessageBus in the asyncio loop.  Running
+        BlueZ calls in a subprocess avoids any interaction between the two buses.
+
+        command="connect" — returns (True, "") on success, (False, msg) on failure.
+        command="check"   — returns (True, "") if connected, (False, "") if not.
+        """
+        import sys as _sys
+
+        timeout = 35.0 if command == "connect" else 10.0
         try:
             proc = await asyncio.create_subprocess_exec(
-                "bluetoothctl",
-                "info",
-                self._address,
+                _sys.executable,
+                "-m",
+                "companion.services._a2dp_connect",
+                address,
+                command,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
             )
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
-            return b"Connected: yes" in stdout
-        except (OSError, TimeoutError):
-            return False
+        except OSError as exc:
+            return False, f"subprocess error: {exc}"
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return False, "subprocess timed out"
+        line = stdout.decode(errors="replace").strip()
+        if stderr:
+            log.debug(
+                "A2DP %s subprocess stderr: %s", command, stderr.decode(errors="replace").strip()
+            )
+        if command == "check":
+            return line == "true", ""
+        if line == "ok":
+            return True, ""
+        if not line and stderr:
+            return False, "stderr: " + stderr.decode(errors="replace").strip()
+        return False, line
 
     async def _wait_retry(self, delay: float) -> bool:
         """Sleep delay seconds; return True if woken early by update_address().
@@ -271,36 +321,36 @@ class AudioService:
         except TimeoutError:
             return False
 
-    async def _connect(self) -> None:
+    async def _connect(self) -> bool:
+        """Attempt A2DP connection.  Returns True when ConnectProfile succeeded.
+
+        ``profile-unavailable`` means BlueZ has no registered A2DP handler —
+        WirePlumber's endpoint registration has been lost.  ``br-connection-unknown``
+        is a distinct failure: endpoints are registered but BlueZ's internal
+        transport negotiation failed (speaker SEPs appear then are immediately
+        deleted).  Both are logged; the caller retries with backoff.
+        """
         assert self._address is not None
-        proc: asyncio.subprocess.Process | None = None
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "bluetoothctl",
-                "connect",
+        ok, msg = await self._run_subprocess(self._address, "connect")
+        if ok:
+            log.info("A2DP connection established to %s", self._address)
+            return True
+        if "profile-unavailable" in msg or "NotAvailable" in msg:
+            log.warning(
+                "A2DP connect rejected (profile unavailable) for %s"
+                " — WirePlumber endpoints not registered; restart companion to recover",
                 self._address,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
             )
-            try:
-                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=_CONNECT_TIMEOUT)
-            except TimeoutError:
-                proc.kill()
-                await proc.wait()
-                log.warning("A2DP connect timed out for %s", self._address)
-                return
-            output = stdout.decode(errors="replace")
-            if "Failed to connect" in output or "not available" in output.lower():
-                log.warning(
-                    "A2DP connect failed for %s: %s",
-                    self._address,
-                    output.strip(),
-                )
-            else:
-                log.info("A2DP connection established to %s", self._address)
-        except OSError as exc:
-            log.warning("A2DP connect error for %s: %s", self._address, exc)
-        finally:
-            if proc is not None and proc.returncode is None:
-                proc.kill()
-                await proc.wait()
+            return False
+        log.warning("A2DP connect failed for %s: %s", self._address, msg)
+        await self._disconnect()
+        return False
+
+    async def _disconnect(self) -> None:
+        """Disconnect from the device. No-op if already disconnected."""
+        assert self._address is not None
+        try:
+            async with BluezClient() as bluez:
+                await bluez.disconnect_a2dp(self._address)
+        except Exception as exc:
+            log.debug("A2DP disconnect for %s: %s", self._address, exc)

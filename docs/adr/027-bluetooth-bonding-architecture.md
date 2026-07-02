@@ -38,7 +38,7 @@ This ADR addresses the architectural question raised after that investigation: n
 
 **`btmgmt` is excluded from production code entirely.** It was valuable for this investigation specifically *because* it bypasses `bluetoothd` and talks to the kernel MGMT socket directly — that isolation is what let the investigation separate "is this a BlueZ policy problem or a kernel/controller problem." In production, bypassing `bluetoothd` risks its D-Bus object model (`Device1.Bonded`, `GetManagedObjects()`) silently diverging from actual kernel state, since `bluetoothd` has no visibility into changes `btmgmt` makes underneath it.
 
-`AudioService`'s existing `bluetoothctl`-based connection polling is **not** changed by this ADR — it has the same CLI-fragility shape, but migrating it is a separate, larger change (it would also enable push-based `PropertiesChanged` connection events instead of polling) and is out of scope here.
+`AudioService`'s connection polling is out of scope here. It was subsequently migrated to subprocess-based `dbus-fast` calls in M17.4 to resolve a `dbus-fast`/`bleak` event-loop routing conflict; see [ADR-028](028-audio-readiness-model.md).
 
 ### 2. Bondable mode is scoped to the pairing operation only
 
