@@ -218,7 +218,7 @@ The install script produces this layout, consistent with ADR-017:
 ## Consequences
 
 - **CI build time.** A release build takes ~40–60 minutes: base image download (~5 min), apt package installation (~10 min), uv/Python install (~10 min), image compression (~5 min). This is acceptable for a release pipeline; developers are not blocked by it.
-- **Port 80 is not used.** The Portal is served on port 8080 until M14 resolves the port 80 binding strategy.
+- **Port 80 is not used.** The Portal is served on port 8080 until M14 resolves the port 80 binding strategy. (Resolved: M14 bound port 80 in production via `CAP_NET_BIND_SERVICE` — see [ADR-021](021-network-provisioning.md).)
 - **The developer workflow is unchanged.** `uv sync`, `uv run`, and the test suite work exactly as before. Image generation is purely a release engineering concern.
 - **uv SHA256 verification is not implemented.** The binary is pinned by version; integrity checking is deferred to a future update of the uv version.
 

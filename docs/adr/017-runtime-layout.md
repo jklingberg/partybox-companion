@@ -95,5 +95,5 @@ No log files are written. The process logs to stdout; systemd routes it to journ
 ## Consequences
 
 - **Development defaults are preserved.** `CompanionSettings.data_dir` defaults to `~/.local/share/companion` in code. The systemd unit overrides this with `COMPANION_DATA_DIR=/var/lib/companion`. Developers running without the unit get the old path — no change to the dev workflow.
-- **Port 80** is the production target. The mechanism (capability, reverse proxy, iptables) is M14's decision. The code default (8080) is used until M14.
+- **Port 80** is the production target. The mechanism (capability, reverse proxy, iptables) is M14's decision. The code default (8080) is used until M14. (Resolved: M14 adopted `CAP_NET_BIND_SERVICE`; production has bound port 80 since M14 shipped — see [ADR-021](021-network-provisioning.md).)
 - **Upgrade path is straightforward.** Replace `/opt/partybox-companion/`, restart the service. Config and state in `/var/lib/companion/` are untouched.

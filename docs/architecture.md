@@ -280,7 +280,7 @@ PartyBoxDevice → protocol.serializer → ControlTransport → speaker
 
 ## Communication
 
-Single HTTP server on one port (default: 8080). See [ADR-007](adr/007-tcp-only.md).
+Single HTTP server on one port — 8080 by default in code, 80 in production (see [ADR-017](adr/017-runtime-layout.md)). See [ADR-007](adr/007-tcp-only.md).
 
 | Path | Content |
 |---|---|
@@ -288,7 +288,7 @@ Single HTTP server on one port (default: 8080). See [ADR-007](adr/007-tcp-only.m
 | `/api/v1/` | REST API |
 | `/ws` | WebSocket event stream |
 
-mDNS via system `avahi-daemon` → `http://partybox.local:8080`.
+mDNS via system `avahi-daemon` → `http://partybox.local`.
 
 API key auth via `X-API-Key` header. Generate with `partybox generate-key`. Optional on trusted networks.
 
