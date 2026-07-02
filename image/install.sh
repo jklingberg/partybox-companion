@@ -45,19 +45,47 @@ curl -fsSL https://dtcooper.github.io/raspotify/key.asc \
 echo "deb [signed-by=/usr/share/keyrings/raspotify.gpg] https://dtcooper.github.io/raspotify/ raspotify main" \
     > /etc/apt/sources.list.d/raspotify.list
 
+# bookworm-backports carries wireplumber 0.5.x, which is required alongside
+# Raspberry Pi's pipewire 1.x backport (see below) — Debian bookworm's own
+# wireplumber is stuck at 0.4.13, built against pipewire 0.3.x's internals.
+# Signed by the same archive keyring already trusted for bookworm main, so no
+# separate key import is needed.
+log "Adding bookworm-backports apt repository (for wireplumber 0.5.x)"
+echo "deb http://deb.debian.org/debian bookworm-backports main contrib non-free non-free-firmware" \
+    > /etc/apt/sources.list.d/bookworm-backports.list
+
 log "Installing system packages"
 apt-get update -qq
 apt-get install -y --no-install-recommends \
     pipewire \
     pipewire-pulse \
     libspa-0.2-bluetooth \
-    wireplumber \
     bluez \
     avahi-daemon \
     openssh-server \
     curl \
     ca-certificates \
     gnupg
+
+# wireplumber must come from bookworm-backports, not bookworm main — see
+# ADR-028 addendum "WirePlumber/PipeWire version skew". Debian bookworm ships
+# wireplumber 0.4.13, built for pipewire 0.3.x. Raspberry Pi's own apt repo
+# (already required for camera/HAT support) overrides pipewire with a 1.x
+# backport, and running wireplumber 0.4.13 against pipewire 1.x's bluez5 SPA
+# plugin causes the plugin to tear down and rebuild its entire D-Bus session
+# (and therefore every A2DP media endpoint) roughly once a second, forever —
+# manifesting as audio_ready never becoming true and Spotify Connect staying
+# gated indefinitely (M17.3). wireplumber 0.5.x is the version meant to pair
+# with pipewire 1.x. Pinned to an exact version for the same reasons as
+# UV_VERSION below: not only build reproducibility, but because this specific
+# version was validated against real hardware (PartyBox 520) before being
+# adopted. Floating to whatever bookworm-backports carries at build time
+# would reintroduce exactly the kind of untested version pairing that caused
+# this bug in the first place. A future bump must go through the same
+# hardware validation this one did, not be assumed safe by default.
+log "Installing wireplumber 0.5.8 from bookworm-backports"
+apt-get install -y --no-install-recommends -t bookworm-backports \
+    wireplumber=0.5.8-1~bpo12+1
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 2. librespot (via raspotify — prebuilt ARM binary)
@@ -338,9 +366,11 @@ printf 'PasswordAuthentication yes\n' \
 #
 # Spotify Connect (librespot) outputs audio via the PulseAudio-compatible
 # socket that PipeWire-pulse creates in the pi user's XDG_RUNTIME_DIR.
-# The main wireplumber.service (loaded with bluetooth.lua) registers A2DP
-# media endpoints with BlueZ and creates PipeWire sink nodes for connected
-# Bluetooth speakers — no separate wireplumber-bluetooth instance is needed.
+# The main wireplumber.service (its bluez5 monitor loaded via
+# scripts/monitors/bluez.lua, part of the "main-embedded" profile — see
+# below) registers A2DP media endpoints with BlueZ and creates PipeWire sink
+# nodes for connected Bluetooth speakers — no separate wireplumber-bluetooth
+# instance is needed.
 #
 # Two steps make this work on a headless appliance with no active login:
 #
@@ -362,8 +392,9 @@ touch /var/lib/systemd/linger/pi
 # (2) Enable PipeWire, PipeWire-Pulse, and WirePlumber user services.
 # wireplumber-bluetooth.service is masked: Pi OS ships it with preset=enabled,
 # but it conflicts with the Bluetooth support already built into wireplumber.service
-# (wireplumber.conf loads bluetooth.lua). Running both instances simultaneously
-# causes RegisterProfile() failures and WpSiAudioAdapter activation aborts.
+# (wireplumber.conf's monitor.bluez component). Running both instances
+# simultaneously causes RegisterProfile() failures and WpSiAudioAdapter
+# activation aborts.
 mkdir -p /home/pi/.config/systemd/user/default.target.wants
 for svc in pipewire.socket pipewire-pulse.socket wireplumber.service; do
     ln -sf "/usr/lib/systemd/user/${svc}" \
@@ -375,9 +406,16 @@ ln -sf /dev/null /home/pi/.config/systemd/user/wireplumber-bluetooth.service
 # is fully ready when WirePlumber registers A2DP media endpoints. Without this
 # ordering, WirePlumber races BlueZ on boot and silently fails to register
 # endpoints, causing br-connection-profile-unavailable until WirePlumber is restarted.
+#
+# Also run WirePlumber with the "main-embedded" profile rather than the
+# default "main" — see image/config/wireplumber-embedded-profile.conf and
+# ADR-028 addendum "WirePlumber/PipeWire version skew" for why this is
+# required (not optional) on a headless appliance.
 mkdir -p /home/pi/.config/systemd/user/wireplumber.service.d
 cp "${PARTYBOX_SRC_DIR}/image/config/wireplumber-bluetooth-after.conf" \
     /home/pi/.config/systemd/user/wireplumber.service.d/bluetooth-after.conf
+cp "${PARTYBOX_SRC_DIR}/image/config/wireplumber-embedded-profile.conf" \
+    /home/pi/.config/systemd/user/wireplumber.service.d/10-embedded-profile.conf
 chown -R pi:pi /home/pi/.config/systemd
 
 # companion.service's ExecStartPre polls for A2DP endpoint registration instead
@@ -388,11 +426,12 @@ install -m 755 "${PARTYBOX_SRC_DIR}/image/config/wait-for-a2dp-endpoints.sh" \
 
 # (3) WirePlumber appliance overrides — disable hw-volume mirroring and keep
 #     A2DP transport alive when librespot is idle between tracks.
-#     Appended after the system 50-bluez-config.lua so system defaults are
-#     extended, not replaced.  See image/config/wireplumber-appliance.lua.
-mkdir -p /home/pi/.config/wireplumber/bluetooth.lua.d
-cp "${PARTYBOX_SRC_DIR}/image/config/wireplumber-appliance.lua" \
-    /home/pi/.config/wireplumber/bluetooth.lua.d/51-appliance.lua
+#     Layered on top of the system wireplumber.conf via the
+#     /etc/wireplumber/wireplumber.conf.d/ overlay directory (0.5.x's native
+#     SPA-JSON config format — see image/config/wireplumber-appliance.conf).
+mkdir -p /etc/wireplumber/wireplumber.conf.d
+install -m 0644 "${PARTYBOX_SRC_DIR}/image/config/wireplumber-appliance.conf" \
+    /etc/wireplumber/wireplumber.conf.d/51-appliance.conf
 
 chown -R pi:pi /home/pi/.config
 
@@ -408,14 +447,14 @@ cp "${PARTYBOX_SRC_DIR}/image/config/logind-runtime-dir-mode.conf" \
 
 # (5) Clear WirePlumber state on every boot.
 #
-# WirePlumber 0.4.x persists node/device records in ~/.local/state/wireplumber/.
+# WirePlumber persists node/device records in ~/.local/state/wireplumber/.
 # After a power cycle or reboot, this state can be inconsistent with the
 # speaker's fresh BlueZ state, causing AVDTP negotiation to fail with
 # br-connection-unknown — A2DP appears to connect (ACL up, endpoints negotiated)
 # but the media stream setup fails silently. Clearing the state directory on
 # boot forces WirePlumber to reinitialise from scratch each time, which is safe
 # for the appliance since node volume and other preferences are set via the
-# 51-appliance.lua policy file rather than the state database.
+# 51-appliance.conf policy file rather than the state database.
 #
 # tmpfiles.d 'R!' action removes the path at boot time only (not on
 # systemd-tmpfiles --create runs during normal operation).
