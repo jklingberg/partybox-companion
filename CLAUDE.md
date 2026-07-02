@@ -127,6 +127,36 @@ sshpass -p raspberry rsync -e "ssh -o StrictHostKeyChecking=no" -av --delete <sr
 
 `StrictHostKeyChecking=no` avoids an interactive host-key prompt on first contact.
 
+### `pi` vs `companion`: two separate users
+
+SSH always connects as `pi`, but the appliance service runs as `companion` — a **different, more restricted account**. This is deliberate (see [ADR-019](docs/adr/019-distribution-approach.md)), not an oversight, so don't try to "fix" it by running things as `pi` or `root` — expect the split and work with `sudo` instead.
+
+- `pi` — interactive login user (`useradd -m -s /bin/bash -G sudo pi`), passwordless sudo, has a home directory, owns the WirePlumber/PipeWire audio session at `/run/user/1000/`.
+- `companion` — system account (`useradd --system --no-create-home --shell /usr/sbin/nologin`), **no shell, cannot log in**. Runs `companion.service` under systemd hardening (`NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome=read-only`) plus `CAP_NET_BIND_SERVICE` to bind port 80. It has exactly one passwordless sudo grant of its own, `systemctl --user -M pi@ restart wireplumber` (used by `AudioService` to recover WirePlumber) — nothing else.
+
+Ownership map — files under these paths are **not** readable/writable by `pi` without `sudo`:
+
+| Path | Owner | Contents |
+|---|---|---|
+| `/var/lib/companion/` | `companion` | Portal state (`config.json`) |
+| `/run/companion/` | `companion`, mode 0700 | Runtime dir (`XDG_RUNTIME_DIR` for the companion process) |
+| `/etc/companion/companion.env` | `root` | Operator env overrides |
+| `/run/user/1000/` | `pi` | PipeWire-pulse socket; chmod'd to 755 at service start so `companion` can reach it — see `companion.service` |
+
+Practical commands when troubleshooting over SSH as `pi`:
+
+```bash
+# Read/list a companion-owned path
+$SSH pi@partybox.local "sudo cat /var/lib/companion/config.json"
+$SSH pi@partybox.local "sudo ls -la /run/companion"
+
+# Run a one-off command as companion (works despite the nologin shell —
+# sudo execs the command directly, it doesn't need an interactive login)
+$SSH pi@partybox.local "sudo -u companion <command>"
+```
+
+Never attempt `ssh companion@partybox.local` — there is no shell to log into.
+
 ### Deploying source changes to the Pi
 
 The appliance venv lives at `/opt/partybox-companion/` and is a `--no-editable` install (source copied into site-packages). To deploy a change without rebuilding the full image, rsync the relevant package directly into site-packages and restart the service.
