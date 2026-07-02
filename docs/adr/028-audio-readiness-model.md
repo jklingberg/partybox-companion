@@ -165,7 +165,7 @@ The gate lives in `companion/__main__.py`, the orchestration entry point, alongs
 
 ### BlueZ D-Bus subprocess isolation
 
-**Problem:** `AudioService` originally ran BlueZ D-Bus calls (`ConnectProfile`, `Device1.Connected`) in the same asyncio event loop as `bleak` (used by `DeviceManager` for BLE GATT — [ADR-015](015-bluetooth-control-transport.md)). `bleak` creates its own `dbus-fast` `MessageBus` in the companion process's event loop. Any second `MessageBus` created in the same loop misroutes D-Bus responses — replies destined for one bus arrive on the other. This caused both `_connect()` and `_is_connected()` to silently return wrong values: no exception was raised, but no A2DP sink was actually established in PipeWire.
+**Problem:** `AudioService` originally ran BlueZ D-Bus calls (`ConnectProfile`, `Device1.Connected`) in the same asyncio event loop as `bleak` (used by `DeviceManager` for BLE GATT — [ADR-015](015-bluetooth-control-transport.md)). `bleak` creates its own `dbus-fast` `MessageBus` in the companion process's event loop. Running a second `MessageBus` in the same loop risks interaction between the two buses. In practice, both `_connect()` and `_is_connected()` returned wrong values: no exception was raised, but no A2DP sink was actually established in PipeWire.
 
 **Decision:** All BlueZ D-Bus calls originating in `AudioService` run in isolated subprocesses via `companion.services._a2dp_connect`. This module is invoked as `python -m companion.services._a2dp_connect <MAC> [connect|check]` and runs its own `asyncio.run()` event loop with a single `MessageBus` — no routing conflict is possible. The subprocess prints `"ok"` / `"err:<msg>"` (connect) or `"true"` / `"false"` (check) to stdout; `AudioService` reads these via `asyncio.create_subprocess_exec()` with a stdout pipe.
 
@@ -175,29 +175,32 @@ The gate lives in `companion/__main__.py`, the orchestration entry point, alongs
 
 **Why not a shared `MessageBus` or session broker:** The routing conflict is inherent to `dbus-fast`'s asyncio integration and cannot be fixed by configuration. The subprocess approach is the only isolation boundary that is both simple and guaranteed correct.
 
-### WirePlumber health monitoring
+### `_connect()` contract and post-connect settle
 
-**Problem:** After approximately one hour of A2DP idle disconnect/reconnect cycles, WirePlumber loses its BlueZ A2DP media-endpoint registration. All subsequent `ConnectProfile()` calls return `br-connection-profile-unavailable` — not because the speaker rejected the connection, but because BlueZ has no registered A2DP handler on the Pi. The only recovery is a WirePlumber restart. Without automated detection, the appliance silently fails to produce audio until the companion service is manually restarted.
+`_connect()` returns `True` when BlueZ accepts `ConnectProfile` — not when the audio transport is available. After BlueZ accepts the request it creates a `MediaTransport1` D-Bus object asynchronously; on real hardware this object typically appears 1–2 s after `ConnectProfile` returns. `_is_connected()` checks for a `MediaTransport1` object on the device path; if run immediately after `_connect()` returns, it finds no transport object yet and returns `False`.
 
-**Key signal distinction:** `br-connection-profile-unavailable` is a **local** BlueZ error (no handler registered). When WirePlumber's endpoints are intact and the speaker is simply off or out of range, BlueZ returns `br-connection-create-failed` — a distinct error. This makes `profile-unavailable` a reliable, unambiguous local-failure signal rather than a speaker-state signal.
+Without a settle delay, this false negative triggers an immediate reconnect attempt. `ConnectProfile` is called again while the first transport is still appearing, causing a rapid connect/disconnect cycle every 2 s — a failure mode observed in early M17.4 validation.
 
-**Decision:** `AudioService` tracks consecutive `profile-unavailable` failures. After `_WP_RESTART_THRESHOLD = 3` consecutive failures (approximately 70 s: 10 s + 20 s + 40 s of exponential backoff), and if `_WP_RESTART_COOLDOWN = 300.0` seconds have elapsed since the last automatic restart, `AudioService` runs:
+**Decision:** `AudioService` sleeps `_POST_CONNECT_SETTLE = 5.0 s` after a successful `_connect()` before re-entering the top-of-loop `_is_connected()` check. The 5 s value is intentionally conservative: hardware showed the transport reliably appearing within 1–2 s, and 5 s provides margin without meaningful impact on connection latency. The value is the smallest that proved reliable in hardware testing, not a theoretically derived minimum. If it proves problematic on other hardware, the correct replacement is a condition-based wait (see Deferred).
 
-```
-sudo systemctl --user -M pi@ restart wireplumber
-```
+`_set_audio_ready(True)` is called immediately when `_connect()` returns `True` — before the settle sleep — so that the Spotify gate and other consumers are notified without delay.
 
-This restarts WirePlumber in the `pi` user session (where PipeWire runs), re-registering its BlueZ A2DP media endpoints. `AudioService` then sleeps 10 seconds to allow endpoint registration to complete before retrying.
+### MediaTransport1 UUID and A2DP role
 
-The `companion` system user (which runs the service) is granted passwordless sudo for exactly this command via a dedicated sudoers fragment written by `install.sh`:
+`_check()` locates `MediaTransport1` objects under the device path and inspects their `UUID` property. This UUID reflects the **local endpoint's role**, not the remote's:
 
-```
-companion ALL=(root) NOPASSWD: /usr/bin/systemctl --user -M pi@ restart wireplumber
-```
+- When the Pi is the A2DP Source (sending audio to the speaker), `MediaTransport1.UUID` = `0000110a` (A2DP Source UUID)
+- `Device1.ConnectProfile` is called with `0000110b` (A2DP Sink UUID) — the remote speaker's role — to initiate the connection
 
-The threshold of 3 failures was chosen because `profile-unavailable` is an unambiguous local-failure signal — it cannot be confused with speaker-side rejection — so an aggressive recovery threshold carries no risk of false-positive restarts. Earlier drafts used a threshold of 10–15 (~8–15 minutes), rejected as unacceptably slow given the signal reliability.
+`_check()` accepts both `_A2DP_SOURCE_UUID` and `_A2DP_SINK_UUID` for robustness. Checking only for the Sink UUID caused `_is_connected()` to always return `False` even with an established A2DP link — the other primary cause of rapid cycling in early M17.4 validation.
 
-**Why embedded in `AudioService` rather than a dedicated class:** The `profile-unavailable` signal exists only inside `AudioService`'s connect loop. The state — a streak counter and a last-restart timestamp — couples directly to the loop that produces the signal. A `WirePlumberWatchdog` class would receive the streak as input rather than measuring it independently, making the class boundary artificial for three fields and one method. A `record_failure() / record_success()` watchdog class remains the preferred refactor if WirePlumber monitoring is ever needed outside `AudioService`.
+### `profile-unavailable` as an operator signal
+
+`profile-unavailable` means BlueZ has no registered A2DP handler — WirePlumber's endpoint registration has been lost. This is a local failure, distinct from `br-connection-unknown`, which means endpoints are registered but transport negotiation failed on the speaker side.
+
+A `profile-unavailable` failure is logged as a warning with an explicit recovery instruction: restart the `companion` service. The `ExecStartPre` sequence in `companion.service` always restarts WirePlumber on startup ([ADR-018](018-systemd-service.md)), so a service restart reliably recovers this state.
+
+`_disconnect()` is not called after `br-connection-unknown` errors. Calling disconnect after a failed transport negotiation caused WirePlumber endpoint churn — the next attempt would see `profile-unavailable` instead of `br-connection-unknown`, alternating between the two. Treating `br-connection-unknown` as a plain connect failure (log + backoff retry) avoids this cascade.
 
 ### Startup hardening
 
@@ -211,7 +214,7 @@ ExecStartPre=+/usr/bin/systemctl --user -M pi@ restart wireplumber
 ExecStartPre=+/bin/sleep 10
 ```
 
-The HCI reset ([ADR-023](023-hci-controller-reset-on-startup.md)) clears stale controller state. The `chmod 755 /run/user/1000` ensures the `companion` system user can reach the PipeWire-pulse socket in the `pi` user's XDG runtime directory (`/run/user/1000`), which `systemd-logind` creates with mode 0700 by default — inaccessible to other users. The WirePlumber restart after the HCI reset ensures A2DP media endpoints are freshly registered with BlueZ on every companion start, eliminating degraded endpoint state left over from a prior session without waiting for the in-process threshold to trigger.
+The HCI reset ([ADR-023](023-hci-controller-reset-on-startup.md)) clears stale controller state. The `chmod 755 /run/user/1000` ensures the `companion` system user can reach the PipeWire-pulse socket in the `pi` user's XDG runtime directory (`/run/user/1000`), which `systemd-logind` creates with mode 0700 by default — inaccessible to other users. The WirePlumber restart after the HCI reset ensures A2DP media endpoints are freshly registered with BlueZ on every companion start, eliminating degraded endpoint state carried over from a prior session.
 
 The `+` prefix grants these steps transient root elevation without making the main service run as root ([ADR-018](018-systemd-service.md)).
 
@@ -221,8 +224,7 @@ The `+` prefix grants these steps transient root elevation without making the ma
 |-----------|-------------|-------------|-------------------|
 | `_CHECK_INTERVAL` | 30 s | 60 s | 30 s polling was unnecessarily aggressive for an idle-connected link; the event bus delivers state changes independently of polling, so the interval only affects detection latency for unexpected drops |
 | `_AUDIO_GRACE_SECONDS` | 60 s | 300 s | The 60 s window matched the estimated transient-reconnect time but with zero margin; real-world validation showed the speaker sometimes takes longer to accept A2DP after power-on; 300 s gives users 5 minutes before Spotify deregisters |
-| `_WP_RESTART_THRESHOLD` | — | 3 failures | New in M17.4 |
-| `_WP_RESTART_COOLDOWN` | — | 300 s | New in M17.4 |
+| `_POST_CONNECT_SETTLE` | — | 5.0 s | New in M17.4; see `_connect()` contract section for rationale |
 
 ---
 
@@ -234,8 +236,8 @@ The `+` prefix grants these steps transient root elevation without making the ma
 - `GET /api/v1/health` returns `ble_connected` and `audio_ready` as distinct fields, enabling external monitors to distinguish the two layers.
 - `AudioService.subscribe()` / `unsubscribe()` provide the event bus seam for M17.3 and later consumers.
 - `AudioStatus.connected` (existing field, used by `GET /api/v1/audio`) continues to reflect `audio_ready` for backward compatibility with Portal polling.
-- All BlueZ D-Bus calls from `AudioService` run in isolated subprocesses (`companion.services._a2dp_connect`) to avoid the `dbus-fast`/`bleak` routing conflict.
-- WirePlumber is restarted automatically after 3 consecutive `profile-unavailable` failures (~70 s recovery) with a 5-minute cooldown.
+- All BlueZ D-Bus calls from `AudioService` run in isolated subprocesses (`companion.services._a2dp_connect`) to avoid interaction between `dbus-fast` and `bleak`.
+- After a successful `ConnectProfile`, `AudioService` waits `_POST_CONNECT_SETTLE = 5.0 s` before re-checking connectivity, giving `MediaTransport1` time to appear in BlueZ's object manager.
 - `companion.service` restarts WirePlumber on every start as part of the `ExecStartPre` sequence.
 
 ### What does not change
@@ -244,14 +246,14 @@ The `+` prefix grants these steps transient root elevation without making the ma
 - The Portal's Bluetooth Audio row already shows A2DP state correctly via the existing `/api/v1/audio` poll and does not require changes.
 - `PairingService` uses a direct `MessageBus` (not subprocess) — the `dbus-fast`/`bleak` conflict does not affect it because it operates in a distinct phase before `bleak` is active.
 
-### Hardware validation results (M17.4)
+### Hardware validation results (M17.4, 2026-07-02)
 
 | Scenario | Result |
 |----------|--------|
-| Boot with speaker off → speaker powered on | A2DP connects within ~17 s of boot; Spotify starts automatically; music plays |
-| Speaker power cycle during active session | Grace period maintains Spotify during outage; audio resumes within ~30 s of speaker power-on without manual intervention |
-| Pi reboot | A2DP connected in ~17 s; Spotify started automatically |
-| Sustained `profile-unavailable` (WirePlumber degraded) | Auto-restarted after 3 failures (~70 s); audio resumed without companion restart |
+| Speaker powered on via `POST /api/v1/power/on` while companion running | A2DP auto-connects; `audio_ready: true` stable; Spotify Connect device appears; music plays end-to-end through PartyBox 520 |
+| `audio_ready` stability after UUID fix | No rapid cycling; `_is_connected()` detects A2DP on first check after settle; service enters 60 s `_CHECK_INTERVAL` sleep |
+| Speaker power cycle | Grace period preserves Spotify during outage; audio resumes automatically after speaker restores A2DP |
+| Pi reboot | A2DP auto-connects; Spotify started without manual intervention |
 
 ### Hardware validation scenarios
 
@@ -267,10 +269,10 @@ The `+` prefix grants these steps transient root elevation without making the ma
 | Speaker on → Spotify visible | Gate receives `AudioReadyChanged(True)`; starts librespot; Spotify Connect device appears in clients |
 | Speaker off → Spotify hidden after grace | Gate receives `AudioReadyChanged(False)`; waits 300 s; cancels librespot; Spotify Connect device disappears |
 | Transient A2DP drop → Spotify unaffected | Gate receives `AudioReadyChanged(False)`, starts 300 s grace; `AudioReadyChanged(True)` arrives within grace; librespot continues without interruption |
-| Sustained `profile-unavailable` (WirePlumber degraded) | After 3 consecutive failures (~70 s), WirePlumber is automatically restarted; A2DP reconnects; audio resumes |
+| Sustained `profile-unavailable` (WirePlumber degraded) | `profile-unavailable` is logged with restart guidance; `sudo systemctl restart companion` recovers via `ExecStartPre` WirePlumber restart |
 
 ### Deferred
 
 - BlueZ D-Bus `PropertiesChanged` events as an alternative to subprocess polling for `_is_connected()`: would allow near-instant disconnect detection; blocked by the `dbus-fast`/`bleak` routing conflict until a clean shared-bus solution exists or `bleak` is replaced as the BLE transport.
 - Portal real-time `audio_ready` updates via WebSocket: the Portal reflects `audio_ready` through the existing `/api/v1/audio` poll. A WebSocket `audio_ready_changed` event would make the Portal fully push-based; deferred to a future milestone.
-- `WirePlumberWatchdog` class extraction: see M17.4 section reasoning. Preferred refactor if WirePlumber monitoring is ever needed outside `AudioService`.
+- Condition-based wait after `ConnectProfile`: `_POST_CONNECT_SETTLE` is a fixed sleep. A more robust replacement would poll `_is_connected()` at a short interval (e.g., 0.5 s) until `MediaTransport1` appears or a timeout (e.g., 10 s) expires — eliminating the guesswork inherent in a fixed sleep. Deferred because the fixed 5 s value proved reliable in hardware testing and the added complexity is not warranted for the current deployment.
