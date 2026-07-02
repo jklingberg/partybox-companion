@@ -14,12 +14,20 @@ No Bluetooth hardware or bluetoothctl binary is required. Tests cover:
 from __future__ import annotations
 
 import asyncio
+import time
 from contextlib import suppress
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from companion.config import AudioSettings
-from companion.services.audio import AudioReadyChanged, AudioService, AudioStatus
+from companion.services.audio import (
+    _FLAP_COOLDOWN,
+    _FLAP_LIMIT,
+    _FLAP_WINDOW,
+    AudioReadyChanged,
+    AudioService,
+    AudioStatus,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -615,3 +623,56 @@ async def test_run_emits_audio_ready_false_on_cancel() -> None:
                 await svc.run()
 
     assert svc.audio_ready is False
+
+
+# ---------------------------------------------------------------------------
+# Flap detection — repeated short-lived connections trigger a cooldown
+# ---------------------------------------------------------------------------
+
+
+async def test_set_audio_ready_counts_short_connection_as_flap() -> None:
+    """A connection that drops within _FLAP_WINDOW increments the flap count."""
+    svc = _service()
+    times = iter([0.0, 1.0])  # connected at t=0, dropped at t=1 (< _FLAP_WINDOW)
+    with patch("companion.services.audio.time.monotonic", side_effect=lambda: next(times)):
+        svc._set_audio_ready(True)
+        svc._set_audio_ready(False)
+    assert svc._flap_count == 1
+
+
+async def test_set_audio_ready_flap_count_resets_after_stable_connection() -> None:
+    """A connection that survives past _FLAP_WINDOW resets any prior flap count."""
+    svc = _service()
+    svc._flap_count = 2  # simulate two prior flaps
+    times = iter([0.0, _FLAP_WINDOW + 1.0])  # connected at t=0, dropped well after window
+    with patch("companion.services.audio.time.monotonic", side_effect=lambda: next(times)):
+        svc._set_audio_ready(True)
+        svc._set_audio_ready(False)
+    assert svc._flap_count == 0
+
+
+async def test_run_enters_cooldown_when_flap_limit_reached() -> None:
+    """run() waits _FLAP_COOLDOWN instead of reconnecting immediately once flapping."""
+    svc = _service()
+    svc._audio_ready = True
+    svc._connected_at = time.monotonic()
+    svc._flap_count = _FLAP_LIMIT - 1  # one more short-lived drop trips the limit
+
+    async def fake_exec(*args: object, **kwargs: object) -> MagicMock:
+        return _mock_proc(b"false")  # _is_connected() -> not connected
+
+    retry_calls: list[float] = []
+
+    async def fake_wait_retry(delay: float) -> bool:
+        retry_calls.append(delay)
+        raise asyncio.CancelledError
+
+    with (
+        patch("companion.services.audio.asyncio.create_subprocess_exec", side_effect=fake_exec),
+        patch.object(svc, "_wait_retry", side_effect=fake_wait_retry),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await svc.run()
+
+    assert retry_calls == [_FLAP_COOLDOWN]
+    assert svc._flap_count == 0
