@@ -223,13 +223,14 @@ install -m 0644 \
     "${PARTYBOX_SRC_DIR}/system/avahi/partyboxd.service" \
     /etc/avahi/services/partyboxd.service
 
-# Disable IPv6 in Avahi. Home routers/ISPs commonly rotate the delegated
-# IPv6 prefix (observed ~29 min lifetime) or use privacy addresses, and
-# Avahi publishes an AAAA record alongside the A record by default. Every
-# rotation withdraws and republishes that AAAA record, which clients that
-# prefer IPv6 resolve against intermittently fail against — this presents
-# as flaky partybox.local resolution. The appliance's HTTP API only needs
-# the stable IPv4 LAN address, so IPv6 buys nothing here.
+# Restrict Avahi to IPv4. This is a product decision, not a bug fix: the
+# appliance's HTTP API only needs to be reachable over the stable IPv4 LAN
+# address, and publishing an AAAA record adds no capability any client
+# relies on. (An earlier hypothesis attributed reported partybox.local
+# flakiness to IPv6 prefix/address rotation causing AAAA churn; that did
+# not hold up under investigation — the Pi's global IPv6 address was
+# confirmed stable across multiple hours and reboots — so treat this as
+# scope reduction, not a resolved root cause for that report.)
 AVAHI_CONF=/etc/avahi/avahi-daemon.conf
 if [ -f "${AVAHI_CONF}" ]; then
     sed -i 's/^use-ipv6=yes/use-ipv6=no/' "${AVAHI_CONF}"
