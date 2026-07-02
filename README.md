@@ -79,11 +79,11 @@ partybox power off
 # Generate an API key
 partybox generate-key
 
-# Start the full appliance (Companion Portal + REST API at :8080)
+# Start the full appliance (Companion Portal + REST API at :80)
 partybox-companion --config /etc/partybox-companion/partybox-companion.toml
 ```
 
-The Companion Portal is then accessible at `http://partybox.local:8080`.
+The Companion Portal is then accessible at `http://partybox.local`.
 
 ## REST API
 
@@ -104,11 +104,11 @@ asyncio.run(main())
 "
 
 # Or use the REST API
-curl -H "X-API-Key: your-key" http://partybox.local:8080/api/v1/status
-curl -X POST -H "X-API-Key: your-key" http://partybox.local:8080/api/v1/power/on
+curl -H "X-API-Key: your-key" http://partybox.local/api/v1/status
+curl -X POST -H "X-API-Key: your-key" http://partybox.local/api/v1/power/on
 ```
 
-OpenAPI docs available at `http://partybox.local:8080/docs`.
+OpenAPI docs available at `http://partybox.local/docs`.
 
 ## Development
 

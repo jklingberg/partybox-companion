@@ -165,7 +165,7 @@ $SSH pi@partybox.local "systemctl status companion"
 $SSH pi@partybox.local "sudo systemctl restart companion"
 
 # Health check
-$SSH pi@partybox.local "curl -s http://localhost:8080/api/v1/health"
+$SSH pi@partybox.local "curl -s http://localhost/api/v1/health"
 
 # Follow logs
 $SSH pi@partybox.local "journalctl -u companion -f"
@@ -175,6 +175,24 @@ $SSH pi@partybox.local "journalctl -u companion -n 100 --no-pager"
 
 # Bluetooth adapter reset (if GATT connections fail but scanning works)
 $SSH pi@partybox.local "sudo systemctl restart bluetooth"
+```
+
+### Restarting the speaker or the Pi
+
+**Speaker restart** — there is no dedicated restart endpoint; power-cycle it with the existing power endpoints (`packages/partyboxd/src/partyboxd/api/routes.py`):
+
+```bash
+curl -X POST -H "X-API-Key: your-key" http://partybox.local/api/v1/power/off
+sleep 2
+curl -X POST -H "X-API-Key: your-key" http://partybox.local/api/v1/power/on
+```
+
+Omit the `X-API-Key` header if the appliance has no `api_key` configured (the default — auth is opt-in).
+
+**Pi restart** is *not* exposed via the REST API — only the `companion` service can be restarted remotely (`sudo systemctl restart companion`, above). To reboot the underlying OS, use SSH directly:
+
+```bash
+$SSH pi@partybox.local "sudo reboot"
 ```
 
 ## Commit messages

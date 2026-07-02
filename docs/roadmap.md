@@ -285,7 +285,7 @@ Establish the release engineering foundation: the pipeline that turns a git tag 
 
 **Architecture decisions:** See [ADR-019](adr/019-distribution-approach.md).
 
-**Done when:** `git tag v1.0.0 && git push origin v1.0.0` triggers a GitHub Actions run that produces `partybox-companion-v1.0.0.img.xz` as a draft release artifact. A Pi flashed with that image boots into a running Companion service accessible at `http://partybox.local:8080`.
+**Done when:** `git tag v1.0.0 && git push origin v1.0.0` triggers a GitHub Actions run that produces `partybox-companion-v1.0.0.img.xz` as a draft release artifact. A Pi flashed with that image boots into a running Companion service accessible at `http://partybox.local`.
 
 ---
 

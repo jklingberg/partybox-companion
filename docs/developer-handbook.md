@@ -210,7 +210,7 @@ COMPANION_PORT=9000 uv run partybox-companion
 COMPANION_LOG_LEVEL=DEBUG uv run partybox-companion
 ```
 
-The Portal and API start at `http://localhost:8080`. Check liveness with `GET /api/v1/health`.
+The Portal and API start at `http://localhost:8080` in dev (the code default; production binds port 80 — see [ADR-017](adr/017-runtime-layout.md)). Check liveness with `GET /api/v1/health`.
 
 To develop Portal UI without hardware, open `http://localhost:8080/?mock` — mock mode
 serves the Portal with simulated device state.
@@ -256,7 +256,7 @@ ssh pi@partybox.local "sudo systemctl restart companion"
 Check health after restart:
 
 ```bash
-ssh pi@partybox.local "curl -s http://localhost:8080/api/v1/health"
+ssh pi@partybox.local "curl -s http://localhost/api/v1/health"
 ```
 
 **Logs:**

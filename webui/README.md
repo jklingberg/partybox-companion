@@ -1,8 +1,8 @@
 # Companion Portal
 
-The Companion Portal is the administrative interface for the partybox-companion appliance. It is served by the `companion` package as static files at `http://partybox.local:8080`.
+The Companion Portal is the administrative interface for the partybox-companion appliance. It is served by the `companion` package as static files at `http://partybox.local`.
 
-Accessible at `http://partybox.local:8080` (or `http://<device-ip>:8080`).
+Accessible at `http://partybox.local` (or `http://<device-ip>`).
 
 ## Status
 
