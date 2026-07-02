@@ -216,10 +216,17 @@ class AudioService:
                         self._address,
                         retry_delay,
                     )
-                    await self._connect()
-                    # If _connect() succeeded, skip the backoff sleep and loop
-                    # immediately so audio_ready=True is set before the speaker
-                    # can drop the connection due to idle timeout.
+                    if await self._connect():
+                        # ConnectProfile returned ok — trust it.  MediaTransport1
+                        # may not yet be visible to GetManagedObjects immediately
+                        # after ConnectProfile completes, so calling _is_connected()
+                        # here would produce a false negative.  Set audio_ready now;
+                        # the top-of-loop _is_connected() check will clear it if the
+                        # connection actually drops before the next CHECK_INTERVAL.
+                        self._set_audio_ready(True)
+                        retry_delay = _RETRY_BASE
+                        continue
+                    # connect failed — still check in case speaker auto-connected
                     if await self._is_connected():
                         retry_delay = _RETRY_BASE
                         continue
@@ -311,29 +318,30 @@ class AudioService:
         except TimeoutError:
             return False
 
-    async def _connect(self) -> None:
-        """Attempt A2DP connection.
+    async def _connect(self) -> bool:
+        """Attempt A2DP connection.  Returns True when ConnectProfile succeeded.
 
         ``profile-unavailable`` means BlueZ has no registered A2DP handler —
         WirePlumber's endpoint registration has been lost.  ``br-connection-unknown``
         is a distinct failure: endpoints are registered but BlueZ's internal
         transport negotiation failed (speaker SEPs appear then are immediately
-        deleted).  Both are logged and the caller retries with backoff.
+        deleted).  Both are logged; the caller retries with backoff.
         """
         assert self._address is not None
         ok, msg = await self._run_subprocess(self._address, "connect")
         if ok:
             log.info("A2DP connection established to %s", self._address)
-            return
+            return True
         if "profile-unavailable" in msg or "NotAvailable" in msg:
             log.warning(
                 "A2DP connect rejected (profile unavailable) for %s"
                 " — WirePlumber endpoints not registered; restart companion to recover",
                 self._address,
             )
-            return
+            return False
         log.warning("A2DP connect failed for %s: %s", self._address, msg)
         await self._disconnect()
+        return False
 
     async def _disconnect(self) -> None:
         """Disconnect from the device. No-op if already disconnected."""
