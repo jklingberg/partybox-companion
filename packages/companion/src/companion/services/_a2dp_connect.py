@@ -15,6 +15,7 @@ import asyncio
 import sys
 
 _A2DP_SINK_UUID = "0000110b-0000-1000-8000-00805f9b34fb"
+_A2DP_SOURCE_UUID = "0000110a-0000-1000-8000-00805f9b34fb"
 _BLUEZ = "org.bluez"
 _ADAPTER = "/org/bluez/hci0"
 
@@ -66,8 +67,11 @@ async def _check(address: str) -> None:
             transport = interfaces.get("org.bluez.MediaTransport1")
             if transport is None or not object_path.startswith(device_prefix):
                 continue
-            uuid = transport["UUID"].value
-            if uuid.lower() == _A2DP_SINK_UUID:
+            uuid = transport["UUID"].value.lower()
+            # Transport UUID reflects the LOCAL role: Source (0x110a) when Pi sends
+            # audio to speaker, Sink (0x110b) if Pi were receiving.  We are always
+            # the source, so check for Source UUID.
+            if uuid == _A2DP_SOURCE_UUID or uuid == _A2DP_SINK_UUID:
                 print("true", flush=True)
                 return
         print("false", flush=True)

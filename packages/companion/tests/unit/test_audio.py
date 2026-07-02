@@ -130,6 +130,41 @@ async def test_run_connects_when_not_connected() -> None:
     assert len(retry_calls) == 1  # waited once after connect attempt
 
 
+async def test_run_settle_sleep_after_successful_connect() -> None:
+    """After _connect() succeeds, _POST_CONNECT_SETTLE sleep fires before next check."""
+    svc = _service()
+    events = svc.subscribe()
+
+    # Iteration 1: _is_connected() → False, _connect() → ok (b"ok"), settle sleep → cancel
+    call_results = [_mock_proc(b"false"), _mock_proc(b"ok")]
+
+    async def fake_exec(*args: object, **kwargs: object) -> MagicMock:
+        return call_results.pop(0)
+
+    sleep_calls: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleep_calls.append(delay)
+        raise asyncio.CancelledError
+
+    with (
+        patch("companion.services.audio.asyncio.create_subprocess_exec", side_effect=fake_exec),
+        patch("companion.services.audio.asyncio.sleep", side_effect=fake_sleep),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await svc.run()
+
+    from companion.services.audio import _POST_CONNECT_SETTLE, AudioReadyChanged
+
+    assert sleep_calls == [_POST_CONNECT_SETTLE]
+    # subscribe() pre-populates with initial state; collect all events emitted
+    emitted = []
+    while not events.empty():
+        emitted.append(events.get_nowait())
+    # audio_ready=True was emitted before the settle sleep (and False after cancellation)
+    assert AudioReadyChanged(audio_ready=True) in emitted
+
+
 async def test_run_backoff_doubles_on_repeated_failures() -> None:
     """retry_delay doubles after each failed connect cycle."""
     svc = _service()

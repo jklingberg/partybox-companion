@@ -39,6 +39,7 @@ from companion.services.bluez_dbus import BluezClient
 log = logging.getLogger(__name__)
 
 _CHECK_INTERVAL = 60.0  # seconds between health checks when connected
+_POST_CONNECT_SETTLE = 5.0  # wait after ConnectProfile ok before re-checking
 _RETRY_BASE = 10.0  # initial retry delay after a failed/lost connection
 _RETRY_MAX = 60.0  # cap backoff at 60 s — 5 min was too slow to recover
 _QUEUE_MAX = 64
@@ -217,14 +218,16 @@ class AudioService:
                         retry_delay,
                     )
                     if await self._connect():
-                        # ConnectProfile returned ok — trust it.  MediaTransport1
-                        # may not yet be visible to GetManagedObjects immediately
-                        # after ConnectProfile completes, so calling _is_connected()
-                        # here would produce a false negative.  Set audio_ready now;
-                        # the top-of-loop _is_connected() check will clear it if the
-                        # connection actually drops before the next CHECK_INTERVAL.
+                        # ConnectProfile returned ok — trust it and wait briefly
+                        # before the top-of-loop _is_connected() check.
+                        # MediaTransport1 is created asynchronously after
+                        # ConnectProfile returns; without this settle sleep the
+                        # check runs before the transport object appears in
+                        # GetManagedObjects and would immediately re-trigger a
+                        # connect attempt, hammering the speaker.
                         self._set_audio_ready(True)
                         retry_delay = _RETRY_BASE
+                        await asyncio.sleep(_POST_CONNECT_SETTLE)
                         continue
                     # connect failed — still check in case speaker auto-connected
                     if await self._is_connected():
