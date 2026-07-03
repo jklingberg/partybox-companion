@@ -65,7 +65,7 @@ class ConfigStore:
         overwriting it. Returns the quarantine path, or ``None`` if the
         move failed (read-only filesystem, permissions).
         """
-        target = self._path.with_name(f"{self._path.name}.corrupt-{int(time.time())}")
+        target = self._path.with_name(f"{self._path.name}.corrupt-{time.time_ns()}")
         try:
             self._path.rename(target)
         except OSError:
