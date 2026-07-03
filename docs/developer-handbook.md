@@ -145,7 +145,7 @@ Follow this sequence every time a new command is added:
    ```
    packages/partybox/src/partybox/device/capabilities/<name>.py
    ```
-   Add the method to the relevant capability class. If it is a new capability type, also add the optional property to `device/base.py` and `device/partybox.py`.
+   Add the method to the relevant capability class. If it is a new capability type, also add the property to `device/partybox.py` (typed `<Name>Capability | None` if optional).
 
 7. **Add tests.**
    - Protocol unit test with the validated capture bytes as a fixture (so CI runs without hardware)
@@ -163,15 +163,14 @@ New capabilities follow the same pattern as existing ones:
 
 ```
 packages/partybox/src/partybox/device/capabilities/
-├── base.py          ← Capability ABC — inherit from this
-├── audio.py         ← example: see set_volume, set_mute
+├── power.py         ← example to follow
+├── battery.py       ← example of an optional capability
 └── <your_name>.py   ← new file
 ```
 
-1. Create `device/capabilities/<name>.py` implementing the `Capability` ABC
-2. Add `@property def <name>(self) -> <Name>Capability | None` to `device/base.py`
-3. Implement the property in `device/partybox.py` — return `None` if the connected device does not report support
-4. Export from `partybox/__init__.py` if it should be part of the public API
+1. Create `device/capabilities/<name>.py` — a plain class following `power.py` (there is no shared base class)
+2. Add `@property def <name>(self) -> <Name>Capability | None` to `device/partybox.py` — return `None` if the connected device does not report support (required capabilities are non-optional)
+3. Export from `partybox/__init__.py` if it should be part of the public API
 
 ---
 
@@ -291,7 +290,7 @@ partybox-companion/
 │   │   └── src/partybox/
 │   │       ├── bluetooth/ ← transport (BleakTransport, MockTransport)
 │   │       ├── protocol/  ← codec (parser, serializer, messages)
-│   │       └── device/    ← Device ABC, capabilities, events
+│   │       └── device/    ← PartyBoxDevice, capabilities
 │   │
 │   ├── partyboxd/         ← Headless daemon
 │   │   └── src/partyboxd/

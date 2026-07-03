@@ -356,13 +356,12 @@ The short version:
 
 ```
 packages/partybox/src/partybox/device/capabilities/
-├── base.py       ← inherit from Capability here
 ├── power.py      ← example to follow
 └── <name>.py     ← your new file
 ```
 
-1. Create `capabilities/<name>.py` implementing `Capability`
-2. Add the optional `@property` to `device/base.py` and implement it in `device/partybox.py`
+1. Create `capabilities/<name>.py` — a plain class following `power.py` (there is no shared base class)
+2. Add the `@property` to `device/partybox.py` — typed `<Name>Capability | None` if the capability is optional
 3. Export from `partybox/__init__.py` if it's part of the public API
 
 The capability model is described in detail in [docs/architecture.md](architecture.md#capability-model) and [ADR-006](adr/006-capability-model.md).

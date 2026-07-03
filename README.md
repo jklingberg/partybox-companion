@@ -87,28 +87,33 @@ The Companion Portal is then accessible at `http://partybox.local`.
 
 ## REST API
 
-```bash
+```python
 # SDK — use directly from Python without the daemon
-python -c "
 import asyncio
-from partybox import PartyBox
+from partybox import Scanner
 
 async def main():
-    speaker = await PartyBox.discover()
-    await speaker.power.turn_on()
-    print(await speaker.device_info.firmware_version())
-    if speaker.battery is not None:
-        print(await speaker.battery.level())
+    speaker = await Scanner.find()
+    if speaker is None:
+        print("No PartyBox found")
+        return
+    async with speaker:
+        await speaker.power.turn_on()
+        print(await speaker.device_info.firmware_version())
+        if speaker.battery is not None:
+            print(await speaker.battery.level())
 
 asyncio.run(main())
-"
-
-# Or use the REST API
-curl -H "X-API-Key: your-key" http://partybox.local/api/v1/status
-curl -X POST -H "X-API-Key: your-key" http://partybox.local/api/v1/power/on
 ```
 
-OpenAPI docs available at `http://partybox.local/docs`.
+```bash
+# Or use the REST API
+curl http://partybox.local/api/v1/health
+curl -H "X-Api-Key: your-key" http://partybox.local/api/v1/speaker
+curl -X POST -H "X-Api-Key: your-key" http://partybox.local/api/v1/power/on
+```
+
+OpenAPI docs available at `http://partybox.local/api/docs`; full reference in [docs/api/v1.md](docs/api/v1.md).
 
 ## Development
 

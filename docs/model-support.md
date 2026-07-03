@@ -8,10 +8,10 @@ Hardcoding per-model behaviour produces a maintenance nightmare: every new model
 
 ## The solution: capability-based design
 
-Rather than branching on model, the `partybox` SDK exposes capabilities as typed optional properties on the `Device` object. A capability is `None` if the connected device does not support it.
+Rather than branching on model, the `partybox` SDK exposes capabilities as typed optional properties on `PartyBoxDevice`. A capability is `None` if the connected device does not support it.
 
 ```python
-speaker = await PartyBox.discover()
+speaker = await Scanner.find()
 
 # Required capabilities — present on every device
 await speaker.power.turn_on()
@@ -50,7 +50,7 @@ If the new model adds a previously unseen capability:
 2. Document the protocol bytes in `docs/reverse-engineering/protocol.md`
 3. Add the message dataclasses in `packages/partybox/src/partybox/protocol/messages.py`
 4. Create `packages/partybox/src/partybox/device/capabilities/<name>.py`
-5. Add the optional property to the `Device` ABC and `PartyBoxDevice`
+5. Add the optional property to `PartyBoxDevice`
 6. Add the model to the supported hardware table below and in the protocol doc
 
 Nothing else changes. Existing code continues working unchanged.

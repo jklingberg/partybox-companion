@@ -32,27 +32,29 @@ partybox-companion/
 ├── packages/
 │   ├── partybox/                          ← Python package: partybox (SDK)
 │   │   └── src/partybox/
-│   │       ├── bluetooth/                 ← transport abstraction
+│   │       ├── bluetooth/                 ← transport abstraction + BLE scanner
 │   │       ├── protocol/                  ← binary codec (stateless, pure)
-│   │       └── device/                    ← device model, capabilities, events
+│   │       └── device/                    ← PartyBoxDevice + capabilities
 │   │           └── capabilities/          ← one file per capability type
 │   │
 │   ├── partyboxd/                         ← Python package: partyboxd (daemon)
 │   │   └── src/partyboxd/
-│   │       ├── api/                       ← FastAPI app factory
-│   │       ├── bus.py                     ← internal event bus
-│   │       └── config/                    ← DaemonSettings (pydantic-settings)
+│   │       ├── api/                       ← FastAPI app factory, routes, WebSocket, auth
+│   │       ├── device/                    ← DeviceManager + event bus
+│   │       └── config/                    ← Settings (pydantic-settings)
 │   │
 │   └── companion/                         ← Python package: partybox-companion
 │       └── src/companion/
-│           ├── cli/                       ← partybox CLI (thin HTTP client)
-│           ├── services/                  ← librespot + shairport-sync managers
-│           └── webui/                     ← static file serving
+│           ├── cli/                       ← partybox CLI (stub — post-v1.0)
+│           ├── services/                  ← audio, pairing, Spotify, provisioning, BlueZ
+│           ├── webui/                     ← Companion Portal (static HTML + config API)
+│           └── wifi/                      ← provisioning API + captive-portal middleware
 │
-├── webui/                                 ← Companion Portal source (framework TBD)
 ├── system/
-│   ├── systemd/partyboxd.service          ← systemd unit file
+│   ├── systemd/companion.service          ← systemd unit file
 │   └── avahi/partyboxd.service            ← mDNS record
+├── image/                                 ← Pi image build (install.sh + configs)
+├── examples/                              ← SDK and API usage examples
 ├── docs/                                  ← All documentation
 └── research/                              ← Local RE workspace (not in VCS)
 ```
@@ -72,14 +74,14 @@ Published independently on PyPI so that developers can build tools on top of the
 **Must never contain:** networking beyond Bluetooth, subprocess management, daemon lifecycle, configuration loading, or knowledge of REST/Companion Portal/Spotify/AirPlay.
 
 ```python
-from partybox import PartyBox
+from partybox import Scanner
 
-speaker = await PartyBox.discover()
-await speaker.power.turn_on()
-await speaker.audio.set_volume(40)
+speaker = await Scanner.find()
+async with speaker:
+    await speaker.power.turn_on()
 
-if speaker.battery is not None:
-    level = await speaker.battery.level()
+    if speaker.battery is not None:
+        level = await speaker.battery.level()
 ```
 
 ### `partyboxd` — Headless daemon
@@ -96,7 +98,7 @@ Consumes `partyboxd`. This is what most users install.
 
 Extends `partyboxd`'s FastAPI application in-process via the `create_app()` factory. Single process, single port.
 
-Binaries: `partybox-companion` (starts everything), `partybox` (CLI client)
+Binaries: `partybox-companion` (starts everything), `partybox` (CLI client — currently a stub; a full CLI is deferred post-v1.0)
 
 ---
 
@@ -121,70 +123,56 @@ Stateless. Pure functions. No I/O.
 
 | File | Purpose |
 |---|---|
-| `frame.py` | `Frame` dataclass: header, opcode, payload, checksum |
 | `messages.py` | All message dataclasses (commands + notifications) |
-| `parser.py` | `parse(bytes) -> Message` |
-| `serializer.py` | `serialize(Message) -> bytes` |
-| `constants.py` | Protocol byte constants |
+| `codec.py` | `decode(bytes) -> Message` and `encode(Message) -> bytes` |
+| `constants.py` | Protocol byte constants (opcodes, framing) |
 
 ### `device/`
 
 | File | Purpose |
 |---|---|
-| `base.py` | `Device` ABC with capability properties |
-| `partybox.py` | `PartyBoxDevice` — wires transport + protocol; capability registry; event stream |
-| `state.py` | `DeviceState` frozen dataclass |
-| `types.py` | Domain enums: `InputSource`, `PowerState`, `SoundMode`, etc. |
+| `partybox.py` | `PartyBoxDevice` — wires transport + protocol; owns the capability properties |
+| `capabilities/` | One plain class per capability (no shared base) |
 
 #### Capability model
 
-PartyBox models differ in what they support. Capabilities are typed optional properties on `Device`; callers check for `None` to determine support. See [ADR-006](adr/006-capability-model.md) and [ADR-010](adr/010-sdk-scope.md).
+PartyBox models differ in what they support. Capabilities are typed properties on `PartyBoxDevice`; optional ones are `None` when unsupported, and callers check for `None` to determine support. See [ADR-006](adr/006-capability-model.md) and [ADR-010](adr/010-sdk-scope.md).
 
-**Scope rule:** the SDK exposes only hardware-unique capabilities that open protocols (Spotify Connect, AirPlay, AVRCP) cannot provide. Volume, play/pause, and skip are not in the SDK. See [model-support.md](model-support.md).
+**Scope rule:** the SDK exposes only hardware-unique capabilities that open protocols (Spotify Connect, AirPlay, AVRCP) cannot provide. Play/pause and skip are not in the SDK. Hardware volume is the one exception — `VolumeCapability` exists per the volume authority model ([ADR-022](adr/022-volume-authority.md)), but its BLE opcode is not yet confirmed and both methods raise `NotImplementedError`. See [model-support.md](model-support.md).
 
 ```
 device/capabilities/
 ├── __init__.py
-├── base.py           ← Capability ABC
 ├── power.py          ← on/off, power state        (required — always present)
 ├── device_info.py    ← firmware version, model    (required — always present)
 ├── battery.py        ← level, charging status     (optional — portable models)
-├── lights.py         ← lighting modes, colours    (optional — post-v1.0)
-├── microphone.py     ← mute, karaoke features     (optional — post-v1.0)
-└── eq.py             ← EQ bands, sound mode presets (optional — post-v1.0)
+└── volume.py         ← hardware volume            (BLE opcode not yet confirmed)
 ```
 
+Planned post-v1.0 capabilities (lights, microphone, EQ) follow the same one-file-per-capability pattern.
+
 ```python
-class Device:
-    # MVP — required on every device
+class PartyBoxDevice:
+    # Required on every device
     @property
     def power(self) -> PowerCapability: ...
     @property
     def device_info(self) -> DeviceInfoCapability: ...
 
-    # Optional — None if unsupported
+    # Optional — None if unsupported (detected at connect time
+    # via the BLE battery service UUID)
     @property
     def battery(self) -> BatteryCapability | None: ...
 
-    # Post-v1.0
+    # Present when connected; methods raise NotImplementedError
+    # until the BLE opcode is confirmed (ADR-022)
     @property
-    def lights(self) -> LightsCapability | None: ...
-    @property
-    def microphone(self) -> MicrophoneCapability | None: ...
-    @property
-    def eq(self) -> EQCapability | None: ...
-
-    def events(self) -> AsyncIterator[DeviceEvent]: ...
+    def volume(self) -> VolumeCapability: ...
 ```
 
 #### Event stream
 
-`PartyBoxDevice` yields typed domain events as an async generator. There is no embedded event bus in the SDK — that is `partyboxd`'s concern.
-
-```python
-async for event in device.events():
-    ...  # daemon wires this into its internal bus
-```
+The SDK does not yet expose device events. Unsolicited BLE notifications are currently drained and discarded inside `PartyBoxDevice`; a typed async event iterable is planned. The daemon-level event bus (`partyboxd.device.events.EventBus`) emits connection and command events from `DeviceManager` — that is `partyboxd`'s concern, not the SDK's.
 
 ---
 
@@ -192,19 +180,25 @@ async for event in device.events():
 
 ### `api/`
 
-FastAPI application factory (`create_app(settings) -> FastAPI`).
+FastAPI application factory (`create_app(settings, ...) -> FastAPI` in `app.py`).
 
-- REST API at `/api/v1/`
-- WebSocket event stream at `/ws`
-- API key auth applied globally via FastAPI dependency
+| File | Purpose |
+|---|---|
+| `app.py` | `create_app()` — assembles routes, WebSocket, auth |
+| `routes.py` | REST endpoints at `/api/v1/` |
+| `ws.py` | WebSocket event stream at `/api/v1/events` |
+| `auth.py` | `X-Api-Key` auth dependency — applied to all routes except `GET /api/v1/health` |
 
-### `bus.py`
+### `device/`
 
-Internal async event bus. Subscribes to `device.events()` and re-emits to registered handlers (the API layer, service managers).
+| File | Purpose |
+|---|---|
+| `manager.py` | `DeviceManager` — owns the BLE connection lifecycle (scan, connect, reconnect, health probe) and exposes a `StatusSnapshot` |
+| `events.py` | Event dataclasses (`ConnectedEvent`, `DisconnectedEvent`, `PowerChangedEvent`, `VolumeChangedEvent`) and the `EventBus` feeding the WebSocket |
 
 ### `config/`
 
-`DaemonSettings` via pydantic-settings. Reads from a TOML file and environment variables.
+`Settings` via pydantic-settings (`PARTYBOXD_*` environment variables).
 
 ---
 
@@ -212,20 +206,38 @@ Internal async event bus. Subscribes to `device.events()` and re-emits to regist
 
 ### `cli/`
 
-`partybox` CLI (Typer + Rich). Every command is an HTTP request to `partyboxd`. Connects to `localhost:8080` by default; override with `--url` or `PARTYBOX_URL`.
+`partybox` CLI — currently a stub that points users at the Portal and REST API. A full CLI is deferred post-v1.0.
 
 ### `services/`
 
 | File | Purpose |
 |---|---|
-| `backend.py` | `ServiceBackend` ABC: `start`, `stop`, `is_running` |
-| `librespot.py` | Spotify Connect via librespot subprocess |
-| `shairport.py` | AirPlay via shairport-sync subprocess |
-| `manager.py` | Subscribes to daemon events; coordinates service lifecycle |
+| `audio.py` | `AudioService` — Bluetooth A2DP connection supervision and audio-readiness events |
+| `bluez_dbus.py` | `BluezClient` — BlueZ D-Bus operations (pairing agent, A2DP connect, adapter control) |
+| `pairing.py` | `PairingService` — scoped Bluetooth Classic pairing flow (ADR-027) |
+| `spotify.py` | `SpotifyService` — librespot subprocess lifecycle |
+| `provisioning.py` | `ProvisioningService` — WiFi captive-portal provisioning via NetworkManager |
+| `router.py` | REST endpoints for audio, Spotify, volume, and the debug bundle |
+
+AirPlay (`shairport-sync`) is planned post-v1.0 and will follow the same subprocess-manager pattern as `SpotifyService`.
+
+### Top-level modules
+
+| File | Purpose |
+|---|---|
+| `__main__.py` | Appliance entry point — composes the daemon app, Portal, services, and supervisor |
+| `supervisor.py` | `Supervisor` — task supervision with restart policies and health tracking (ADR-024) |
+| `volume.py` | `VolumeState` — logical volume authority (ADR-022) |
+| `config.py` | `CompanionSettings` (`COMPANION_*` environment variables) |
+| `config_store.py` | `ConfigStore` — persistent Portal configuration (`config.json`) |
 
 ### `webui/`
 
-Serves the Companion Portal static files at `/`.
+Serves the Companion Portal (single-page HTML app) at `/` and the config API at `/api/v1/config`.
+
+### `wifi/`
+
+WiFi provisioning REST endpoints (`/api/v1/wifi/*`) and the captive-portal middleware.
 
 ---
 
@@ -234,17 +246,13 @@ Serves the Companion Portal static files at `/`.
 `companion` extends `partyboxd`'s FastAPI app in-process:
 
 ```python
-# partyboxd
-def create_app(settings: DaemonSettings) -> FastAPI: ...
-
-# companion
+# companion/__main__.py (simplified)
 from partyboxd.api import create_app as create_daemon_app
 
-def create_companion_app(settings: CompanionSettings) -> FastAPI:
-    app = create_daemon_app(settings.daemon)
-    app.mount("/", webui_router)
-    app.include_router(services_router, prefix="/api/v1/services")
-    return app
+app = create_daemon_app(daemon_settings, manager)
+app.include_router(make_services_router(spotify, config, ...))  # /api/v1/audio, /spotify, /volume, …
+app.include_router(make_wifi_router(provisioning))              # /api/v1/wifi/*
+app.include_router(make_portal_router(settings, store))         # Portal at /, /api/v1/config
 ```
 
 Running `partyboxd` gives you the headless API. Running `partybox-companion` gives you the full appliance. Same routes, same port — companion adds to it. See [ADR-005](adr/005-appliance.md).
@@ -256,41 +264,42 @@ Running `partyboxd` gives you the headless API. Running `partybox-companion` giv
 ### State changes (outbound)
 
 ```
-ControlTransport → protocol.parser → PartyBoxDevice
-    │ device.events() async generator
+ControlTransport → protocol.codec → PartyBoxDevice
+    │ observed by DeviceManager (connect/disconnect, command results)
     ▼
-partyboxd event bus
-    ├──► api/ WebSocket → connected browsers / partybox watch
-    └──► companion services manager → reacts to power-off, etc.
+partyboxd EventBus (device/events.py)
+    ├──► api/ WebSocket (/api/v1/events) → connected browsers
+    └──► companion subscribers → VolumeState, service reactions
 ```
 
 ### Commands (inbound)
 
 ```
-HTTP client (Companion Portal / partybox CLI / HA / script)
+HTTP client (Companion Portal / HA / script)
     │ POST /api/v1/power/on
     ▼
-partyboxd route handler
+partyboxd route handler → DeviceManager
     │ await device.power.turn_on()
     ▼
-PartyBoxDevice → protocol.serializer → ControlTransport → speaker
+PartyBoxDevice → protocol.codec → ControlTransport → speaker
 ```
 
 ---
 
 ## Communication
 
-Single HTTP server on one port — 8080 by default in code, 80 in production (see [ADR-017](adr/017-runtime-layout.md)). See [ADR-007](adr/007-tcp-only.md).
+Single HTTP server on one port — `partybox-companion` defaults to 8080 in dev and binds 80 on the appliance (see [ADR-017](adr/017-runtime-layout.md)); standalone `partyboxd` defaults to 8765. See [ADR-007](adr/007-tcp-only.md).
 
 | Path | Content |
 |---|---|
-| `/` | Companion Portal static files |
+| `/` | Companion Portal |
 | `/api/v1/` | REST API |
-| `/ws` | WebSocket event stream |
+| `/api/v1/events` | WebSocket event stream |
+| `/api/docs` | Interactive OpenAPI docs |
 
 mDNS via system `avahi-daemon` → `http://partybox.local`.
 
-API key auth via `X-API-Key` header. Generate with `partybox generate-key`. Optional on trusted networks.
+API key auth via `X-Api-Key` header (`PARTYBOXD_API__API_KEY`). Optional — disabled by default on trusted networks. See [docs/api/v1.md](api/v1.md).
 
 ---
 
@@ -302,8 +311,7 @@ API key auth via `X-API-Key` header. Generate with `partybox generate-key`. Opti
 | `partybox` | `bluetooth/` | `MockTransport` with simulated drops and errors |
 | `partybox` | `device/` | `MockTransport`; assert state and yielded events |
 | `partybox` | `capabilities/` | Unit tests per capability; mock device responses |
-| `partyboxd` | `api/` | FastAPI async test client (httpx); mock `Device` |
-| `companion` | `cli/` | Typer `CliRunner`; mock HTTP responses |
-| `companion` | `services/` | Mock `asyncio.create_subprocess_exec` |
+| `partyboxd` | `api/` | FastAPI async test client (httpx); mock `DeviceManager` |
+| `companion` | `services/` | Mock `asyncio.create_subprocess_exec` and BlueZ D-Bus |
 
 Hardware tests (`@pytest.mark.hardware`) require a real PartyBox. Never run in CI.
