@@ -35,6 +35,11 @@ log = logging.getLogger(__name__)
 # fires (e.g. after a bluetoothd restart — see _drain_with_health_check).
 _HEALTH_CHECK_INTERVAL = 15.0
 
+# Upper bound on the probe itself. A wedged Bluetooth stack can hang an
+# ATT write instead of failing it; an unbounded probe would then hang the
+# health check that exists to detect exactly that state.
+_PROBE_TIMEOUT = 10.0
+
 
 class DeviceNotConnectedError(Exception):
     """Raised when a device operation is attempted while the speaker is not connected."""
@@ -238,7 +243,7 @@ class DeviceManager:
         round-trip: :meth:`PartyBoxDevice.verify_connection` fails on a dead
         link even when no disconnect was ever signalled.
         """
-        drain = asyncio.ensure_future(device.drain_until_disconnect())
+        drain = asyncio.create_task(device.drain_until_disconnect())
         try:
             while True:
                 done, _ = await asyncio.wait({drain}, timeout=_HEALTH_CHECK_INTERVAL)
@@ -246,8 +251,8 @@ class DeviceManager:
                     await drain  # propagates ConnectionLostError / NotConnectedError
                     return
                 try:
-                    await device.verify_connection()
-                except (ConnectionLostError, NotConnectedError) as exc:
+                    await asyncio.wait_for(device.verify_connection(), timeout=_PROBE_TIMEOUT)
+                except (ConnectionLostError, NotConnectedError, TimeoutError) as exc:
                     raise ConnectionLostError(
                         f"connection health probe failed (bluetoothd restart?): {exc}"
                     ) from exc
