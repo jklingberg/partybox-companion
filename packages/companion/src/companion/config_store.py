@@ -7,10 +7,14 @@ both the portal router and the services router so they share the same file.
 from __future__ import annotations
 
 import json
+import logging
+import time
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
+
+log = logging.getLogger(__name__)
 
 
 class PortalConfig(BaseModel):
@@ -23,16 +27,47 @@ class PortalConfig(BaseModel):
 
 
 class ConfigStore:
-    """Read/write PortalConfig from a JSON file on disk."""
+    """Read/write PortalConfig from a JSON file on disk.
+
+    A config file that cannot be parsed must never take the appliance down:
+    the Portal is the only interface most users have, so it has to come up
+    even when the config is damaged (truncated write, SD-card corruption,
+    manual editing). An unreadable file is quarantined with a clear log
+    message and defaults are used instead.
+    """
 
     def __init__(self, path: Path) -> None:
         self._path = path
 
     def read(self) -> PortalConfig:
-        if self._path.exists():
+        if not self._path.exists():
+            return PortalConfig()
+        try:
             return PortalConfig.model_validate(json.loads(self._path.read_text()))
-        return PortalConfig()
+        except (json.JSONDecodeError, ValidationError, OSError) as exc:
+            quarantine = self._quarantine()
+            log.error(
+                "config file %s is unreadable (%s); using defaults%s",
+                self._path,
+                exc,
+                f" — original preserved at {quarantine}" if quarantine else "",
+            )
+            return PortalConfig()
 
     def write(self, cfg: PortalConfig) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._path.write_text(cfg.model_dump_json(indent=2))
+
+    def _quarantine(self) -> Path | None:
+        """Move the unreadable config aside so the next write starts clean.
+
+        Preserves the damaged file for diagnosis instead of silently
+        overwriting it. Returns the quarantine path, or ``None`` if the
+        move failed (read-only filesystem, permissions).
+        """
+        target = self._path.with_name(f"{self._path.name}.corrupt-{int(time.time())}")
+        try:
+            self._path.rename(target)
+        except OSError:
+            return None
+        return target
