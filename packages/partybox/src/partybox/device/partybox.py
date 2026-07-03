@@ -6,12 +6,20 @@ from types import TracebackType
 
 from partybox.bluetooth.scanner import PartyBoxCandidate
 from partybox.bluetooth.transport import ControlTransport, NotConnectedError
+from partybox.protocol.codec import encode
 from partybox.protocol.constants import BATTERY_SERVICE_UUID
+from partybox.protocol.messages import FirmwareVersionRequest
 
 from .capabilities.battery import BatteryCapability
 from .capabilities.device_info import DeviceInfoCapability
 from .capabilities.power import PowerCapability
 from .capabilities.volume import VolumeCapability
+
+# Benign probe used by verify_connection(): the firmware-version request is
+# harmless to the speaker (it may answer or ignore it; any reply is consumed
+# by whatever drains notifications). What matters is that the ATT write
+# round-trips the link.
+_VERIFY_PROBE = encode(FirmwareVersionRequest())
 
 
 class PartyBoxDevice:
@@ -120,6 +128,27 @@ class PartyBoxDevice:
         if self._transport is None:
             return None
         return self._transport.address
+
+    async def verify_connection(self) -> None:
+        """Prove the control link is alive with a real ATT round-trip.
+
+        ``is_connected`` reads the transport's *cached* connection state,
+        which can go stale when the disconnect callback never fires (for
+        example after a bluetoothd restart, which exits without emitting
+        the D-Bus signals the callback relies on). This method performs an
+        actual write-with-response on the control characteristic, so a dead
+        link raises instead of silently passing.
+
+        Any reply the speaker sends is delivered to the notification queue
+        and consumed by whoever is draining it; this method does not read.
+
+        Raises:
+            NotConnectedError: if not connected.
+            ConnectionLostError: if the link is dead.
+        """
+        if self._transport is None:
+            raise NotConnectedError("call connect() before verifying")
+        await self._transport.write(_VERIFY_PROBE)
 
     async def drain_until_disconnect(self) -> None:
         """Drain unsolicited notifications until the connection drops.
