@@ -465,7 +465,45 @@ Build confidence in the appliance's ability to run unattended. M17 introduces no
 
 ---
 
-### M18 — Release Candidate
+### M18 — Appliance Validation & QA
+
+**Packages:** `companion`, `partyboxd`
+
+No new functionality. This milestone certifies the appliance against the
+project's regression suite before the Release Candidate.
+
+The suite itself lives in
+[docs/validation/appliance-validation.md](validation/appliance-validation.md) —
+a standalone specification (scenario catalog, expected behaviours, evidence
+requirements, verdict rules) that evolves independently of the roadmap and is
+re-run before every release. Each execution produces a dated run report under
+[docs/validation/runs/](validation/runs/).
+
+Validation is automated wherever possible: Claude drives the appliance
+remotely (REST API, SSH, systemctl, journalctl, nmcli, wpctl, BLE power
+control) and reserves human hands for physically unavoidable actions
+(pairing-mode button, phone-based Bluetooth contention, range tests).
+
+The goal is not to maximize PASS results — it is to surface behaviours that
+surprise us, fix what blocks release, and document the rest.
+
+**Done when:**
+
+* Every scenario in the validation suite has been executed on real hardware
+  (or explicitly deferred with rationale in the run report).
+* All failures are fixed or waived with explicit rationale.
+* Appliance logs contain no unexplained warnings or errors during normal
+  operation (VAL-LOG scenarios pass).
+* The appliance demonstrates stable unattended operation (soak scenarios).
+
+**Status:** first execution against RC13 in progress — see
+[runs/2026-07-02-rc13.md](validation/runs/2026-07-02-rc13.md). Three
+release-blocking defects found and fixed so far (fresh pairing, bluetoothd
+restart recovery, corrupt-config crash loop).
+
+---
+
+### M19 — Release Candidate
 
 No significant new functionality. This milestone verifies that all the pieces work together and that the project is ready to ship.
 
