@@ -70,11 +70,11 @@ Running `partyboxd` gives the headless API. Running `partybox-companion` gives t
 
 Speaker control is **BLE GATT**, not Bluetooth Classic SPP/RFCOMM (an earlier assumption, since disproven on hardware). Commands are written to a vendor GATT characteristic; responses arrive as notifications. Bluetooth Classic carries only A2DP audio and AVRCP.
 
-The SDK exposes only hardware-unique capabilities that Spotify Connect, AirPlay, and AVRCP cannot provide. Volume, play/pause, and skip are **not** in the SDK — librespot and shairport-sync handle those natively.
+The SDK exposes only hardware-unique capabilities that Spotify Connect, AirPlay, and AVRCP cannot provide. Play/pause and skip are **not** in the SDK — librespot and shairport-sync handle those natively. Hardware volume is the one exception: `VolumeCapability` exists per the volume authority model ([ADR-022](docs/adr/022-volume-authority.md)), but its BLE opcode is not yet confirmed and both methods raise `NotImplementedError`.
 
 ## Capability model
 
-Capabilities are typed optional properties on `Device`. Callers check for `None`:
+Capabilities are typed properties on `PartyBoxDevice` — plain classes, no shared base. Optional capabilities are `None` when unsupported; callers check for `None`:
 
 ```python
 await speaker.power.turn_on()        # always present
@@ -82,7 +82,7 @@ if speaker.battery is not None:      # optional — portable models only
     level = await speaker.battery.level()
 ```
 
-Adding a capability: create `device/capabilities/<name>.py` implementing `Capability`, add optional `@property` to `device/base.py` and `device/partybox.py`.
+Adding a capability: create `device/capabilities/<name>.py` (follow `power.py` as the template), add a `@property` to `device/partybox.py` (typed `<Name>Capability | None` if optional), and export it from `partybox/__init__.py` if public.
 
 ## Testing approach
 
@@ -214,12 +214,12 @@ $SSH pi@partybox.local "sudo systemctl restart bluetooth"
 **Speaker restart** — there is no dedicated restart endpoint; power-cycle it with the existing power endpoints (`packages/partyboxd/src/partyboxd/api/routes.py`):
 
 ```bash
-curl -X POST -H "X-API-Key: your-key" http://partybox.local/api/v1/power/off
+curl -X POST -H "X-Api-Key: your-key" http://partybox.local/api/v1/power/off
 sleep 2
-curl -X POST -H "X-API-Key: your-key" http://partybox.local/api/v1/power/on
+curl -X POST -H "X-Api-Key: your-key" http://partybox.local/api/v1/power/on
 ```
 
-Omit the `X-API-Key` header if the appliance has no `api_key` configured (the default — auth is opt-in).
+Omit the `X-Api-Key` header if the appliance has no `api_key` configured (the default — auth is opt-in).
 
 **Pi restart** is *not* exposed via the REST API — only the `companion` service can be restarted remotely (`sudo systemctl restart companion`, above). To reboot the underlying OS, use SSH directly:
 

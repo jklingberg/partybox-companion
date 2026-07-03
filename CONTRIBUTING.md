@@ -126,9 +126,10 @@ Design principle: When possible, derive protocol semantics from the decompiled A
 
 ## Adding a new capability
 
-1. Create `packages/partybox/src/partybox/device/capabilities/<name>.py` implementing `Capability`
-2. Add the optional `@property` to `device/base.py` and `device/partybox.py`
-3. Add tests
+1. Create `packages/partybox/src/partybox/device/capabilities/<name>.py` — a plain class following `power.py` as the template (there is no shared base class)
+2. Add the `@property` to `device/partybox.py` — typed `<Name>Capability | None` if the capability is optional
+3. Export from `partybox/__init__.py` if it is part of the public API
+4. Add tests
 
 ---
 

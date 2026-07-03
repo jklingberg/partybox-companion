@@ -35,18 +35,11 @@ dmypy.json
 .AppleDouble
 .LSOverride
 
-# Node.js (webui/)
+# Node.js
 node_modules/
 npm-debug.log*
 yarn-debug.log*
 .pnpm-debug.log*
-
-# Web build outputs
-webui/dist/
-webui/build/
-webui/.next/
-webui/.nuxt/
-webui/.output/
 
 # Research workspace — raw RE artifacts (APK, captures, JADX, scripts)
 # README.md in each subdirectory is tracked; all other content is local-only
