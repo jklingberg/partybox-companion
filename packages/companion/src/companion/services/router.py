@@ -57,11 +57,15 @@ class VolumeBody(BaseModel):
 
 
 async def _collect_journal_logs() -> str:
-    """Return recent journal entries for partybox-companion, or a fallback message."""
+    """Return recent journal entries for the companion unit, or a fallback message.
+
+    Requires the service user to be able to read the system journal — the
+    unit grants this via ``SupplementaryGroups=systemd-journal``.
+    """
     try:
         proc = await asyncio.create_subprocess_exec(
             "journalctl",
-            "--unit=partybox-companion",
+            "--unit=companion",
             f"--lines={_JOURNAL_LINES}",
             "--no-pager",
             "--output=short",
