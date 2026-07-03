@@ -29,6 +29,17 @@ from partyboxd.device.events import (
 
 log = logging.getLogger(__name__)
 
+# How often to cross-check the transport's live connection state while
+# waiting for a disconnect notification. Bounds how long the daemon can
+# hold a stale "connected" snapshot when the disconnect callback never
+# fires (e.g. after a bluetoothd restart — see _drain_with_health_check).
+_HEALTH_CHECK_INTERVAL = 15.0
+
+# Upper bound on the probe itself. A wedged Bluetooth stack can hang an
+# ATT write instead of failing it; an unbounded probe would then hang the
+# health check that exists to detect exactly that state.
+_PROBE_TIMEOUT = 10.0
+
 
 class DeviceNotConnectedError(Exception):
     """Raised when a device operation is attempted while the speaker is not connected."""
@@ -118,7 +129,8 @@ class DeviceManager:
         if device is None:
             raise DeviceNotConnectedError()
         try:
-            return await device.volume.get()  # type: ignore[no-any-return]
+            level: int | None = await device.volume.get()
+            return level
         except (ConnectionLostError, NotConnectedError) as exc:
             raise DeviceNotConnectedError() from exc
         except NotImplementedError:
@@ -207,7 +219,7 @@ class DeviceManager:
         )
 
         try:
-            await device.drain_until_disconnect()
+            await self._drain_with_health_check(device)
         except ConnectionLostError:
             log.warning("connection lost, will reconnect (%s)", device.address)
         except NotConnectedError:
@@ -218,6 +230,36 @@ class DeviceManager:
             self._device = None
             self._snapshot = _DISCONNECTED
             self._bus.emit(DisconnectedEvent())
+
+    async def _drain_with_health_check(self, device: PartyBoxDevice) -> None:
+        """Wait for disconnect, cross-checking the transport's live state.
+
+        ``drain_until_disconnect()`` relies on the transport's disconnect
+        callback. That callback never fires when bluetoothd itself goes away
+        (a restarting BlueZ exits without emitting ``InterfacesRemoved``),
+        which would leave the manager waiting forever on a dead connection
+        while reporting ``connected: true``. Cached state (``is_connected``)
+        is equally stale in that situation, so the check is an actual ATT
+        round-trip: :meth:`PartyBoxDevice.verify_connection` fails on a dead
+        link even when no disconnect was ever signalled.
+        """
+        drain = asyncio.create_task(device.drain_until_disconnect())
+        try:
+            while True:
+                done, _ = await asyncio.wait({drain}, timeout=_HEALTH_CHECK_INTERVAL)
+                if drain in done:
+                    await drain  # propagates ConnectionLostError / NotConnectedError
+                    return
+                try:
+                    await asyncio.wait_for(device.verify_connection(), timeout=_PROBE_TIMEOUT)
+                except (ConnectionLostError, NotConnectedError, TimeoutError) as exc:
+                    raise ConnectionLostError(
+                        f"connection health probe failed (bluetoothd restart?): {exc}"
+                    ) from exc
+        finally:
+            if not drain.done():
+                drain.cancel()
+                await asyncio.gather(drain, return_exceptions=True)
 
     async def _scan(self) -> PartyBoxDevice | None:
         log.info("scanning for speaker")

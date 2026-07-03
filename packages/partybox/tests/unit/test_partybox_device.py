@@ -204,3 +204,20 @@ async def test_connect_noop_when_already_connected() -> None:
         # Second call should be a no-op (no error, still connected).
         await device.connect()
         assert device.is_connected
+
+
+async def test_verify_connection_writes_probe() -> None:
+    transport = _connected_transport()
+    async with transport:
+        device = PartyBoxDevice._from_transport(transport)
+        await device.verify_connection()
+        assert transport.writes == [bytes.fromhex("aa2100")]
+
+
+async def test_verify_connection_raises_after_drop() -> None:
+    transport = _connected_transport()
+    async with transport:
+        device = PartyBoxDevice._from_transport(transport)
+        transport.drop()
+        with pytest.raises(ConnectionLostError):
+            await device.verify_connection()

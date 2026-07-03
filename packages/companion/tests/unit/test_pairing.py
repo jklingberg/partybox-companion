@@ -83,14 +83,17 @@ class _FakeBluezClient:
         self,
         *,
         discovered_mac: str | None = _SPEAKER_MAC,
+        bredr_visible: bool = True,
         pair_error: Exception | None = None,
         connect_error: Exception | None = None,
     ) -> None:
         self.discovered_mac = discovered_mac
+        self.bredr_visible = bredr_visible
         self.pair_error = pair_error
         self.connect_error = connect_error
         self.pairable_calls: list[bool] = []
         self.agent_registered = False
+        self.waited_for: str | None = None
         self.paired: str | None = None
         self.trusted: str | None = None
         self.connected: str | None = None
@@ -114,6 +117,10 @@ class _FakeBluezClient:
 
     async def discover_bredr_address(self, timeout: float) -> str | None:
         return self.discovered_mac
+
+    async def wait_for_device(self, mac: str, timeout: float) -> bool:
+        self.waited_for = mac
+        return self.bredr_visible
 
     async def pair(self, mac: str) -> None:
         if self.pair_error is not None:
@@ -277,6 +284,46 @@ async def test_no_device_discovered_transitions_to_failed() -> None:
     assert svc.status.state == PairingState.FAILED
     assert svc.status.error is not None
     assert fake.paired is None
+
+
+# ---------------------------------------------------------------------------
+# BR/EDR visibility (speaker not in pairing mode)
+# ---------------------------------------------------------------------------
+
+
+async def test_not_visible_on_bredr_transitions_to_failed() -> None:
+    svc = _service()
+    fake = _FakeBluezClient(bredr_visible=False)
+
+    with _patch_bluez(fake):
+        await _run_to_completion(svc)
+
+    assert svc.status.state == PairingState.FAILED
+    assert svc.status.error is not None
+    assert "pairing mode" in svc.status.error
+    assert fake.waited_for == _SPEAKER_MAC
+    assert fake.paired is None
+
+
+async def test_pairable_cleared_when_not_visible_on_bredr() -> None:
+    svc = _service()
+    fake = _FakeBluezClient(bredr_visible=False)
+
+    with _patch_bluez(fake):
+        await _run_to_completion(svc)
+
+    assert fake.pairable_calls == [True, False]
+
+
+async def test_successful_pairing_waits_for_bredr_device() -> None:
+    svc = _service()
+    fake = _FakeBluezClient(discovered_mac=_SPEAKER_MAC)
+
+    with _patch_bluez(fake):
+        await _run_to_completion(svc)
+
+    assert fake.waited_for == _SPEAKER_MAC
+    assert fake.paired == _SPEAKER_MAC
 
 
 # ---------------------------------------------------------------------------

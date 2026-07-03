@@ -38,6 +38,13 @@ log = logging.getLogger(__name__)
 # resolves and triggers pairing immediately on the first match.
 _DISCOVERY_TIMEOUT = 60.0
 
+# How long to wait for the speaker to answer BR/EDR inquiry after its address
+# is known from the FDDF advertisement. BlueZ can only Pair() with a device
+# object it has created itself, and the JBL answers inquiry only while in
+# pairing mode — so this window is bounded by the speaker's pairing window,
+# not by our patience. Inquiry rounds are ~10 s; two rounds plus margin.
+_BREDR_DISCOVERY_TIMEOUT = 30.0
+
 
 class PairingState(StrEnum):
     IDLE = "idle"
@@ -109,7 +116,28 @@ class PairingService:
                         log.warning("Pairing: no JBL device found")
                         return
 
-                    log.info("Pairing: found speaker at %s — pairing immediately", mac)
+                    log.info("Pairing: speaker BR/EDR address is %s (from FDDF)", mac)
+
+                    # The address alone is not pairable: BlueZ needs its own
+                    # Device1 object, created only when the speaker answers
+                    # BR/EDR inquiry — which it does only in pairing mode.
+                    visible = await bluez.wait_for_device(mac, timeout=_BREDR_DISCOVERY_TIMEOUT)
+                    if not visible:
+                        self._state = PairingState.FAILED
+                        self._error = (
+                            "Speaker found, but it is not accepting pairing. "
+                            "Put the speaker in pairing mode "
+                            "(press the Bluetooth button once until the LEDs flash) "
+                            "and try again."
+                        )
+                        log.warning(
+                            "Pairing: %s did not answer BR/EDR inquiry — "
+                            "speaker not in pairing mode?",
+                            mac,
+                        )
+                        return
+
+                    log.info("Pairing: %s visible on BR/EDR — pairing immediately", mac)
                     self._state = PairingState.PAIRING
 
                     try:

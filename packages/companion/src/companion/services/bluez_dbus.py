@@ -55,6 +55,7 @@ from dbus_fast import BusType, DBusError, Variant
 from dbus_fast.aio import MessageBus
 from dbus_fast.aio.proxy_object import ProxyInterface, ProxyObject
 from dbus_fast.annotations import DBusObjectPath, DBusStr, DBusUInt32
+from dbus_fast.errors import InterfaceNotFoundError
 from dbus_fast.service import ServiceInterface, method
 
 log = logging.getLogger(__name__)
@@ -373,12 +374,70 @@ class BluezClient:
             except DBusError:
                 pass
 
+    async def wait_for_device(self, mac: str, timeout: float) -> bool:
+        """Wait for BlueZ to create an ``org.bluez.Device1`` object for *mac*.
+
+        A BR/EDR address derived from FDDF service data (see
+        :func:`extract_bredr_address`) is not enough to call ``Pair()`` —
+        BlueZ only exposes a ``Device1`` object for addresses it has actually
+        seen on the air. The speaker's BR/EDR side answers inquiry only while
+        in pairing mode, so this runs a BR/EDR-transport discovery and waits
+        for the device object to appear.
+
+        Returns ``True`` once the object exists (immediately if it already
+        does), ``False`` if it did not appear within *timeout*.
+        """
+        target = _device_path(mac)
+        found: asyncio.Future[None] = asyncio.get_event_loop().create_future()
+
+        def on_interfaces_added(path: str, interfaces: dict[str, dict[str, Variant]]) -> None:
+            if path == target and "org.bluez.Device1" in interfaces and not found.done():
+                found.set_result(None)
+
+        obj_manager_obj = await self._proxy("/")
+        obj_manager = obj_manager_obj.get_interface("org.freedesktop.DBus.ObjectManager")
+        _on_signal(obj_manager, "interfaces_added", on_interfaces_added)
+        try:
+            existing = await _call(obj_manager, "get_managed_objects")
+            if target in existing and "org.bluez.Device1" in existing[target]:
+                return True
+
+            adapter = await self._adapter()
+            await _call(adapter, "set_discovery_filter", {"Transport": Variant("s", "bredr")})
+            try:
+                await _call(adapter, "start_discovery")
+            except DBusError as exc:
+                if "InProgress" not in exc.type:
+                    raise
+                log.debug("Pairing: discovery already in progress, continuing")
+            try:
+                await asyncio.wait_for(found, timeout=timeout)
+                return True
+            except TimeoutError:
+                return False
+        finally:
+            _off_signal(obj_manager, "interfaces_added", on_interfaces_added)
+            try:
+                adapter = await self._adapter()
+                await _call(adapter, "stop_discovery")
+            except DBusError:
+                pass
+
     # ------------------------------------------------------------------
     # Pair / Trust / Connect
     # ------------------------------------------------------------------
 
     async def pair(self, mac: str) -> None:
-        device = await self._device(mac)
+        try:
+            device = await self._device(mac)
+        except InterfaceNotFoundError as exc:
+            # No Device1 object at the expected path — the address was never
+            # discovered on BR/EDR (see wait_for_device). Introspecting a
+            # nonexistent path yields an empty node rather than a DBusError,
+            # so this surfaces as InterfaceNotFoundError.
+            raise PairingFailedError(
+                f"no BlueZ device object for {mac} — not discovered on BR/EDR"
+            ) from exc
         try:
             await asyncio.wait_for(_call(device, "pair"), timeout=_PAIR_TIMEOUT)
         except DBusError as exc:
@@ -407,10 +466,12 @@ class BluezClient:
 
     async def is_connected(self, mac: str) -> bool:
         """Read Device1.Connected — True when any profile is connected."""
-        device = await self._device(mac)
         try:
+            device = await self._device(mac)
             return bool(await asyncio.wait_for(_get_property(device, "connected"), timeout=5.0))
-        except DBusError, TimeoutError:
+        except DBusError, TimeoutError, InterfaceNotFoundError:
+            # InterfaceNotFoundError: device object gone (e.g. bond removed
+            # externally) — report not-connected rather than crashing callers.
             return False
 
     async def connect_a2dp(self, mac: str) -> None:

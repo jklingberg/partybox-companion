@@ -8,6 +8,10 @@ Wants=network-online.target bluetooth.service NetworkManager.service user@1000.s
 Type=simple
 User=companion
 Group=bluetooth
+# Journal read access for the debug bundle (GET /api/v1/debug/bundle):
+# system users cannot read the journal by default; membership of
+# systemd-journal grants read-only access so logs.txt can be populated.
+SupplementaryGroups=systemd-journal
 
 # Production path for persistent data — always set, cannot be overridden accidentally.
 # The Portal writes config.json here; systemd creates the directory before ExecStart.

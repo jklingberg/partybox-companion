@@ -161,20 +161,22 @@ Never attempt `ssh companion@partybox.local` — there is no shell to log into.
 
 The appliance venv lives at `/opt/partybox-companion/` and is a `--no-editable` install (source copied into site-packages). To deploy a change without rebuilding the full image, rsync the relevant package directly into site-packages and restart the service.
 
+Site-packages is **root-owned** on release images, so the remote rsync must run under sudo (`--rsync-path="sudo rsync"`); a plain rsync fails with `Permission denied (13)`.
+
 ```bash
 SSH="sshpass -p raspberry ssh -o StrictHostKeyChecking=no"
-RSYNC="sshpass -p raspberry rsync -e 'ssh -o StrictHostKeyChecking=no'"
+RSYNC="sshpass -p raspberry rsync -e 'ssh -o StrictHostKeyChecking=no' --rsync-path='sudo rsync'"
 
 # Deploy companion package changes
-$RSYNC -av --delete packages/companion/src/companion/ \
+$RSYNC -a --delete --exclude='__pycache__' packages/companion/src/companion/ \
     pi@partybox.local:/opt/partybox-companion/lib/python3.14/site-packages/companion/
 
 # Deploy partyboxd package changes
-$RSYNC -av --delete packages/partyboxd/src/partyboxd/ \
+$RSYNC -a --delete --exclude='__pycache__' packages/partyboxd/src/partyboxd/ \
     pi@partybox.local:/opt/partybox-companion/lib/python3.14/site-packages/partyboxd/
 
 # Deploy partybox SDK changes
-$RSYNC -av --delete packages/partybox/src/partybox/ \
+$RSYNC -a --delete --exclude='__pycache__' packages/partybox/src/partybox/ \
     pi@partybox.local:/opt/partybox-companion/lib/python3.14/site-packages/partybox/
 
 # Restart the service after any change

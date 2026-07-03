@@ -41,7 +41,10 @@ async def _connect(address: str) -> None:
         )
         print("ok", flush=True)
     except DBusError as exc:
-        print(f"err:{exc.text}", flush=True)
+        # exc.text can be empty (seen on hardware while the speaker was
+        # unplugged) — fall back to the D-Bus error name so the retry-loop
+        # log line is never blank.
+        print(f"err:{exc.text or exc.type or exc!r}", flush=True)
     except Exception as exc:
         print(f"err:{exc}", flush=True)
     finally:
