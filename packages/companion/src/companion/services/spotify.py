@@ -32,8 +32,22 @@ _NOT_FOUND_RETRY = 60.0
 # librespot logs to stderr. These patterns detect playback state transitions.
 # The matching is intentionally broad and case-insensitive — log format can
 # vary between librespot releases. Best-effort is sufficient for a status display.
-_ACTIVE_PATTERNS = ("is now playing", "loading track", "preloading")
+#
+# librespot 0.8 reality (captured on hardware, M18 validation): the only
+# playback-related lines at its default verbosity are
+#   "Loading <Track> with Spotify URI <...>" and "<Track> (NNN ms) loaded" —
+# pause/stop/resume produce NO output at all, so `active` cannot transition
+# back to false from log parsing alone. The robust source of truth would be
+# the PipeWire stream state of the librespot node; deferred as a design
+# decision (status display only, no gating logic depends on `active`).
+_ACTIVE_PATTERNS = ("is now playing", "loading track", "preloading", "loading <")
 _INACTIVE_PATTERNS = ("track paused", "track stopped", "end of track", "stopped")
+
+# librespot line prefix, e.g. "[2026-07-03T14:15:55Z WARN  librespot_connect::spirc]".
+# Used to surface librespot's own WARN/ERROR lines at a visible log level —
+# an incident where playback died with the cause logged only at DEBUG
+# motivated this (M18 validation run, RC13).
+_LIBRESPOT_LEVEL_RE = re.compile(r"^\[\S+ (WARN|ERROR)\s")
 
 # Matches librespot lines like: mixer: set volume to 65535 (100%)
 _VOLUME_RE = re.compile(r"volume.*?\((\d+)%\)", re.IGNORECASE)
@@ -180,7 +194,13 @@ class SpotifyService:
 
         async for line_bytes in stderr:
             line = line_bytes.decode(errors="replace").rstrip()
-            log.debug("librespot: %s", line)
+            m = _LIBRESPOT_LEVEL_RE.match(line)
+            if m is None:
+                log.debug("librespot: %s", line)
+            elif m.group(1) == "ERROR":
+                log.error("librespot: %s", line)
+            else:
+                log.warning("librespot: %s", line)
             self._infer_playback_state(line)
             self._infer_volume(line)
 
