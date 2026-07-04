@@ -7,8 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Everything built toward the first release, `v0.1.0` (release candidates
-`v0.1.0-rc.1` … `v0.1.0-rc.13`). Milestone references in parentheses; see
+Everything built toward the first public release, **`v1.0.0`**. (Interim
+release-candidate builds were tagged `v0.1.0-rc.1` … `v0.1.0-rc.13` during
+development.) Milestone references in parentheses; see
 [docs/roadmap.md](docs/roadmap.md) for the milestone narrative.
 
 ### Added
