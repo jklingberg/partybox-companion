@@ -19,6 +19,12 @@ _A2DP_SOURCE_UUID = "0000110a-0000-1000-8000-00805f9b34fb"
 _BLUEZ = "org.bluez"
 _ADAPTER = "/org/bluez/hci0"
 
+# Printed (prefixed with "err:") when BlueZ has no Device1 object for the sink
+# address — i.e. the bond is stale.  Exported so AudioService can recognise the
+# case and skip the pointless post-failure disconnect (which would introspect
+# the absent device and emit a dbus_fast add-match ERROR).
+STALE_BOND_ERR = "device unknown to BlueZ (stale bond — re-pair required)"
+
 
 def _device_path(address: str) -> str:
     return f"{_ADAPTER}/dev_{address.replace(':', '_').upper()}"
@@ -28,18 +34,30 @@ async def _connect(address: str) -> None:
     from dbus_fast import BusType, DBusError
     from dbus_fast.aio import MessageBus
     from dbus_fast.aio.proxy_object import ProxyInterface
+    from dbus_fast.errors import InterfaceNotFoundError
 
     bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
     path = _device_path(address)
-    introspection = await bus.introspect(_BLUEZ, path)
-    obj = bus.get_proxy_object(_BLUEZ, path, introspection)
-    device: ProxyInterface = obj.get_interface("org.bluez.Device1")
+    # Introspection, proxy construction and get_interface() must stay INSIDE the
+    # try: when the bond has been removed (user re-paired the speaker with
+    # another device, or `bluetoothctl remove`) BlueZ no longer exports a
+    # Device1 object at this path, so get_interface() raises
+    # InterfaceNotFoundError.  Left uncaught it crashes the helper and dumps a
+    # traceback into the retry-loop's WARNING line (FAULT-05).
     try:
+        introspection = await bus.introspect(_BLUEZ, path)
+        obj = bus.get_proxy_object(_BLUEZ, path, introspection)
+        device: ProxyInterface = obj.get_interface("org.bluez.Device1")
         await asyncio.wait_for(
             device.call_connect_profile(_A2DP_SINK_UUID),  # type: ignore[attr-defined]
             timeout=30,
         )
         print("ok", flush=True)
+    except InterfaceNotFoundError:
+        # No Device1 at this path — the bond is stale (removed out from under
+        # us).  Report a clear, actionable message instead of a traceback; the
+        # retry loop keeps trying and POST /audio/pair recovers.
+        print(f"err:{STALE_BOND_ERR}", flush=True)
     except DBusError as exc:
         # exc.text can be empty (seen on hardware while the speaker was
         # unplugged) — fall back to the D-Bus error name so the retry-loop

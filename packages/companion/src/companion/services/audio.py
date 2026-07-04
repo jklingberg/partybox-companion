@@ -34,6 +34,7 @@ import time
 from dataclasses import dataclass
 
 from companion.config import AudioSettings
+from companion.services._a2dp_connect import STALE_BOND_ERR
 from companion.services.bluez_dbus import BluezClient
 
 log = logging.getLogger(__name__)
@@ -382,7 +383,11 @@ class AudioService:
             )
             return False
         log.warning("A2DP connect failed for %s: %s", self._address, msg)
-        await self._disconnect()
+        # A stale bond means BlueZ has no Device1 object at all — there is
+        # nothing to disconnect, and introspecting the absent device would only
+        # provoke a dbus_fast add-match ERROR.  Skip the cleanup in that case.
+        if STALE_BOND_ERR not in msg:
+            await self._disconnect()
         return False
 
     async def _disconnect(self) -> None:
