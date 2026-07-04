@@ -119,7 +119,39 @@ Enumerated on 2026-06-27 from the Pi via `bleak`, without an LE bond. Services a
 
 Consistent with captures but not yet fully verified.
 
-> None documented yet.
+### No remote "enter Bluetooth pairing mode" command exists in the JBL app (static analysis)
+
+Investigated 2026-07-04 by decompiling the official JBL PartyBox Android control
+app (`com.jbl.partybox`). This is the correct app for the 520: its vendor opcodes
+match this project's confirmed protocol (e.g. power-on is built as opcode `0x03`
+with payload `0x05` → `AA 03 01 05`; firmware, set-name, etc. line up).
+
+Observations:
+
+- The app's complete BLE command surface (`com.harman.sdk.command`, ~70 command
+  classes) covers power on/off, EQ/bass/DJ effects, karaoke/mic, Auracast &
+  LE-Audio grouping, channel/stereo, lightshow, set-device-name, battery,
+  player-info, disconnect, and set-phone-MAC. **There is no command to enter
+  pairing mode, make the speaker discoverable, or select the Bluetooth input
+  source.**
+- The app's "pairing" screens are **instructional only**. `PairingInstructionsFragment`,
+  `ConnectionGuideFragment`, and `ActivateSpeakerBluetoothFragment` display
+  how-to text and hand the user off to the phone's system Bluetooth settings
+  (`android.settings.BLUETOOTH_SETTINGS`); none issues a device command. The
+  symbol `enterPairingMode` is a UI `TextView` label (in `FragmentConnectionGuideBinding`),
+  not an opcode — its click navigates to another instruction screen.
+- Phone side: the app only performs BLE **central scanning**
+  (`BleDiscoveryImpl.doStartBleScan`) to find the speaker's LE advertisement. It
+  does not call `BluetoothAdapter` discoverable / `createBond` / `startDiscovery`
+  to drive Classic pairing itself.
+
+Conclusion: the app cannot put the speaker into BR/EDR pairing mode remotely — it
+relies on the user pressing the **physical pairing button**. This matches the
+hardware observation that the speaker answers BR/EDR inquiry *only* while in
+pairing mode (not steady-on, not post-power-on). This is static-analysis evidence;
+an on-wire HCI capture taken while pressing the physical pairing button would
+confirm no accompanying BLE frame (procedure in [guide.md](guide.md)). **No
+implementation is proposed**, since no such command was demonstrated on the wire.
 
 ---
 
