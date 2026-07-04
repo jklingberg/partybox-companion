@@ -113,7 +113,7 @@ physical relocation).
 | SPKR-03 | A | **5+ consecutive power cycles.** Alternate off/on with settle time; verify recovery after *every* cycle and that recovery time does not degrade cycle-over-cycle. *Why:* WirePlumber endpoint-flap history (ADR-028) — degradation accumulates across cycles, not within one. |
 | SPKR-04 | A | **Rapid REST power toggling.** on/off/on with ~2 s gaps, then verify convergence to the final commanded state. *Why:* a user mashing the Portal button must not wedge the state machine mid-transition. |
 | SPKR-05 | A | **Long speaker-off period (> Spotify grace).** Speaker off for > the deregistration grace period: librespot deregisters, appliance idles quietly (bounded scan cadence, no log spam), then recovers on power-on. *Why:* overnight-off is the default consumer state; log volume while idle is an SD-wear and diagnosability concern. |
-| SPKR-06 | M | **Out of range / return.** Physically move speaker (or shield it) out of BLE range for several minutes; verify same recovery path as power-off. *Why:* range loss produces supervision timeouts rather than clean disconnects — a different code path than power-off. |
+| ~~SPKR-06~~ | — | **Out of range / return — descoped.** Not relevant for this appliance: the Pi and speaker are a co-located fixed install (typically the same room/enclosure), so BLE range loss is not a realistic consumer scenario. Its distinct code path — supervision timeout rather than clean disconnect — is already exercised whenever the speaker is powered off with the appliance still connected (SPKR-02/05, and observed repeatedly in the RC13 run's day-scale reconnect churn). Kept as a strikethrough row rather than deleted so it is not silently re-added. |
 
 ### VAL-HOST — Raspberry Pi lifecycle
 
@@ -200,7 +200,7 @@ physical relocation).
 6. Riskier fault injection: FAULT-03/04/05, NET-03.
 7. Long-running: STREAM-01/04, RES-02, SOAK-01, then SOAK-02 overnight.
 8. Human-required batch (schedule with the operator in one session):
-   BOOT-01 re-run if needed, SPKR-06, BT-01/02/03, STREAM-02/03.
+   BOOT-01 re-run if needed, BT-01/02/03, STREAM-02/03, FAULT-05.
 9. LOG-01/02/03 throughout, consolidated at the end.
 
 ## Maintaining this suite

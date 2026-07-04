@@ -505,11 +505,15 @@ playback-state detection) and one confirmed audio-UX defect deferred to M19
 (INC-2: WirePlumber's 0.40 default sink volume ships music at 40 % — pin the
 A2DP node to 100 % on connect).
 
-**Remaining (both require physical access to the speaker):**
-- **SPKR-06** — out-of-range walk and return.
+**Remaining — one human-assisted scenario:**
 - **FAULT-05** — stale-bond recovery (needs `bluetoothctl remove` + a
   pairing-mode button press; best run right before a deliberate re-pair,
   which also re-confirms BOOT-02's happy path).
+
+SPKR-06 (out-of-range walk) was **descoped** — the Pi and speaker are a
+co-located fixed install, so BLE range loss is not a realistic consumer
+scenario, and its supervision-timeout code path is already exercised by
+speaker power-off (SPKR-02/05). See the suite for the rationale.
 
 Everything else — boot/reboot, speaker lifecycle, host lifecycle, Bluetooth
 contention (BT-01/02/03), streaming (STREAM-01/02/03/04), fault injection
