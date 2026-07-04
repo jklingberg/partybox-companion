@@ -291,11 +291,13 @@ A dedicated investigation session examined a single continuous boot's `journalct
 
 **Implication for Q3 (condition-based wait):** A poll for BlueZ's Audio Sink UUID registration would correctly harden the *boot-time* `profile-unavailable` race (endpoints registering asynchronously after WP start) but would **not** address the rapid-cycling failure mode, since in the observed case `ConnectProfile` was succeeding and endpoints were registered throughout — the transport itself was being torn down after connecting, not failing to connect. These are two distinct failure modes that were previously conflated under "WirePlumber endpoint degradation."
 
-**Recommended follow-up (not implemented — needs a design decision):**
-1. Add flap detection to `AudioService._connect()`/loop: track how long a connection survived before the next `_is_connected() == False`; if repeated short-lived connections occur (e.g., 3 within 60 s), back off longer and/or trigger `hciconfig hci0 reset` rather than immediately retrying.
-2. Change `ExecStartPre` to restart `pipewire.service` instead of (or in addition to) `wireplumber.service` — `BindsTo` means this is a superset of the current behavior and would cover the "WP restart alone was insufficient" case directly.
+**Recommended follow-up (status as of 2026-07-04):**
+1. **Implemented.** Flap detection is in `AudioService` (`_FLAP_WINDOW` / `_FLAP_LIMIT` / `_FLAP_COOLDOWN`): a connection surviving less than 20 s counts as a flap, and three consecutive flaps trigger a cooldown instead of an immediate retry — self-limiting the loop rather than resetting the controller.
+2. **Implemented.** `ExecStartPre` restarts `pipewire.service` (a superset of restarting `wireplumber.service` via `BindsTo`).
 3. Investigate whether a newer `linux-firmware`/kernel on the Pi resolves the `Unexpected continuation frame` BCM4345 UART errors; this is a known class of issue on Pi 3B+ Bluetooth combo chips independent of this codebase.
 4. A condition-based wait (replacing `sleep 10`) is still worth doing for the boot-time race specifically, but should not be expected to fix the rapid-cycling mode.
+
+> **Superseded root cause:** items 1–2 were mitigations. The flap was ultimately root-caused to WirePlumber's seat-monitoring under PipeWire version skew and fixed by running the `main-embedded` profile — see the "WirePlumber/PipeWire version skew" section below, which is the definitive resolution. Under M18 validation (RC13) the flap did not recur across 9 h idle plus a full day of churn (zero `profile-unavailable`).
 
 ### WirePlumber/PipeWire version skew (2026-07-02)
 
