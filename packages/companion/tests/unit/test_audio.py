@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from companion.config import AudioSettings
+from companion.services._a2dp_connect import STALE_BOND_CODE, error_code
 from companion.services.audio import (
     _FLAP_COOLDOWN,
     _FLAP_LIMIT,
@@ -428,6 +429,55 @@ async def test_connect_handles_timeout() -> None:
         return_value=proc,
     ):
         await svc._connect()  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# Subprocess error protocol (error_code) + stale-bond classification
+# ---------------------------------------------------------------------------
+
+
+def test_error_code_returns_none_for_non_error_lines() -> None:
+    assert error_code("ok") is None
+    assert error_code("true") is None
+    assert error_code("false") is None
+    assert error_code("") is None
+
+
+def test_error_code_extracts_known_code() -> None:
+    assert error_code(f"err:{STALE_BOND_CODE}:device unknown to BlueZ") == STALE_BOND_CODE
+    # Detail is optional — the code token alone still classifies.
+    assert error_code(f"err:{STALE_BOND_CODE}") == STALE_BOND_CODE
+
+
+def test_error_code_ignores_unknown_or_freetext_tokens() -> None:
+    # Free-text failures (no registered code) must not be mistaken for a code,
+    # even when the text happens to contain a colon.
+    assert error_code("err:br-connection-unknown") is None
+    assert error_code("err:org.bluez.Error.Failed: some detail") is None
+
+
+async def test_connect_skips_disconnect_on_stale_bond() -> None:
+    """A stale bond has no Device1 to disconnect — cleanup must be skipped."""
+    svc = _service()
+    svc._disconnect = AsyncMock()  # type: ignore[method-assign]
+    with patch(
+        "companion.services.audio.asyncio.create_subprocess_exec",
+        return_value=_mock_proc(f"err:{STALE_BOND_CODE}:device unknown\n".encode()),
+    ):
+        assert await svc._connect() is False
+    svc._disconnect.assert_not_called()
+
+
+async def test_connect_disconnects_on_generic_failure() -> None:
+    """A generic connect failure still triggers the cleanup disconnect."""
+    svc = _service()
+    svc._disconnect = AsyncMock()  # type: ignore[method-assign]
+    with patch(
+        "companion.services.audio.asyncio.create_subprocess_exec",
+        return_value=_mock_proc(b"err:org.bluez.Error.Failed\n"),
+    ):
+        assert await svc._connect() is False
+    svc._disconnect.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

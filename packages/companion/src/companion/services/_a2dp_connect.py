@@ -3,10 +3,18 @@
 Running in a subprocess avoids interaction between bleak's dbus-fast MessageBus
 (held in the companion asyncio loop) and any BlueZ calls made from that loop.
 
-Commands (argv[2]):
-  (none)   — connect A2DP profile; prints "ok" or "err:<message>"
-  check    — check for an established A2DP Sink MediaTransport1 on the
-             device; prints "true" or "false"
+Output protocol (single line on stdout):
+  connect:  "ok"                       — profile connected
+            "err:<CODE>:<detail>"      — classified failure; <CODE> is the
+                                         machine contract, <detail> is human text
+            "err:<detail>"             — unclassified failure (free text only)
+  check:    "true" | "false"
+
+The first colon-delimited token after ``err:`` is the machine-readable status
+code and is the *only* thing the parent should branch on — see
+:func:`error_code`. Human-readable detail after the code is diagnostic only, so
+its wording can change without breaking the parent. Known codes live in
+:data:`_STATUS_CODES`; add one there before the parent may rely on it.
 """
 
 from __future__ import annotations
@@ -19,11 +27,34 @@ _A2DP_SOURCE_UUID = "0000110a-0000-1000-8000-00805f9b34fb"
 _BLUEZ = "org.bluez"
 _ADAPTER = "/org/bluez/hci0"
 
-# Printed (prefixed with "err:") when BlueZ has no Device1 object for the sink
-# address — i.e. the bond is stale.  Exported so AudioService can recognise the
-# case and skip the pointless post-failure disconnect (which would introspect
-# the absent device and emit a dbus_fast add-match ERROR).
-STALE_BOND_ERR = "device unknown to BlueZ (stale bond — re-pair required)"
+# Machine-readable status code emitted as `err:STALE_BOND:<detail>` when BlueZ
+# has no Device1 object for the sink address — i.e. the bond is stale (removed
+# out from under us). The parent (AudioService) matches this CODE, not the
+# human-readable detail, and uses it to skip the pointless post-failure
+# disconnect (which would introspect the absent device and emit a dbus_fast
+# add-match ERROR).
+STALE_BOND_CODE = "STALE_BOND"
+
+# The complete set of machine-readable status codes the helper may emit. The
+# parser only recognises a token as a code if it is in this set, so free-text
+# detail that happens to contain a colon is never mistaken for a code.
+_STATUS_CODES = frozenset({STALE_BOND_CODE})
+
+
+def error_code(line: str) -> str | None:
+    """Return the machine-readable status code from a helper output line.
+
+    ``line`` is a raw stdout line from this helper. Returns the ``<CODE>`` token
+    for a classified ``err:<CODE>:<detail>`` line, or ``None`` for ``ok``,
+    ``true``/``false``, or an unclassified ``err:<detail>`` line. This is the
+    single source of truth for the subprocess error protocol — both this module
+    (which emits the codes) and the parent (which branches on them) share it, so
+    the parent is coupled to a code constant, not to message wording.
+    """
+    if not line.startswith("err:"):
+        return None
+    token = line[len("err:") :].split(":", 1)[0]
+    return token if token in _STATUS_CODES else None
 
 
 def _device_path(address: str) -> str:
@@ -55,9 +86,9 @@ async def _connect(address: str) -> None:
         print("ok", flush=True)
     except InterfaceNotFoundError:
         # No Device1 at this path — the bond is stale (removed out from under
-        # us).  Report a clear, actionable message instead of a traceback; the
-        # retry loop keeps trying and POST /audio/pair recovers.
-        print(f"err:{STALE_BOND_ERR}", flush=True)
+        # us).  Emit the machine-readable code plus human detail instead of a
+        # traceback; the retry loop keeps trying and POST /audio/pair recovers.
+        print(f"err:{STALE_BOND_CODE}:device unknown to BlueZ (re-pair required)", flush=True)
     except DBusError as exc:
         # exc.text can be empty (seen on hardware while the speaker was
         # unplugged) — fall back to the D-Bus error name so the retry-loop
