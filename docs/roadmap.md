@@ -450,18 +450,18 @@ Build confidence in the appliance's ability to run unattended. M17 introduces no
 **Goals:**
 - **Reboot recovery:** after a Pi reboot, Companion reconnects to the speaker and librespot re-registers with Spotify automatically ✓
 - **Bluetooth recovery — speaker power cycle:** if the speaker is power-cycled or goes out of range, Companion reconnects when it returns ✓
-- **Bluetooth recovery — controller wedge:** if the BT controller wedges, the daemon recovers without requiring `systemctl restart bluetooth` from the user — partially addressed (HCI reset in `ExecStartPre`); WirePlumber endpoint degradation after extended idle is a known remaining issue (see open items below)
+- **Bluetooth recovery — controller wedge:** if the BT controller wedges, the daemon recovers without requiring `systemctl restart bluetooth` from the user — HCI reset in `ExecStartPre` at boot, plus (M18) an ATT-probe health check in `DeviceManager` that detects and recovers a zombie BLE connection after a `bluetoothd` restart within ~15 s ✓. The WirePlumber endpoint-degradation concern was resolved by the wireplumber 0.5.x pin (see M17.4 / ADR-028) and did not recur under M18 validation (9 h idle, zero `profile-unavailable`) ✓
 - **Spotify visibility tied to speaker reachability:** librespot starts (and registers with Zeroconf) only after A2DP is confirmed available; it deregisters when A2DP has been unavailable long enough to indicate the speaker is off or out of range ✓
 - **Crash recovery:** any component that exits unexpectedly is restarted with backoff; repeated failures surface in Portal diagnostics rather than being silently swallowed ✓
 - **Extended run:** 30-minute streaming session (deferred from M3) validated with combined A2DP + BLE + librespot
 
 **Validated (2026-07-02):** A2DP auto-connect is working end-to-end — speaker power-on via BLE GATT triggers A2DP connect within ~2 s; `audio_ready: true` is stable; music plays through the PartyBox 520 via Spotify Connect without manual intervention after reboot or speaker power cycle.
 
-**Open items before M17 is complete:**
-- WirePlumber endpoint degradation after extended idle (~1 h of disconnect/reconnect cycles): `profile-unavailable` accumulates until `companion` is restarted; root cause and condition-based recovery are under investigation. Workaround: `sudo systemctl restart companion` always recovers.
-- 30-minute extended streaming session validation (combined A2DP + BLE + librespot)
+**Open items — all resolved under M18 validation (RC13, 2026-07-03):**
+- ~~WirePlumber endpoint degradation after extended idle~~ — **resolved.** Reframed as a wireplumber-0.4.x/pipewire-1.x mismatch (see M17.4 / ADR-028) and fixed by the wireplumber 0.5.x pin. Did not recur at 10× the historical threshold: 9 h speaker-off idle plus a full day of connect/disconnect churn produced **zero `profile-unavailable`** occurrences. The "runtime WirePlumber recovery via sudo grant" once contemplated here was never needed and was not built; detection-only is the confirmed v1.0 posture.
+- ~~30-minute extended streaming session~~ — **done.** STREAM-01 (30-min synthetic tone, 0 xruns, flat RSS) and STREAM-02 (100-min real Spotify Connect, 33 tracks, 0 xruns, 0 errors).
 
-**Done when:** The appliance survives a reboot, a speaker power cycle, and a 30-minute streaming session without user intervention.
+**Done when:** The appliance survives a reboot, a speaker power cycle, and a 30-minute streaming session without user intervention. **✅ Complete** — validated end-to-end in the RC13 run; see [runs/2026-07-02-rc13.md](validation/runs/2026-07-02-rc13.md).
 
 ---
 
@@ -496,10 +496,25 @@ surprise us, fix what blocks release, and document the rest.
   operation (VAL-LOG scenarios pass).
 * The appliance demonstrates stable unattended operation (soak scenarios).
 
-**Status:** first execution against RC13 in progress — see
-[runs/2026-07-02-rc13.md](validation/runs/2026-07-02-rc13.md). Three
-release-blocking defects found and fixed so far (fresh pairing, bluetoothd
-restart recovery, corrupt-config crash loop).
+**Status:** RC13 run essentially complete — see
+[runs/2026-07-02-rc13.md](validation/runs/2026-07-02-rc13.md). Every
+autonomously-runnable scenario has a verdict; release-blocking defects found
+and fixed: fresh pairing, bluetoothd-restart zombie recovery, corrupt-config
+crash loop, debug-bundle logs, plus incident fixes (librespot log surfacing,
+playback-state detection) and one confirmed audio-UX defect deferred to M19
+(INC-2: WirePlumber's 0.40 default sink volume ships music at 40 % — pin the
+A2DP node to 100 % on connect).
+
+**Remaining (both require physical access to the speaker):**
+- **SPKR-06** — out-of-range walk and return.
+- **FAULT-05** — stale-bond recovery (needs `bluetoothctl remove` + a
+  pairing-mode button press; best run right before a deliberate re-pair,
+  which also re-confirms BOOT-02's happy path).
+
+Everything else — boot/reboot, speaker lifecycle, host lifecycle, Bluetooth
+contention (BT-01/02/03), streaming (STREAM-01/02/03/04), fault injection
+(FAULT-01/02/03/04/06), network, resources, soak (11.5 h continuous), log
+quality, and the full REST/auth surface (API-01/02/03/04) — is validated.
 
 ---
 
