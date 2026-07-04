@@ -41,26 +41,11 @@ npm-debug.log*
 yarn-debug.log*
 .pnpm-debug.log*
 
-# Research workspace — raw RE artifacts (APK, captures, JADX, scripts)
-# README.md in each subdirectory is tracked; all other content is local-only
-research/apk/*
-!research/apk/README.md
-research/jadx/*
-!research/jadx/README.md
-research/jadx-export/*
-!research/jadx-export/README.md
-research/btsnoop/*
-!research/btsnoop/README.md
-research/btmon/*
-!research/btmon/README.md
-research/logs/*
-!research/logs/README.md
-research/scripts/*
-!research/scripts/README.md
+# Research workspace — raw RE artifacts (APK, decompiled/extracted source,
+# captures, JADX, logs, scripts). Everything here is local-only: never commit
+# decompiled or proprietary source. Only README.md files are tracked, so new
+# subdirectories (e.g. _extract/) are ignored by default.
+research/**
+!research/**/
+!research/**/README.md
 .claude/settings.local.json
-
-# M3 spike — run outputs and generated assets (the findings doc is the durable
-# record; raw evidence is local-only). Keep the directory itself tracked.
-spike/m3-audio/evidence/*
-!spike/m3-audio/evidence/.gitkeep
-spike/m3-audio/venv/
