@@ -2,6 +2,8 @@
 
 **Status:** Accepted
 
+> **Historical note:** the CLI discussed in this ADR was ultimately removed before the first public release. The architectural reasoning remains part of the project's history.
+
 ---
 
 ## Context

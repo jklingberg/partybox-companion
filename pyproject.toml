@@ -28,10 +28,6 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["ANN", "S"]
-# spike/ is exploratory M3 viability code that drives system CLIs (bluetoothctl,
-# pw-*) and crosses JSON/event boundaries; the bandit subprocess warnings
-# (S603/S607) and ANN401 (Any) are noise there.
-"spike/**" = ["S", "ANN401"]
 
 [tool.mypy]
 python_version = "3.14"

@@ -44,9 +44,9 @@ partybox   (SDK, BLE GATT via bleak)
     ↑
 partyboxd  (daemon: HTTP API + WebSocket)
     ↑
-companion  (appliance: Portal, CLI, service orchestration)
+companion  (appliance: Portal, service orchestration)
     ↑
-clients    (browsers, CLI, Home Assistant, scripts)
+clients    (browsers, Home Assistant, scripts)
 ```
 
 `companion` extends `partyboxd`'s FastAPI app **in-process** — same port, same process, no IPC:
@@ -229,4 +229,4 @@ $SSH pi@partybox.local "sudo reboot"
 
 ## Commit messages
 
-Conventional Commits with these scopes: `bluetooth`, `protocol`, `device`, `capabilities`, `api`, `cli`, `services`, `config`, `webui`, `docs`, `ci`
+Conventional Commits with these scopes: `bluetooth`, `protocol`, `device`, `capabilities`, `api`, `services`, `config`, `webui`, `docs`, `ci`

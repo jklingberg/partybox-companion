@@ -1,9 +1,13 @@
 # Developer Guide
 
 > **See also:**
-> [Architecture](architecture.md) · [Developer Handbook](developer-handbook.md) · [Roadmap](roadmap.md) · [ADRs](adr/) · [Contributing](../CONTRIBUTING.md)
+> [Architecture](architecture.md) · [Roadmap](roadmap.md) · [ADRs](adr/) · [Contributing](../CONTRIBUTING.md)
 
-Welcome to partybox-companion. This guide is written for experienced developers who may not have used modern Python tooling before — if you're coming from Go, Rust, Java, or C#, you'll find the concepts familiar but the tools different.
+Welcome to partybox-companion. This is the single guide for working on the
+project — from first clone to deploying a change on the Pi. It is written for
+experienced developers who may not have used modern Python tooling before; if
+you're coming from Go, Rust, Java, or C#, the concepts are familiar but the
+tools differ.
 
 ---
 
@@ -59,198 +63,146 @@ Claude Code is used actively in this project for implementation, refactoring, an
 
 Architectural decisions go through the ADR process regardless of how they were explored. Claude Code helps implement what has been decided; it doesn't decide. Code review still matters — generated code has the same failure modes as any other code (wrong abstractions, subtle bugs, unnecessary complexity) and needs the same scrutiny.
 
-When working with Claude Code on this project, expect to:
-
-- Discuss architecture before implementation
-- Review generated code carefully, particularly at boundaries between packages
-- Write the ADR yourself after making a decision (Claude can draft it, but the reasoning should be yours)
-- Use `uv run mypy` and `uv run pytest` to verify correctness, not just that the code looks plausible
-
 ---
 
-## Getting started
+## Development environment
 
-The fastest path to a working environment is the dev container. Open the repository in VS Code, accept the prompt to reopen in a container, and wait about two minutes for the first build. After that, `uv run pytest` and every other command in this guide work immediately.
+### Option A — Dev container (recommended)
 
-See [Developer Handbook — Development environment](developer-handbook.md#development-environment) for detailed setup instructions, including the native (non-container) path if you prefer it.
+The repository ships a [dev container](../.devcontainer/devcontainer.json) that provides a complete, pre-configured environment. Open the repository in VS Code, accept the prompt to reopen in a container, and wait about two minutes for the first build. After that, `uv run pytest` and every other command in this guide work immediately.
 
----
+**Prerequisites:** [VS Code](https://code.visualstudio.com/) and the [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers).
 
-## Project toolchain
-
-### uv
-
-[uv](https://docs.astral.sh/uv/) is the Python package manager and virtual environment tool. If you're coming from another language, think of it as combining the roles of npm (or Cargo), the virtual environment, and the test runner wrapper.
-
-**What problem it solves:**
-
-Traditional Python tooling splits these concerns across multiple tools: `pip` for installation, `venv` for isolation, `pip-compile` or `poetry` for lock files. Each has its own conventions and failure modes. `uv` does all of it in one tool, significantly faster than any of them individually.
-
-**Why we chose it over pip + venv:**
-
-Speed is part of it — `uv sync` resolves and installs the entire workspace in a few seconds, not minutes. But the bigger reason is the workspace support: uv manages all three packages (`partybox`, `partyboxd`, `companion`) as a single workspace with a shared lockfile (`uv.lock`), so you never run into version mismatches between packages.
-
-**What you need to know:**
+The container runs `postCreateCommand` automatically on first open:
 
 ```bash
-# Install all packages and dev dependencies (run this after cloning, or after
-# adding a dependency)
+uv sync --all-extras       # install all workspace packages and dev deps
+uv tool install pre-commit # install pre-commit as an isolated tool
+pre-commit install         # wire up git hooks
+npm install -g @anthropic-ai/claude-code
+```
+
+**What the container includes:**
+
+| Tool | Source |
+|---|---|
+| Python 3.14 | `mcr.microsoft.com/devcontainers/python:3.14-bookworm` |
+| uv | `ghcr.io/astral-sh/uv:0.11.24` (pinned; copied at build time) |
+| GitHub CLI (`gh`) | devcontainer feature |
+| Node.js LTS | devcontainer feature (Claude Code dependency) |
+| Claude Code | `npm install -g @anthropic-ai/claude-code` (post-create) |
+| pre-commit | `uv tool install pre-commit` (post-create) |
+| ruff, mypy, pytest | installed via `uv sync --all-extras` |
+
+**Base image:** Debian 12 Bookworm — the same base as Raspberry Pi OS 64-bit. Package names and system library versions are intentionally close to the production target, which reduces "works on my machine" surprises when deploying.
+
+**What the container intentionally does not do:** Bluetooth passthrough, BlueZ, D-Bus, or A2DP. Adding those to a container is fragile and host-platform-specific. `MockTransport` handles the development-time need; hardware integration tests require a native Linux environment or the Pi itself (see [Hardware testing](#hardware-testing)).
+
+### Option B — Native setup
+
+Use this when working on hardware integration, running tests against a real PartyBox, or if you prefer not to use Docker.
+
+**Prerequisites:** Linux or macOS, Python 3.14, [uv](https://docs.astral.sh/uv/).
+
+```bash
+# Install uv
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Clone and install
+git clone https://github.com/jklingberg/partybox-companion
+cd partybox-companion
 uv sync --all-extras
 
-# Run any command in the virtual environment without activating it
-uv run pytest packages/partybox/ -m "not hardware"
-uv run python examples/power_on.py
-uv run ruff format .
-
-# Add a dependency to a specific package
-cd packages/partybox
-uv add bleak
-
-# Add a dev-only dependency
-uv add --dev pytest-asyncio
+# Install pre-commit hooks
+uv tool install pre-commit
+pre-commit install
 ```
-
-The virtual environment lives at `.venv/` in the repository root. VS Code discovers it automatically via the dev container configuration.
-
-**What you don't need to do:** activate the virtual environment manually. `uv run` handles it. If you're used to `source .venv/bin/activate`, you can still do that — but you don't have to.
 
 ---
 
-### Ruff
+## Day-to-day commands
 
-[Ruff](https://docs.astral.sh/ruff/) handles code formatting and linting. It replaces `black` (formatter), `flake8` (linter), `isort` (import sorting), and several `flake8` plugins — all in one tool, much faster than any of them.
-
-**Why we chose Ruff:**
-
-One configuration block in `pyproject.toml`, one command to run, one VS Code extension. Before Ruff, a typical Python project needed five or six linting tools configured to not contradict each other. Ruff made that a solved problem.
-
-**Common commands:**
+All commands run from the repository root.
 
 ```bash
-# Format all files (like gofmt or rustfmt — opinionated, no arguments needed)
+# Install / sync the workspace (after cloning, or after changing dependencies)
+uv sync --all-extras
+
+# Format
 uv run ruff format .
 
-# Check for lint issues
+# Lint (and auto-fix)
 uv run ruff check .
-
-# Fix auto-fixable issues (import sorting, simple style fixes, etc.)
 uv run ruff check --fix .
-```
 
-Ruff runs automatically on save in the dev container (via the VS Code extension). It also runs as a pre-commit hook before every commit.
+# Type check all packages (mypy runs per-package because each has its own src/)
+for pkg in partybox partyboxd companion; do
+  (cd packages/$pkg && uv run mypy src/)
+done
 
-**What Ruff enforces in this project:**
+# Run non-hardware tests
+uv run pytest packages/partybox/  -m "not hardware"
+uv run pytest packages/partyboxd/ -m "not hardware"
+uv run pytest packages/companion/ -m "not hardware"
 
-The enabled rule sets are in [pyproject.toml](../pyproject.toml) under `[tool.ruff.lint]`. Notable ones:
-- `ANN` — annotations required on all public functions (this pairs with mypy)
-- `S` — security checks via flake8-bandit (SQL injection, subprocess misuse, etc.)
-- `B` — flake8-bugbear: common bug patterns and non-obvious style issues
+# Run a single test
+uv run pytest packages/partybox/tests/unit/test_codec.py::test_parse_power_on_response -v
 
----
-
-### mypy
-
-[mypy](https://mypy.readthedocs.io/) is Python's most widely used static type checker. This project runs it in `strict` mode, which means:
-
-- All function signatures must have type annotations
-- Return types must be explicit
-- `Any` types must be explicitly acknowledged
-- Optional values must be checked before use
-
-**Why strict mode:**
-
-Python's type system is opt-in and gradual by default — you can add types incrementally. Strict mode turns this into a requirement. For a project like this, where the protocol layer handles binary data and the device layer exposes typed capabilities to consumers, type errors are real bugs. Strict mode catches them at development time rather than at runtime on a Raspberry Pi connected to a speaker.
-
-The strictness also matters for the SDK specifically. The `partybox` package is designed to be published and used by others — a typed public API is a real deliverable.
-
-**How to run it:**
-
-mypy must be run per-package because each package has its own `src/` layout:
-
-```bash
-cd packages/partybox  && uv run mypy src/ && cd ../..
-cd packages/partyboxd && uv run mypy src/ && cd ../..
-cd packages/companion && uv run mypy src/ && cd ../..
-```
-
-Or for a quick check during development, run it from within a package directory:
-
-```bash
-cd packages/partybox
-uv run mypy src/
-```
-
-If mypy reports an error you don't understand, the [mypy documentation](https://mypy.readthedocs.io/en/stable/error_codes.html) explains every error code. The VS Code mypy extension surfaces errors inline as you type.
-
----
-
-### pytest
-
-[pytest](https://docs.pytest.org/) is the test runner. This project uses `pytest-asyncio` because most code is async (Bluetooth communication, the HTTP server, the service managers).
-
-**Running tests:**
-
-```bash
-# Run all non-hardware tests for a package
-uv run pytest packages/partybox/ -m "not hardware"
-
-# Run a specific test file
-uv run pytest packages/partybox/tests/unit/test_parser.py -v
-
-# Run a specific test
-uv run pytest packages/partybox/tests/unit/test_parser.py::test_power_response -v
-
-# Run hardware tests (requires a real PartyBox)
+# Run hardware tests (requires a real PartyBox over Bluetooth)
 uv run pytest packages/partybox/ -m hardware -v
 ```
 
-**Hardware vs non-hardware tests:**
+> The three test suites are run separately: each package has its own `tests/` package, so a single combined `pytest` invocation collides on the duplicate `tests` module name.
 
-Tests that require a physical PartyBox are marked with `@pytest.mark.hardware`. They never run in CI. All other tests use `MockTransport` or byte fixtures and run everywhere.
+---
 
-The protocol tests are a good example of the project's testing philosophy: rather than constructing test packets from scratch or using mocked bytes, we use real Bluetooth captures — bytes that came off the wire from a real speaker. This means CI tests the actual protocol codec, not a fabricated approximation of it.
+## The toolchain
+
+If you're new to modern Python tooling, this is the short version of what each tool does and why it's here. All configuration lives in [pyproject.toml](../pyproject.toml).
+
+### uv
+
+[uv](https://docs.astral.sh/uv/) is the package manager and virtual-environment tool — think npm/Cargo plus the virtualenv plus the lockfile, in one fast tool. The decisive feature for this repo is **workspace support**: uv manages all three packages (`partybox`, `partyboxd`, `companion`) as a single workspace with a shared lockfile (`uv.lock`), so package versions never drift apart. `uv run <cmd>` runs a command in the environment without activating it; the venv lives at `.venv/` in the repo root.
+
+### Ruff
+
+[Ruff](https://docs.astral.sh/ruff/) handles both formatting and linting, replacing `black` + `isort` + `flake8` + plugins with one fast tool and one config block. It runs on save in the dev container and as a pre-commit hook. Notable enabled rule sets: `ANN` (annotations required on public functions — pairs with mypy), `S` (flake8-bandit security checks), `B` (flake8-bugbear bug patterns).
+
+### mypy
+
+[mypy](https://mypy.readthedocs.io/) is the static type checker, run in `strict` mode: every signature annotated, explicit return types, `Any` acknowledged, optionals checked before use. Type errors in the protocol layer (binary data) and the device layer (typed capabilities exposed to consumers) are real bugs; strict mode catches them at development time rather than at runtime on a Pi. It matters doubly for the SDK — `partybox` is published, so a typed public API is a real deliverable.
+
+### pytest
+
+[pytest](https://docs.pytest.org/) (with `pytest-asyncio`, since most code is async) is the test runner. Tests requiring a physical PartyBox are marked `@pytest.mark.hardware` and never run in CI; everything else uses `MockTransport` or byte fixtures. Protocol tests use **real Bluetooth captures as byte fixtures** rather than fabricated bytes, so CI exercises the actual codec:
 
 ```python
 # Byte fixture from a real capture — not fabricated
 POWER_ON_RESPONSE = bytes.fromhex("aa550102000128")
 
 def test_parse_power_on_response() -> None:
-    msg = parse(POWER_ON_RESPONSE)
+    msg = decode(POWER_ON_RESPONSE)
     assert isinstance(msg, PowerStateNotification)
     assert msg.state == PowerState.ON
 ```
 
----
-
 ### pre-commit
 
-[pre-commit](https://pre-commit.com/) runs checks automatically before each `git commit`. In this project it runs Ruff format and lint checks.
-
-It is installed as part of the dev container setup (`pre-commit install` wires it into the git hooks). If you set up your environment manually, run `pre-commit install` once after cloning.
-
-**Why keep it enabled:**
-
-pre-commit catches formatting and lint issues before they reach CI. A commit that would fail the CI format check is blocked locally, immediately, with a clear error message and an auto-fix. This is faster and less disruptive than discovering the failure after a push.
-
-If a commit is blocked because Ruff found something: run `uv run ruff check --fix .`, stage the changes, and commit again. Most issues are auto-fixable.
+[pre-commit](https://pre-commit.com/) runs Ruff (format + lint) and mypy before each commit, catching issues locally that would otherwise fail CI. If a commit is blocked, run `uv run ruff check --fix .`, stage, and commit again. `pre-commit install` (done automatically in the dev container) wires it into the git hooks.
 
 ---
 
-### Dev container
+## Package boundaries
 
-The dev container ([.devcontainer/](../.devcontainer/devcontainer.json)) provides a complete, pre-configured development environment using VS Code and Docker. Every tool described in this guide — Python, uv, Ruff, mypy, pytest, pre-commit, the GitHub CLI, Claude Code — is installed and configured inside the container.
+The dependency direction is strict: `partybox ← partyboxd ← companion`.
 
-**Why it exists:**
+| Package | May import from | Must NOT import from |
+|---|---|---|
+| `partybox` | stdlib + `bleak` | `partyboxd`, `companion` |
+| `partyboxd` | `partybox`, stdlib, its own deps | `companion`, `partybox.bluetooth`, `partybox.protocol` directly |
+| `companion` | `partyboxd`, `partybox` events/types | `partybox.bluetooth`, `partybox.protocol` directly |
 
-Contributing to a project shouldn't require an afternoon of toolchain setup. The dev container makes the environment reproducible: the same Python version, the same tool versions, the same VS Code settings, on any machine.
-
-**The base image is Debian Bookworm** — the same base as Raspberry Pi OS 64-bit. This means system library versions and package names are intentionally close to the production target. There's no guarantee that a package that compiles on macOS will compile on the Pi; starting from the same base reduces surprises.
-
-**What the container intentionally does not do:**
-
-The container does not emulate the appliance. It has no Bluetooth stack, no BlueZ, no D-Bus, no A2DP. The dev container is for developing and testing code; hardware integration tests require a native Linux environment or the Pi itself.
-
-This is deliberate. Adding Bluetooth passthrough to a dev container is complex, fragile, and host-platform-specific. The `MockTransport` handles the development-time need; real hardware tests run on real hardware.
+`partyboxd` and `companion` consume `PartyBoxDevice` and typed events. They never reach into Bluetooth or protocol internals.
 
 ---
 
@@ -258,13 +210,30 @@ This is deliberate. Adding Bluetooth passthrough to a dev container is complex, 
 
 ```
 partybox-companion/
-├── packages/           Three Python packages (SDK, daemon, appliance)
-├── docs/               All documentation — architecture, ADRs, protocol analysis
-├── research/           Local RE workspace — gitignored, never committed
-├── examples/           Standalone scripts using the partybox SDK directly
-├── spike/              Exploratory code from viability spikes (M3 audio, etc.)
-├── system/             systemd unit file and Avahi mDNS service record
-└── webui/              Companion Portal frontend source (framework TBD)
+├── packages/
+│   ├── partybox/          ← Bluetooth SDK
+│   │   └── src/partybox/
+│   │       ├── bluetooth/ ← transport (BleakTransport, MockTransport) + scanner
+│   │       ├── protocol/  ← binary codec (codec.py, messages.py, constants.py)
+│   │       └── device/    ← PartyBoxDevice + capabilities
+│   │
+│   ├── partyboxd/         ← Headless daemon
+│   │   └── src/partyboxd/
+│   │       ├── api/       ← FastAPI app factory, routes, WebSocket, auth
+│   │       ├── device/    ← DeviceManager + event bus
+│   │       └── config/    ← Settings (pydantic-settings)
+│   │
+│   └── companion/         ← Full appliance
+│       └── src/companion/
+│           ├── services/  ← audio, pairing, Spotify, provisioning, BlueZ
+│           ├── webui/     ← Companion Portal (static HTML + config API)
+│           └── wifi/      ← provisioning API + captive-portal middleware
+│
+├── examples/             ← Standalone scripts using the partybox SDK directly
+├── image/                ← Pi image build (install.sh + configs)
+├── system/               ← systemd unit + Avahi mDNS service record
+├── docs/                 ← All documentation (architecture, ADRs, protocol, roadmap)
+└── research/             ← Local RE workspace — gitignored, never committed
 ```
 
 **`packages/`** contains three Python packages with a strict one-way dependency: `partybox ← partyboxd ← companion`. Each is its own installable package with its own `pyproject.toml`. See [docs/architecture.md](architecture.md) for the module reference within each package.
@@ -273,60 +242,7 @@ partybox-companion/
 
 **`research/`** is your local workspace for protocol analysis: raw APK files, JADX exports, Bluetooth captures, exploration scripts. This directory is gitignored entirely. Never commit its contents — not even accidentally. See [CONTRIBUTING.md](../CONTRIBUTING.md#legal-hygiene).
 
-**`examples/`** contains standalone Python scripts that demonstrate using the `partybox` SDK. They run against a real speaker:
-
-```bash
-uv run python examples/scan.py
-uv run python examples/connect.py
-uv run python examples/power_on.py
-```
-
-**`spike/`** contains exploratory code from milestone viability spikes. `spike/m3-audio/` is the toolkit used to validate that a Pi can simultaneously stream A2DP audio and maintain a BLE control connection (see [M3 findings](validation/m3-findings.md)). Spike code is not production code — it exists to answer a question and is preserved so the answer can be understood.
-
-**`system/`** contains the systemd unit file and Avahi mDNS service record used when the appliance runs on a Pi.
-
-**`webui/`** will contain the Companion Portal frontend. Framework is TBD (M7).
-
----
-
-## Common development tasks
-
-### Adding a dependency
-
-```bash
-# Add a runtime dependency to a specific package
-cd packages/partyboxd
-uv add fastapi
-
-# Add a dev dependency
-uv add --dev httpx
-
-# Sync the workspace after editing pyproject.toml manually
-uv sync --all-extras
-```
-
-After adding a dependency, commit both `pyproject.toml` and `uv.lock`.
-
----
-
-### Running tests
-
-```bash
-# Non-hardware tests for all packages
-uv run pytest packages/partybox/  -m "not hardware"
-uv run pytest packages/partyboxd/ -m "not hardware"
-uv run pytest packages/companion/ -m "not hardware"
-
-# Single test file
-uv run pytest packages/partybox/tests/unit/test_parser.py -v
-
-# Hardware tests (real PartyBox, optional BT address)
-PARTYBOX_ADDRESS=AA:BB:CC:DD:EE:FF uv run pytest packages/partybox/ -m hardware -v
-```
-
----
-
-### Running examples
+**`examples/`** contains standalone scripts that demonstrate using the `partybox` SDK against a real speaker:
 
 ```bash
 uv run python examples/scan.py         # discover nearby PartyBox speakers
@@ -334,88 +250,142 @@ uv run python examples/connect.py      # connect and print device info
 uv run python examples/power_on.py     # turn the speaker on
 ```
 
-These require Bluetooth access and a real PartyBox.
+---
+
+## Adding a protocol command
+
+Follow this sequence every time a new command is added:
+
+1. **Find the opcode in the decompiled app.** Use JADX on the JBL APK (`research/jadx-export/`) to locate the relevant classes, constants, and payload structure. This gives you the opcode and field names before you write a byte of code. See `docs/reverse-engineering/guide.md`.
+
+2. **Validate with a capture.** Use nRF Connect to capture HCI traffic while triggering the action in the JBL app. Confirm the bytes match what JADX suggested. Save the log to `research/btsnoop/`.
+
+3. **Document the finding.** Add the opcode and payload layout to `docs/reverse-engineering/protocol.md`, and record it in `docs/reverse-engineering/discoveries.md`.
+
+4. **Add the message type.** Add a frozen dataclass for the command and/or response in `protocol/messages.py`, and its opcode constant in `protocol/constants.py`.
+
+5. **Update the codec.** Extend `protocol/codec.py` (`encode` for outbound commands, `decode` for inbound responses/events).
+
+6. **Expose via a capability.** Add the method to the relevant capability class in `device/capabilities/<name>.py`. If it is a new capability type, also add the property to `device/partybox.py` (typed `<Name>Capability | None` if optional).
+
+7. **Add tests.** A protocol unit test with the validated capture bytes as a fixture (so CI runs without hardware), and a capability unit test using `MockTransport`.
+
+8. **Expose via REST endpoint** and, where relevant, the Companion Portal.
 
 ---
 
-### Adding a protocol message
-
-Protocol work follows a consistent sequence. The full walkthrough is in [Developer Handbook — Adding a protocol command](developer-handbook.md#adding-a-protocol-command) and [CONTRIBUTING.md](../CONTRIBUTING.md#adding-a-protocol-command).
-
-The short version:
-
-1. Find the opcode in the decompiled JBL app (`research/jadx-export/`) — see [docs/reverse-engineering/guide.md](reverse-engineering/guide.md)
-2. Validate with a Bluetooth capture from nRF Connect
-3. Document the finding in [docs/reverse-engineering/protocol.md](reverse-engineering/protocol.md)
-4. Add the message dataclass → update parser/serializer/constants → expose via capability
-5. Add a unit test using real capture bytes as a fixture
-
----
-
-### Adding a capability
+## Adding a new capability
 
 ```
 packages/partybox/src/partybox/device/capabilities/
-├── power.py      ← example to follow
-└── <name>.py     ← your new file
+├── power.py         ← example to follow
+├── battery.py       ← example of an optional capability
+└── <your_name>.py   ← new file
 ```
 
-1. Create `capabilities/<name>.py` — a plain class following `power.py` (there is no shared base class)
-2. Add the `@property` to `device/partybox.py` — typed `<Name>Capability | None` if the capability is optional
-3. Export from `partybox/__init__.py` if it's part of the public API
+1. Create `device/capabilities/<name>.py` — a plain class following `power.py` (there is no shared base class)
+2. Add `@property def <name>(self) -> <Name>Capability | None` to `device/partybox.py` — return `None` if the connected device does not report support (required capabilities are non-optional)
+3. Export from `partybox/__init__.py` if it should be part of the public API
 
 The capability model is described in detail in [docs/architecture.md](architecture.md#capability-model) and [ADR-006](adr/006-capability-model.md).
 
 ---
 
-### Updating documentation
+## Hardware testing
+
+Tests that require a real PartyBox are marked `@pytest.mark.hardware` and never run in CI. Run them locally when you have hardware:
+
+```bash
+uv run pytest packages/partybox/ -m hardware -v
+
+# Set the device address if the test requires it:
+PARTYBOX_ADDRESS=AA:BB:CC:DD:EE:FF uv run pytest packages/partybox/ -m hardware
+```
+
+---
+
+## Running the appliance locally
+
+```bash
+# Start the full companion appliance (REST API + Portal + Spotify service)
+uv run partybox-companion
+
+# Override port or other settings
+COMPANION_PORT=9000 uv run partybox-companion
+COMPANION_LOG_LEVEL=DEBUG uv run partybox-companion
+```
+
+The Portal and API start at `http://localhost:8080` in dev (the code default; production binds port 80 — see [ADR-017](adr/017-runtime-layout.md)). Check liveness with `GET /api/v1/health`.
+
+To develop Portal UI without hardware, open `http://localhost:8080/?mock` — mock mode serves the Portal with simulated device state.
+
+---
+
+## Deploying to the Pi
+
+The Pi runs the full `partybox-companion` appliance. The appliance venv at
+`/opt/partybox-companion/` is a `--no-editable` install — source is copied into
+site-packages — so for Python-only changes, rsync the source directly and restart
+the service. No reinstall is required.
+
+**SSH access:** `ssh pi@partybox.local` (mDNS, preferred) or `ssh pi@partybox` (router DNS). See [CLAUDE.md](../CLAUDE.md) for the credential and `sshpass` details used in this project.
+
+**Deploy changed source files:**
+
+Site-packages is root-owned on release images, so the remote rsync runs under sudo (`--rsync-path="sudo rsync"`).
+
+```bash
+# From the repo root — companion package shown; same pattern for partyboxd / partybox
+rsync -a --delete --exclude='__pycache__' --rsync-path="sudo rsync" \
+    packages/companion/src/companion/ \
+    pi@partybox.local:/opt/partybox-companion/lib/python3.14/site-packages/companion/
+```
+
+**If dependencies changed** (`pyproject.toml` or `uv.lock`) or any `install.sh`-managed file (systemd unit, BlueZ config, Avahi record), a full image rebuild and reflash is required — the venv is built at image creation time and cannot be updated in-place without `uv`.
+
+**Restart, health check, and logs:**
+
+```bash
+ssh pi@partybox.local "sudo systemctl restart companion"
+ssh pi@partybox.local "curl -s http://localhost/api/v1/health"
+ssh pi@partybox.local "journalctl -u companion -f"
+ssh pi@partybox.local "journalctl -u companion -n 100 --no-pager"
+```
+
+**Bluetooth adapter wedge (scanner works, GATT connections fail):** the Pi's controller can enter a state where BLE scanning succeeds but every GATT connection fails. Restarting the Bluetooth stack recovers it without touching the speaker; power-cycle the speaker only as a last resort.
+
+```bash
+ssh pi@partybox.local "sudo systemctl restart bluetooth"
+```
+
+---
+
+## Documentation and ADRs
 
 Protocol documentation goes in `docs/reverse-engineering/`. Architecture decisions go in `docs/adr/`. General architecture goes in `docs/architecture.md`.
 
-When you make a significant architectural decision — not a feature addition, but a decision about how the system is structured — write an ADR. See the [ADR README](adr/README.md) for format and existing examples.
+When you make a significant architectural decision — not a feature addition, but a decision about how the system is structured — write an ADR. Copy the format from an existing one (e.g. [ADR-006](adr/006-capability-model.md)): number, title, status, context, decision, consequences. The most important section is **Context** — what problem you were solving and what you considered. See the [ADR README](adr/README.md).
 
 ---
 
-### Writing an ADR
+## Commit messages
 
-ADRs live in `docs/adr/`. Copy the format from an existing one (e.g., [ADR-006](adr/006-capability-model.md)): number, title, status, context, decision, and consequences. Number it sequentially.
+Follow [Conventional Commits](https://www.conventionalcommits.org/):
 
-The most important section is **Context** — what problem you were solving and what you considered. The decision itself is usually short. The consequences section is where you document what you accepted (trade-offs, future constraints) in order to make this decision.
+```
+feat(protocol): add EQ band command
+fix(bluetooth): handle reconnect race condition
+docs(protocol): document volume response format
+test(device): add MockTransport reconnect scenario
+```
 
----
-
-## Why these tools
-
-### Why uv?
-
-`pip` + `virtualenv` + `pip-tools` is the traditional stack. It works, but it requires coordinating three tools with separate configuration files. `poetry` was a popular alternative but has its own diverging conventions. `uv` is faster than all of them, supports workspaces natively, and is compatible with standard `pyproject.toml` — no custom lock file format, no vendor lock-in.
-
-For a monorepo with three inter-dependent packages, workspace support is the decisive feature. `uv sync --all-extras` installs everything in a single command.
-
-### Why Ruff?
-
-`black` + `isort` + `flake8` + plugins was the standard Python linter stack for years. Ruff is a single Rust-based tool that replaces all of them and runs in milliseconds rather than seconds. The configuration lives in one place (`pyproject.toml`). There is no meaningful downside.
-
-### Why pyproject.toml?
-
-`setup.py` and `setup.cfg` are the older formats. `pyproject.toml` is the current Python standard ([PEP 518](https://peps.python.org/pep-0518/), [PEP 621](https://peps.python.org/pep-0621/)). All tools in this project read from it — ruff, mypy, pytest, coverage, hatch. One file for everything.
-
-### Why bleak?
-
-`bleak` is the only cross-platform Python BLE library with active maintenance and good async support. On Linux it uses BlueZ via D-Bus; on macOS it uses CoreBluetooth. Both matter: development happens on macOS/Linux dev containers, production runs on a Pi (Linux).
-
-The alternatives (`pygatt`, `bluepy`) are Linux-only or unmaintained. `bleak` is the obvious choice. See [ADR-015](adr/015-bluetooth-control-transport.md).
-
-### Why hatchling?
-
-`hatchling` is the build backend for each package. It reads all configuration from `pyproject.toml`, has no magic behaviour, and produces standard wheel and sdist distributions. We're not using any hatch-specific features beyond the build backend — it was chosen for being well-maintained and convention-free.
+Scopes: `bluetooth`, `protocol`, `device`, `capabilities`, `api`, `services`, `config`, `webui`, `docs`, `ci`
 
 ---
 
 ## Next steps
 
-- **Architecture:** [docs/architecture.md](architecture.md) — detailed module reference and data flow diagrams
-- **Roadmap:** [docs/roadmap.md](roadmap.md) — current milestone status and what's coming
+- **Architecture:** [docs/architecture.md](architecture.md) — module reference and data flow diagrams
+- **Roadmap:** [docs/roadmap.md](roadmap.md) — current milestone status and what's deferred past v1.0
 - **Protocol analysis:** [docs/reverse-engineering/guide.md](reverse-engineering/guide.md) — how to analyse the Bluetooth protocol and contribute findings
-- **Day-to-day commands:** [docs/developer-handbook.md](developer-handbook.md) — quick reference for common tasks
 - **Contributing:** [CONTRIBUTING.md](../CONTRIBUTING.md) — contribution workflow, legal hygiene, PR process

@@ -28,7 +28,7 @@ The primary user is someone who owns a JBL PartyBox and wants it to behave like 
 
 They are comfortable flashing an SD card and plugging in a Raspberry Pi. They do not need to write code.
 
-The secondary user is a developer who wants programmatic access to their PartyBox — via the `partybox` SDK directly, the REST API, or the CLI.
+The secondary user is a developer who wants programmatic access to their PartyBox — via the `partybox` SDK directly or the REST API.
 
 ## Why this exists
 

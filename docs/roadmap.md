@@ -132,7 +132,7 @@ Daemon lifecycle, connection management, and a minimal HTTP API. The daemon owns
 
 **Package:** `partyboxd`
 
-The REST API is the primary integration surface for all external clients — Companion Portal, CLI, Home Assistant, and future integrations. It exposes the daemon's domain model rather than SDK implementation details. Clients interact with concepts like speaker, battery, power, and firmware — not transports, opcodes, or Bluetooth.
+The REST API is the primary integration surface for all external clients — Companion Portal, Home Assistant, scripts, and future integrations. It exposes the daemon's domain model rather than SDK implementation details. Clients interact with concepts like speaker, battery, power, and firmware — not transports, opcodes, or Bluetooth.
 
 **Endpoints:**
 
@@ -540,7 +540,7 @@ git tag v1.0.0
 | Feature | Reason |
 |---|---|
 | AirPlay (M10) | Deferred to post-v1.0 to focus on a reliable Spotify Connect experience. shairport-sync subprocess manager follows the same pattern as librespot/SpotifyService. |
-| CLI (`partybox` command) | The Companion Portal is the primary user interface; the REST API is the primary integration surface; the SDK and examples already provide an excellent developer experience. A CLI remains valuable for debugging and automation, but it is no longer required to achieve the project's primary vision. Post-v1.0. |
+| SDK device events | `PartyBoxDevice` currently drains and discards unsolicited BLE notifications (see the drain loop in `device/partybox.py`). Exposing them as a typed async event iterable on the device — so the daemon can dispatch instead of discard — is the natural next step but not required for v1.0. Post-v1.0. |
 | Third-party BLE client coexistence | An opportunistic BLE connection model (connect to send, disconnect when idle) would allow the JBL app and other BLE centrals to connect to the speaker while Companion is running. Deferred because it adds reconnect latency (~1–2 s per command), complicates connection-state management in `DeviceManager`, and is not required for the core appliance use case. The persistent connection is a conscious v1.0 trade-off. Post-v1.0. |
 | Input source selection | Useful, but not needed to stream Spotify or AirPlay. The companion can set the correct input when a service starts. Deferred until the mechanism is confirmed via protocol analysis. |
 | Lighting control | Hardware-unique but not core to the WiFi speaker goal. Post-v1.0. |

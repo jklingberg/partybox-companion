@@ -29,9 +29,6 @@ dependencies = [
     "partyboxd",
     # Portal configuration
     "pydantic-settings>=2.2",
-    # CLI
-    "typer>=0.12",
-    "rich>=13.0",
     # BlueZ D-Bus API (PairingService) — already a transitive dependency via
     # partybox -> bleak; declared directly since companion now calls it itself.
     "dbus-fast>=4.0",
@@ -53,8 +50,6 @@ partyboxd = { workspace = true }
 [project.scripts]
 # Full appliance entry point (starts daemon + companion services)
 partybox-companion = "companion.__main__:main"
-# CLI client (talks to the running daemon over HTTP)
-partybox = "companion.cli.main:app"
 
 [project.urls]
 Homepage = "https://github.com/jklingberg/partybox-companion"

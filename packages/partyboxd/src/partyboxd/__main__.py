@@ -49,10 +49,17 @@ _LOG_CONFIG = {
 def main() -> None:
     logging.config.dictConfig(_LOG_CONFIG)
     settings = Settings()
-    asyncio.run(_run(settings))
+    asyncio.run(run(settings))
 
 
-async def _run(settings: Settings) -> None:
+async def run(settings: Settings) -> None:
+    """Run the daemon until interrupted.
+
+    Public entry point for embedding the daemon in a larger asyncio
+    application or an integration test. ``main()`` is the console-script
+    wrapper that configures logging and loads :class:`Settings` from the
+    environment before calling this.
+    """
     manager = DeviceManager(settings.speaker)
     app = create_app(manager, settings)
 

@@ -2,6 +2,8 @@
 
 **Status:** Accepted
 
+> **Historical note:** the CLI discussed in this ADR was ultimately removed before the first public release. The decision to standardise on TCP still holds on its own merits (the Portal and all HTTP clients use it); the architectural reasoning is preserved as part of the project's history.
+
 ---
 
 ## Context

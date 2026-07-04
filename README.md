@@ -35,19 +35,19 @@ Standard Linux Bluetooth APIs only (BlueZ). Not Raspberry Pi specific — runs o
 
 ```
 JBL PartyBox 520
-      │  Bluetooth Classic (RFCOMM)
-      ▼
+      ▲  BLE GATT (control)  +  Bluetooth Classic A2DP (audio)
+      │
 ┌──────────────────────────────────────────────┐
 │  partybox-companion                          │
 │                                              │
 │  partybox  ─────────────────────────────┐   │
-│  (BT transport · protocol · device)     │   │
+│  (BLE transport · protocol · device)    │   │
 │                                         │   │
 │  partyboxd ─────────────────────────────┘   │
 │  (HTTP server · REST API · WebSocket)       │
 │                                             │
 │  companion                                  │
-│  (Portal · CLI · librespot · shairport)     │
+│  (Portal · service orchestration · librespot)│
 └──────────────────────────────────────────────┘
                      │
               http://partybox.local
@@ -65,25 +65,20 @@ See [docs/architecture.md](docs/architecture.md) for full design.
 
 > Full installation guide coming in v1.0. The steps below reflect the target experience.
 
+1. Flash the appliance image to an SD card and boot the Raspberry Pi.
+2. Join its WiFi setup network and enter your home WiFi credentials (captive portal).
+3. Open the Companion Portal at `http://partybox.local`.
+4. Pair the speaker over Bluetooth from the Portal, then start streaming with Spotify Connect.
+
+To run the appliance directly from a source checkout:
+
 ```bash
-# Scan for your PartyBox
-partybox scan
-
-# Check status (power, battery, firmware)
-partybox status
-
-# Power management
-partybox power on
-partybox power off
-
-# Generate an API key
-partybox generate-key
-
-# Start the full appliance (Companion Portal + REST API at :80)
-partybox-companion --config /etc/partybox-companion/partybox-companion.toml
+# Start the full appliance (Companion Portal + REST API on port 80)
+COMPANION_PORT=80 uv run partybox-companion
 ```
 
-The Companion Portal is then accessible at `http://partybox.local`.
+The Companion Portal is then accessible at `http://partybox.local`. Manage the
+appliance from there or via the [REST API](docs/api/v1.md).
 
 ## REST API
 
@@ -141,9 +136,9 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide.
 
 | Package | PyPI name | Description |
 |---------|-----------|-------------|
-| [`partybox`](packages/partybox/) | `partybox` | Bluetooth SDK. Zero dependencies. Usable without the daemon. |
+| [`partybox`](packages/partybox/) | `partybox` | Bluetooth SDK. Depends only on `bleak`. Usable without the daemon. |
 | [`partyboxd`](packages/partyboxd/) | `partyboxd` | Headless daemon. HTTP API + WebSocket. No UI, no services. |
-| [`companion`](packages/companion/) | `partybox-companion` | Full appliance. Companion Portal, `partybox` CLI, Spotify/AirPlay service managers. |
+| [`companion`](packages/companion/) | `partybox-companion` | Full appliance. Companion Portal, Spotify Connect + Bluetooth audio + WiFi provisioning orchestration. |
 
 ## Protocol compatibility
 
@@ -151,11 +146,11 @@ partybox-companion includes an independent implementation of the PartyBox Blueto
 
 ## Status
 
-Active early development. Protocol is understood; software scaffold is in place.
+Approaching v1.0. The protocol is understood, the daemon and Companion Portal
+are functional, and the appliance runs on real hardware (Spotify Connect over
+Bluetooth A2DP with BLE control). Remaining work is release hardening.
 
-Current milestone: **M2 — Bluetooth Transport**
-
-See [CHANGELOG.md](CHANGELOG.md) for progress.
+See [CHANGELOG.md](CHANGELOG.md) for progress and [docs/roadmap.md](docs/roadmap.md) for what's deferred past v1.0.
 
 ## License
 
