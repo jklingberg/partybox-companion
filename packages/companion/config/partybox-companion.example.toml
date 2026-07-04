@@ -15,8 +15,8 @@ host = "0.0.0.0"
 port = 8080
 
 [server.auth]
-# API key required in the X-API-Key header for all API requests.
-# Generate a key with: pbx generate-key
+# API key required in the X-Api-Key header for all API requests.
+# Use any sufficiently random string, e.g. `python -c "import secrets; print(secrets.token_urlsafe(24))"`.
 # Leave empty to disable authentication (trusted networks only — not recommended).
 api_key = ""
 

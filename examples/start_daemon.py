@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Start the partyboxd daemon programmatically.
 
-Normally you would run the daemon via the CLI::
+Normally you would run the daemon via its console script::
 
     partyboxd
 
@@ -14,7 +14,7 @@ uv run python examples/start_daemon.py
 
 import asyncio
 
-from partyboxd.__main__ import _run
+from partyboxd.__main__ import run
 from partyboxd.config import ServerSettings, Settings, SpeakerSettings
 
 
@@ -25,7 +25,7 @@ async def main() -> None:
     )
     print(f"Starting partyboxd on {settings.server.host}:{settings.server.port}")
     print("Press Ctrl-C to stop.")
-    await _run(settings)
+    await run(settings)
 
 
 if __name__ == "__main__":

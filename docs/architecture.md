@@ -1,7 +1,7 @@
 # Architecture
 
 > **See also:**
-> [Vision](vision.md) · [Developer Handbook](developer-handbook.md) · [Roadmap](roadmap.md) · [Model Support](model-support.md) · [ADRs](adr/)
+> [Vision](vision.md) · [Developer Guide](developer-guide.md) · [Roadmap](roadmap.md) · [Model Support](model-support.md) · [ADRs](adr/)
 
 ---
 
@@ -16,9 +16,9 @@ partybox           Bluetooth SDK. BLE GATT via bleak.
     ↑
 partyboxd          Headless daemon. HTTP API + WebSocket.
     ↑
-companion          Full appliance. Companion Portal, CLI, service orchestration.
+companion          Full appliance. Companion Portal, service orchestration.
     ↑
-clients            Browsers, CLI, Home Assistant, scripts.
+clients            Browsers, Home Assistant, scripts.
 ```
 
 Each layer depends only on the layer below. No layer has knowledge of the layer above it. The key design rationale for each decision is documented in [docs/adr/](adr/).
@@ -45,7 +45,6 @@ partybox-companion/
 │   │
 │   └── companion/                         ← Python package: partybox-companion
 │       └── src/companion/
-│           ├── cli/                       ← partybox CLI (stub — post-v1.0)
 │           ├── services/                  ← audio, pairing, Spotify, provisioning, BlueZ
 │           ├── webui/                     ← Companion Portal (static HTML + config API)
 │           └── wifi/                      ← provisioning API + captive-portal middleware
@@ -98,7 +97,7 @@ Consumes `partyboxd`. This is what most users install.
 
 Extends `partyboxd`'s FastAPI application in-process via the `create_app()` factory. Single process, single port.
 
-Binaries: `partybox-companion` (starts everything), `partybox` (CLI client — currently a stub; a full CLI is deferred post-v1.0)
+Binary: `partybox-companion` (starts everything).
 
 ---
 
@@ -203,10 +202,6 @@ FastAPI application factory (`create_app(settings, ...) -> FastAPI` in `app.py`)
 ---
 
 ## `companion` — module reference
-
-### `cli/`
-
-`partybox` CLI — currently a stub that points users at the Portal and REST API. A full CLI is deferred post-v1.0.
 
 ### `services/`
 

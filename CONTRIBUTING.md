@@ -57,7 +57,7 @@ The project has three packages. The dependency direction is one-way:
 partybox  ←  partyboxd  ←  companion
 ```
 
-**`partybox`** must never import from `partyboxd` or `companion`. It has zero runtime dependencies.
+**`partybox`** must never import from `partyboxd` or `companion`. Its only runtime dependency is `bleak` (the BLE GATT transport).
 
 **`partyboxd`** may import from `partybox`. It must not implement protocol logic.
 
@@ -101,7 +101,7 @@ Raw research artifacts (APK files, JADX exports, captures, scripts) live in `res
 
 Most new protocol commands follow the same workflow.
 
-See [docs/developer-handbook.md](docs/developer-handbook.md#adding-a-protocol-command) for the complete process.
+See [docs/developer-guide.md](docs/developer-guide.md#adding-a-protocol-command) for the complete process.
 
 In summary:
 
@@ -118,7 +118,7 @@ In summary:
 5. Expose the functionality through the appropriate device capability rather than model-specific logic.
 6. Verify the implementation against a real PartyBox and capture representative packets for regression tests.
 7. Add unit tests using captured packet fixtures so protocol parsing can be tested without physical hardware.
-8. Once the SDK supports the command, expose it through higher-level components such as `partyboxd`, the CLI, Companion Portal, or other clients as appropriate.
+8. Once the SDK supports the command, expose it through higher-level components such as `partyboxd`, the REST API, or the Companion Portal as appropriate.
 
 Design principle: When possible, derive protocol semantics from the decompiled Android application and use Bluetooth captures only to validate behaviour and timing. This provides more context than captures alone. Implement behaviour independently based on your observations rather than translating proprietary code.
 
@@ -155,7 +155,7 @@ docs(reverse-engineering): document volume response format
 test(device): add MockBackend reconnect scenario
 ```
 
-Scopes: `bluetooth`, `protocol`, `device`, `capabilities`, `api`, `cli`, `services`, `config`, `webui`, `docs`, `ci`
+Scopes: `bluetooth`, `protocol`, `device`, `capabilities`, `api`, `services`, `config`, `webui`, `docs`, `ci`
 
 ---
 
