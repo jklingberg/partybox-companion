@@ -59,7 +59,7 @@ Nothing else changes. Existing code continues working unchanged.
 
 | Model | Power | DeviceInfo | Battery | Lights | EQ | Microphone | Notes |
 |---|---|---|---|---|---|---|---|
-| PartyBox 520 | TBD | TBD | ❌ | TBD | TBD | TBD | Primary test device |
+| PartyBox 520 | TBD | TBD | ❓ | TBD | TBD | TBD | Primary test device. Has a battery, but does not appear to report status while on AC power — needs investigation |
 
 Legend: ✅ confirmed · ❌ not present · TBD not yet tested · ❓ unclear
 
