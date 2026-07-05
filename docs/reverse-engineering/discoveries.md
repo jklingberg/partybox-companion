@@ -122,6 +122,8 @@ Numeric values are **little-endian**; `BATTERY_ID` (id 1) is ASCII, not a number
 
 **Charge percentage is derived**, not reported directly: `REMAINING_CAPACITY / FULL_CHARGE_CAPACITY` (battery capture 4296/4786 ≈ 90 %; mains 4349/4786 ≈ 91 %; full 4755/4755 = 100 %). `CHARGING_STATUS` distinguishes power source: values `1` and `3` are mains, `2` is battery.
 
+**The `0x9E` response spans multiple notifications.** The full reading declares a `0x3f` (63-byte) payload — larger than a small ATT MTU — so the speaker splits it across several BLE notifications; only the first carries the `SOF/opcode/length` header, the rest are raw payload continuation. Decoding a lone first fragment silently truncates the frame and drops the late TLV fields, notably `CHARGING_STATUS` (id 9) near the end — observed on the appliance as `100% (unknown source)` when the MTU was small, `100% (full)` when the whole frame fit one notification. The SDK reassembles fragments by the declared length (`FrameReassembler` in `codec.py`) before decoding.
+
 Implemented in `BatteryCapability` (SDK reads via `0x9D`/`0x9E`; detection probes at connect since no service advertises the battery). Surfaced through `/api/v1/battery` (level, power source, charging, health, cycles) and the Companion Portal. Codec fixtures use the real captures — see `test_codec.py`. A second, older command (request sub-code `0x13`, response `0x12` — the power-off state-dump opcode) also carries battery data; `0x9D`/`0x9E` is the cleaner dedicated path. Probe/exploration script: `research/scripts/probe_battery.py`.
 
 ### Opcode 0x31 — capability list request

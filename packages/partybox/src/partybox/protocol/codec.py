@@ -80,6 +80,55 @@ def decode(raw: bytes) -> FirmwareVersionResponse | BatteryStatusResponse | None
     return None
 
 
+class FrameReassembler:
+    """Reassembles vendor frames that span multiple BLE notifications.
+
+    A frame is ``SOF | opcode | length | payload[length]``. When a payload is
+    larger than the negotiated ATT MTU the speaker splits it across several
+    notifications; only the first carries the ``SOF/opcode/length`` header, the
+    remainder are raw payload continuation with no header of their own. Decoding
+    a lone first fragment therefore yields a *truncated* message — e.g. a
+    battery reading missing the ``CHARGING_STATUS`` field that sits late in the
+    frame.
+
+    :meth:`push` buffers fragments and returns each complete frame as soon as
+    its declared length is satisfied. A single notification may also carry more
+    than one whole frame back-to-back, so it returns a list.
+    """
+
+    def __init__(self) -> None:
+        self._buffer = bytearray()
+
+    def push(self, data: bytes) -> list[bytes]:
+        """Append a notification's bytes and return any now-complete frames."""
+        self._buffer += data
+        frames: list[bytes] = []
+        while (frame := self._take_frame()) is not None:
+            frames.append(frame)
+        return frames
+
+    def _take_frame(self) -> bytes | None:
+        buf = self._buffer
+        # Resync to the next start-of-frame if the head is not one. During a
+        # normal fragmented read the head is always a header, so this only
+        # fires if a header byte was lost; it never triggers mid-frame because
+        # the first fragment starts with SOF.
+        if buf and buf[0] != SOF:
+            idx = buf.find(SOF)
+            if idx == -1:
+                buf.clear()
+                return None
+            del buf[:idx]
+        if len(buf) < 3:
+            return None
+        total = 3 + buf[2]
+        if len(buf) < total:
+            return None
+        frame = bytes(buf[:total])
+        del buf[:total]
+        return frame
+
+
 def _decode_battery(payload: bytes) -> BatteryStatusResponse:
     """Parse the ``0x9E`` TLV payload into a :class:`BatteryStatusResponse`.
 

@@ -62,6 +62,19 @@ async def test_status_ignores_unrelated_notifications() -> None:
         assert await BatteryCapability(transport).level() == 90
 
 
+async def test_status_reassembles_fragmented_response() -> None:
+    # A full 0x9E reading exceeds a small ATT MTU and arrives as two
+    # notifications. The first fragment stops before the CHARGING_STATUS TLV,
+    # so decoding it alone would drop that field; reassembly recovers it.
+    transport = MockTransport()
+    async with transport:
+        transport.feed(BATTERY_RESPONSE_ON_MAINS[:24])
+        transport.feed(BATTERY_RESPONSE_ON_MAINS[24:])
+        status = await BatteryCapability(transport).status()
+        assert status.charging_status is ChargingStatus.CHARGING
+        assert status.charge_percent == 91
+
+
 async def test_level_raises_without_capacity() -> None:
     # A 0x9E response carrying only charging_status has no capacity to derive %.
     transport = MockTransport()

@@ -5,7 +5,7 @@ docs/reverse-engineering/discoveries.md. Never fabricated.
 """
 
 import pytest
-from partybox.protocol.codec import decode, encode
+from partybox.protocol.codec import FrameReassembler, decode, encode
 from partybox.protocol.messages import (
     BatteryFeature,
     BatteryStatusRequest,
@@ -172,3 +172,48 @@ def test_decode_battery_ignores_unknown_feature_id() -> None:
     result = decode(frame)
     assert isinstance(result, BatteryStatusResponse)
     assert result.charging_status is ChargingStatus.CHARGING
+
+
+# ---------------------------------------------------------------------------
+# FrameReassembler — multi-notification frames
+# ---------------------------------------------------------------------------
+
+
+def test_reassembler_returns_whole_frame_in_one_push() -> None:
+    r = FrameReassembler()
+    assert r.push(BATTERY_RESPONSE_ON_MAINS_FULL) == [BATTERY_RESPONSE_ON_MAINS_FULL]
+
+
+def test_reassembler_incomplete_frame_returns_nothing() -> None:
+    r = FrameReassembler()
+    # Header declares 0x3f payload bytes; only a prefix is delivered.
+    assert r.push(BATTERY_RESPONSE_ON_MAINS_FULL[:20]) == []
+
+
+def test_reassembler_joins_fragments_into_one_frame() -> None:
+    # The full 0x9E battery response exceeds a small ATT MTU and arrives split
+    # across notifications. Only the first fragment carries the header; the
+    # split falls before the CHARGING_STATUS TLV so a lone first fragment would
+    # decode without it. Reassembly must recover the complete frame.
+    r = FrameReassembler()
+    assert r.push(BATTERY_RESPONSE_ON_MAINS_FULL[:20]) == []
+    assert r.push(BATTERY_RESPONSE_ON_MAINS_FULL[20:45]) == []
+    frames = r.push(BATTERY_RESPONSE_ON_MAINS_FULL[45:])
+    assert frames == [BATTERY_RESPONSE_ON_MAINS_FULL]
+    result = decode(frames[0])
+    assert isinstance(result, BatteryStatusResponse)
+    assert result.charging_status is ChargingStatus.FULL
+    assert result.charge_percent == 100
+
+
+def test_reassembler_splits_back_to_back_frames() -> None:
+    r = FrameReassembler()
+    power = bytes.fromhex("AA030105")
+    frames = r.push(BATTERY_RESPONSE_ON_MAINS_FULL + power)
+    assert frames == [BATTERY_RESPONSE_ON_MAINS_FULL, power]
+
+
+def test_reassembler_resyncs_past_leading_garbage() -> None:
+    r = FrameReassembler()
+    frames = r.push(b"\x00\x99" + BATTERY_RESPONSE_ON_MAINS_FULL)
+    assert frames == [BATTERY_RESPONSE_ON_MAINS_FULL]

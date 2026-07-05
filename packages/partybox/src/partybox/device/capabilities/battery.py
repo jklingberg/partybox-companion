@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 
 from partybox.bluetooth.transport import ControlTransport
-from partybox.protocol.codec import decode, encode
+from partybox.protocol.codec import FrameReassembler, decode, encode
 from partybox.protocol.messages import BatteryStatusRequest, BatteryStatusResponse
 
 _BATTERY_REQUEST = encode(BatteryStatusRequest())
@@ -33,7 +33,10 @@ class BatteryCapability:
         """Return the speaker's full battery status.
 
         Sends ``AA 9D …`` and waits for the ``0x9E`` response, skipping any
-        unrelated notifications that arrive first.
+        unrelated notifications that arrive first. The response is larger than
+        a typical ATT MTU and may span several notifications, so fragments are
+        reassembled (via :class:`FrameReassembler`) before decoding — otherwise
+        late fields such as ``CHARGING_STATUS`` would be lost.
 
         Args:
             timeout: seconds to wait for the response before giving up.
@@ -45,6 +48,7 @@ class BatteryCapability:
         await self._transport.write(_BATTERY_REQUEST)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
+        reassembler = FrameReassembler()
         while True:
             remaining = deadline - loop.time()
             if remaining <= 0:
@@ -53,9 +57,10 @@ class BatteryCapability:
                 raw = await asyncio.wait_for(self._transport.receive(), timeout=remaining)
             except TimeoutError:
                 raise TimeoutError("timed out waiting for battery status response") from None
-            response = decode(raw)
-            if isinstance(response, BatteryStatusResponse):
-                return response
+            for frame in reassembler.push(raw):
+                response = decode(frame)
+                if isinstance(response, BatteryStatusResponse):
+                    return response
 
     async def level(self) -> int:
         """Return the battery charge level as a percentage (0-100).
