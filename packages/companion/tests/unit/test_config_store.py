@@ -52,3 +52,21 @@ def test_write_after_quarantine_starts_clean(tmp_path: Path) -> None:
     store.read()
     store.write(PortalConfig(device_name="Fixed"))
     assert store.read().device_name == "Fixed"
+
+
+def test_reset_deletes_file_and_restores_defaults(tmp_path: Path) -> None:
+    path = tmp_path / "config.json"
+    store = ConfigStore(path)
+    store.write(PortalConfig(device_name="Den", audio_sink_address="50:1B:6A:14:FD:1D"))
+    assert path.exists()
+
+    store.reset()
+
+    assert not path.exists()
+    assert store.read() == PortalConfig()
+
+
+def test_reset_is_noop_when_file_missing(tmp_path: Path) -> None:
+    store = ConfigStore(tmp_path / "config.json")
+    store.reset()  # must not raise
+    assert store.read() == PortalConfig()

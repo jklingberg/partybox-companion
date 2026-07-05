@@ -58,6 +58,19 @@ class ConfigStore:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._path.write_text(cfg.model_dump_json(indent=2))
 
+    def reset(self) -> None:
+        """Delete the config file so the next read returns factory defaults.
+
+        Used by the factory-reset flow. Removing the file (rather than writing
+        ``PortalConfig()``) keeps disk state identical to a fresh appliance
+        image, where no config file exists yet. A missing file is not an error.
+        """
+        try:
+            self._path.unlink(missing_ok=True)
+        except OSError as exc:
+            log.error("config reset: could not delete %s (%s)", self._path, exc)
+            raise
+
     def _quarantine(self) -> Path | None:
         """Move the unreadable config aside so the next write starts clean.
 

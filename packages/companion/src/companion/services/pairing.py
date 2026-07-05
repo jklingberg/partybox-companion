@@ -92,6 +92,17 @@ class PairingService:
         self._task = asyncio.create_task(self._do_pair(), name="pairing")
         return True
 
+    async def forget(self, mac: str) -> None:
+        """Remove the BR/EDR bond for *mac* (factory reset).
+
+        Deletes the persisted pairing via ``Adapter1.RemoveDevice`` so the
+        speaker must be paired again. Safe to call for an address BlueZ no
+        longer knows about — a missing device object is the desired end state.
+        """
+        log.info("Forgetting bond for %s", mac)
+        async with BluezClient() as bluez:
+            await bluez.remove_device(mac)
+
     # ------------------------------------------------------------------
     # internals
     # ------------------------------------------------------------------

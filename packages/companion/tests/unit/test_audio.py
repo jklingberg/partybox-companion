@@ -514,6 +514,27 @@ def test_audio_ready_reflects_status_connected() -> None:
 
 
 # ---------------------------------------------------------------------------
+# forget() — factory reset
+# ---------------------------------------------------------------------------
+
+
+def test_forget_clears_address_and_marks_not_ready() -> None:
+    """forget() un-sets the sink and drops audio_ready (factory reset)."""
+    svc = _service(address="AA:BB:CC:DD:EE:FF")
+    svc._set_audio_ready(True)
+    queue = svc.subscribe()
+    queue.get_nowait()  # consume the initial-state event (True)
+
+    svc.forget()
+
+    assert svc.status.address is None
+    assert svc.audio_ready is False
+    # The address_ready gate is re-armed so run() returns to waiting for pairing.
+    assert not svc._address_ready.is_set()
+    assert queue.get_nowait() == AudioReadyChanged(audio_ready=False)
+
+
+# ---------------------------------------------------------------------------
 # AudioReadyChanged events — _set_audio_ready transitions
 # ---------------------------------------------------------------------------
 

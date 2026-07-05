@@ -206,6 +206,19 @@ class AudioService:
         self._address_ready.set()
         self._reconnect_now.set()
 
+    def forget(self) -> None:
+        """Clear the sink address and quiesce the connection loop (factory reset).
+
+        The counterpart to :meth:`update_address`: it un-sets the address so the
+        run loop stops trying to reach a speaker whose bond has been removed and
+        returns to waiting for a fresh pairing.  Interrupts any in-progress
+        backoff sleep so the loop re-evaluates immediately.
+        """
+        self._address = None
+        self._address_ready.clear()
+        self._reconnect_now.set()
+        self._set_audio_ready(False)
+
     async def run(self) -> None:
         """Ensure A2DP is connected; reconnect on drop. Runs until cancelled.
 
@@ -223,6 +236,15 @@ class AudioService:
         retry_delay = _RETRY_BASE
         try:
             while True:
+                if not self._address_ready.is_set():
+                    # forget() cleared the sink (factory reset): stop chasing a
+                    # speaker whose bond is gone and wait for a fresh pairing.
+                    self._set_audio_ready(False)
+                    log.info("A2DP: sink address cleared; waiting for pairing")
+                    await self._address_ready.wait()
+                    log.info("Audio service resuming (sink=%s)", self._address)
+                    retry_delay = _RETRY_BASE
+                    continue
                 if not await self._is_connected():
                     self._set_audio_ready(False)
                     if self._flap_count >= _FLAP_LIMIT:
