@@ -97,6 +97,7 @@ class _FakeBluezClient:
         self.paired: str | None = None
         self.trusted: str | None = None
         self.connected: str | None = None
+        self.removed: str | None = None
 
     async def __aenter__(self) -> _FakeBluezClient:
         return self
@@ -134,6 +135,9 @@ class _FakeBluezClient:
         if self.connect_error is not None:
             raise self.connect_error
         self.connected = mac
+
+    async def remove_device(self, mac: str) -> None:
+        self.removed = mac
 
 
 def _patch_bluez(client: _FakeBluezClient) -> _patch[Any]:
@@ -359,3 +363,18 @@ async def test_unexpected_error_transitions_to_failed() -> None:
     assert svc.status.state == PairingState.FAILED
     assert svc.status.error is not None
     assert "dbus exploded" in svc.status.error
+
+
+# ---------------------------------------------------------------------------
+# forget() — factory reset bond removal
+# ---------------------------------------------------------------------------
+
+
+async def test_forget_removes_bond() -> None:
+    svc = _service()
+    fake = _FakeBluezClient()
+
+    with _patch_bluez(fake):
+        await svc.forget(_SPEAKER_MAC)
+
+    assert fake.removed == _SPEAKER_MAC

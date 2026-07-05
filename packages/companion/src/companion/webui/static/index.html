@@ -221,6 +221,19 @@
       cursor: pointer; transition: color .14s;
     }
     .btn-ghost:hover { color: var(--text); }
+    .btn-danger {
+      display: inline-flex; align-items: center; justify-content: center;
+      height: 42px; padding: 0 18px;
+      border-radius: var(--r-sm);
+      border: 1px solid var(--danger);
+      background: transparent;
+      color: var(--danger);
+      font-size: 14px; font-weight: 500; font-family: var(--font);
+      cursor: pointer; transition: background .14s, color .14s;
+    }
+    .btn-danger:hover:not(:disabled) { background: var(--danger); color: #fff; }
+    .btn-danger:disabled { opacity: .5; cursor: not-allowed; }
+    .section-danger .section-title { color: var(--danger); }
 
     /* -- Provisioning screen -------------------------------------------- */
     .net-list { margin: 0 0 4px; }
@@ -392,7 +405,6 @@
       <div class="sl-detail" id="svc-detail">&mdash;</div>
       <div class="sl-actions">
         <button class="btn-sm hidden" id="btn-spotify-rename"  onclick="openSettings()">Rename</button>
-        <button class="btn-sm hidden" id="btn-spotify-restart" onclick="restartSpotify()">Restart</button>
       </div>
     </div>
 
@@ -485,6 +497,20 @@
       <div class="btn-row">
         <button class="btn-primary" onclick="saveSettings()">Save</button>
         <button class="btn-ghost" onclick="closeSettings()">Cancel</button>
+      </div>
+
+      <div class="section section-danger">
+        <div class="section-title">Danger zone</div>
+        <div class="field">
+          <span class="field-hint">
+            Factory reset forgets the paired speaker and clears all settings
+            (names, audio quality), returning the appliance to its as-shipped
+            state. You will need to pair the speaker again. This cannot be undone.
+          </span>
+        </div>
+        <div class="btn-row">
+          <button class="btn-danger" id="btn-factory-reset" onclick="factoryReset()">Factory reset</button>
+        </div>
       </div>
     </div>
   </div>
@@ -948,7 +974,6 @@ function updateSpotify() {
   detail.classList.toggle('warn', sp.running && isDefault);
 
   id('btn-spotify-rename').classList.toggle('hidden',  !(sp.running && isDefault));
-  id('btn-spotify-restart').classList.toggle('hidden', !sp.running);
 }
 
 function startSpotifyPolling() {
@@ -957,24 +982,6 @@ function startSpotifyPolling() {
     const r = await get('/api/v1/spotify');
     if (r && r.ok) { S.spotify = await r.json(); updateSpotify(); }
   }, 15000);
-}
-
-async function restartSpotify() {
-  const btn = id('btn-spotify-restart');
-  btn.disabled = true;
-  btn.textContent = '…';
-  const r = await get('/api/v1/spotify/restart', false, 'POST');
-  btn.disabled = false;
-  btn.textContent = 'Restart';
-  if (r && r.status === 204) {
-    toast('Spotify is restarting…');
-    setTimeout(async () => {
-      const s = await get('/api/v1/spotify');
-      if (s && s.ok) { S.spotify = await s.json(); updateSpotify(); }
-    }, 6000);
-  } else {
-    toast('Could not restart Spotify.');
-  }
 }
 
 // == Settings =============================================================
@@ -1030,6 +1037,37 @@ async function saveSettings() {
   }
 
   closeSettings();
+}
+
+async function factoryReset() {
+  if (!confirm(
+    'Factory reset?\n\n' +
+    'This forgets the paired speaker and clears all settings. ' +
+    'You will need to pair the speaker again. This cannot be undone.'
+  )) return;
+
+  const btn = id('btn-factory-reset');
+  btn.disabled = true;
+  btn.textContent = 'Resetting…';
+  const r = await get('/api/v1/factory-reset', false, 'POST');
+  btn.disabled = false;
+  btn.textContent = 'Factory reset';
+
+  if (r && r.status === 204) {
+    toast('Appliance reset to factory defaults.');
+    closeSettings();
+    // Refresh state so the Portal reflects the cleared config and unpaired speaker.
+    setTimeout(async () => {
+      try {
+        const c = await get('/api/v1/config');
+        if (c && c.ok) { S.config = await c.json(); applyConfig(); }
+        const s = await get('/api/v1/spotify');
+        if (s && s.ok) { S.spotify = await s.json(); updateSpotify(); }
+      } catch (_) { /* best-effort refresh */ }
+    }, 6000);
+  } else {
+    toast('Could not factory reset.');
+  }
 }
 
 // == Auth modal ===========================================================

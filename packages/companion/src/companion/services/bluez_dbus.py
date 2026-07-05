@@ -461,6 +461,31 @@ class BluezClient:
             log.warning("Pairing: connect failed for %s: %s", mac, exc)
 
     # ------------------------------------------------------------------
+    # Bond removal — factory reset (Adapter1.RemoveDevice)
+    # ------------------------------------------------------------------
+
+    async def remove_device(self, mac: str) -> None:
+        """Remove *mac* and its persisted bond via ``Adapter1.RemoveDevice``.
+
+        Deletes both the BlueZ ``Device1`` object and the stored pairing keys
+        under ``/var/lib/bluetooth`` so the speaker must be paired afresh. A
+        no-op if BlueZ has no device object for the address (already forgotten
+        or never bonded) — that is the desired end state, not an error.
+        """
+        adapter = await self._adapter()
+        try:
+            await asyncio.wait_for(
+                _call(adapter, "remove_device", _device_path(mac)), timeout=_TRUST_TIMEOUT
+            )
+        except DBusError as exc:
+            if "DoesNotExist" in exc.type or "Does Not Exist" in str(exc):
+                log.info("Bond removal: %s already absent", mac)
+                return
+            raise
+        except TimeoutError as exc:
+            raise PairingFailedError(f"RemoveDevice timed out for {mac}") from exc
+
+    # ------------------------------------------------------------------
     # A2DP connection management (used by AudioService)
     # ------------------------------------------------------------------
 
