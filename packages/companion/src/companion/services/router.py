@@ -243,6 +243,10 @@ def make_services_router(
     async def post_factory_reset() -> None:
         """Return the appliance to its as-shipped state without a reboot.
 
+        The contract — "indistinguishable from a freshly-flashed image" — and
+        the rule for what future state must be added here are recorded in
+        docs/adr/031-factory-reset-contract.md.
+
         Clears every piece of state that survives a power cycle, in order:
 
         1. Un-sets the live A2DP sink so the audio loop stops chasing the
