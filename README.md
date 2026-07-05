@@ -31,7 +31,7 @@ A Raspberry Pi sits next to your PartyBox and communicates with it over Bluetoot
 
 Standard Linux Bluetooth APIs only (BlueZ). Not Raspberry Pi specific — runs on any ARM/x86 Linux SBC.
 
-### Verified compatibility
+### Hardware validation matrix
 
 The table above lists *requirements*. This table lists combinations we have actually run on real hardware. The Bluetooth controller on the host matters as much as the speaker: controller quirks are host-specific and are not something the SDK can paper over (see [ADR-028](docs/adr/028-audio-readiness-model.md)).
 

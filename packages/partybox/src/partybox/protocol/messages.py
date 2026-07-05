@@ -142,9 +142,11 @@ class BatteryStatusResponse:
     def charge_percent(self) -> int | None:
         """Derived charge level (0-100).
 
-        The speaker reports no direct percentage; it is computed from
-        ``remaining_capacity / full_charge_capacity``. ``None`` if either
-        capacity is unavailable.
+        This is a **derived estimate**, not a value transmitted by the speaker:
+        it is computed from ``remaining_capacity / full_charge_capacity`` — the
+        same way JBL's own app derives it. There is no "real percentage" field in
+        the protocol. ``None`` if either capacity is unavailable. See
+        docs/adr/032-capability-probing.md.
         """
         if self.remaining_capacity_mah is None or not self.full_charge_capacity_mah:
             return None
