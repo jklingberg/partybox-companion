@@ -59,7 +59,7 @@ Nothing else changes. Existing code continues working unchanged.
 
 | Model | Power | DeviceInfo | Battery | Lights | EQ | Microphone | Notes |
 |---|---|---|---|---|---|---|---|
-| PartyBox 520 | TBD | TBD | ❓ | TBD | TBD | TBD | Primary test device. Has a battery, but does not appear to report status while on AC power — needs investigation |
+| PartyBox 520 | TBD | TBD | ✅ | TBD | TBD | TBD | Primary test device. Battery confirmed via vendor protocol (opcodes 0x9D/0x9E) on both battery and AC power **when the speaker is awake** — see [discoveries.md](reverse-engineering/discoveries.md#battery-status-opcodes-0x9d--0x9e). The earlier "no status on AC" was a mis-diagnosis: in standby (auto-power-off while on AC) the speaker keeps advertising BLE but stops answering control queries (battery, firmware), so a probe at connect then finds no battery until it wakes. |
 
 Legend: ✅ confirmed · ❌ not present · TBD not yet tested · ❓ unclear
 

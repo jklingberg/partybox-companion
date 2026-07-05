@@ -33,13 +33,13 @@ Standard Linux Bluetooth APIs only (BlueZ). Not Raspberry Pi specific — runs o
 
 ### Hardware validation matrix
 
-The table above lists *requirements*. This table lists combinations we have actually run on real hardware. The Bluetooth controller on the host matters as much as the speaker: controller quirks are host-specific and are not something the SDK can paper over (see [ADR-028](docs/adr/028-audio-readiness-model.md)).
+The table above lists *requirements*. This table tracks known Pi + controller + speaker combinations. The Bluetooth controller on the host matters as much as the speaker: controller quirks are host-specific and are not something the SDK can paper over (see [ADR-028](docs/adr/028-audio-readiness-model.md)).
 
 | Raspberry Pi | BT controller | Speaker | Status | Notes |
 |---|---|---|---|---|
-| Pi 3 B+ | Broadcom (on-board) | JBL PartyBox 520 | ✅ Verified | Only combination validated on hardware to date |
+| Pi 3 B+ | Broadcom (on-board) | JBL PartyBox 520 | ✅ Working | Only combination validated on hardware to date |
 
-Legend: ✅ Verified (run end-to-end on hardware) · 🟡 Community-reported (works, not verified by us) · ⬜ Untested
+Legend: ✅ Verified working (run end-to-end on our hardware) · ❌ Verified not working (tested, fails on our hardware)
 
 Other Pi models (Zero 2 W, Pi 4) and other PartyBox models are expected to work but are **untested** — the design is capability-based and does not branch on model. If you run a combination not listed here, please report it (see [CONTRIBUTING.md](CONTRIBUTING.md)); captures from an untested combination are valuable.
 
