@@ -15,7 +15,13 @@ import asyncio
 import logging
 from dataclasses import dataclass
 
-from partybox import ConnectionFailedError, ConnectionLostError, PartyBoxDevice, Scanner
+from partybox import (
+    BatteryStatusResponse,
+    ConnectionFailedError,
+    ConnectionLostError,
+    PartyBoxDevice,
+    Scanner,
+)
 from partybox.bluetooth.transport import NotConnectedError
 
 from partyboxd.config import SpeakerSettings
@@ -57,6 +63,9 @@ class StatusSnapshot:
     address: str | None
     firmware: str | None
     battery: int | None
+    #: Full battery reading (charging source, health, capacities), or None when
+    #: the speaker has no battery. ``battery`` above is its derived percentage.
+    battery_status: BatteryStatusResponse | None = None
 
 
 _DISCONNECTED = StatusSnapshot(
@@ -64,6 +73,7 @@ _DISCONNECTED = StatusSnapshot(
     address=None,
     firmware=None,
     battery=None,
+    battery_status=None,
 )
 
 
@@ -273,6 +283,7 @@ class DeviceManager:
         """Query initial device state and update the snapshot."""
         firmware: str | None = None
         battery: int | None = None
+        battery_status: BatteryStatusResponse | None = None
 
         try:
             firmware = await device.device_info.firmware_version()
@@ -282,16 +293,24 @@ class DeviceManager:
 
         try:
             if device.battery is not None:
-                battery = await device.battery.level()
-                log.info("battery level: %d%%", battery)
+                battery_status = await device.battery.status()
+                battery = battery_status.charge_percent
+                log.info(
+                    "battery: %s%% (%s)",
+                    battery,
+                    battery_status.charging_status.name.lower()
+                    if battery_status.charging_status is not None
+                    else "unknown source",
+                )
         except Exception as exc:
-            log.warning("could not read battery level: %s", exc)
+            log.warning("could not read battery status: %s", exc)
 
         self._snapshot = StatusSnapshot(
             connected=True,
             address=device.address,
             firmware=firmware,
             battery=battery,
+            battery_status=battery_status,
         )
 
     async def _disconnect(self) -> None:

@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from partybox import BatteryStatusResponse, ChargingStatus
 from partyboxd.api import create_app
 from partyboxd.config import ApiSettings, Settings
 from partyboxd.device.manager import DeviceNotConnectedError, StatusSnapshot
@@ -39,6 +40,13 @@ _WITH_BATTERY = StatusSnapshot(
     address="AA:BB:CC:DD:EE:FF",
     firmware="26.2.10",
     battery=84,
+    battery_status=BatteryStatusResponse(
+        remaining_capacity_mah=4200,
+        full_charge_capacity_mah=5000,
+        charging_status=ChargingStatus.CHARGING,
+        state_of_health_percent=99,
+        cycle_count=1,
+    ),
 )
 
 
@@ -145,7 +153,14 @@ async def test_battery_available() -> None:
     async with _make_client(_WITH_BATTERY) as client:
         r = await client.get("/api/v1/battery")
     assert r.status_code == 200
-    assert r.json() == {"level": 84}
+    assert r.json() == {
+        "level": 84,
+        "power_source": "mains",
+        "charging": True,
+        "remaining_playtime_minutes": None,
+        "state_of_health_percent": 99,
+        "cycle_count": 1,
+    }
 
 
 async def test_battery_not_available_returns_404() -> None:

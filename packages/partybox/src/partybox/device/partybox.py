@@ -7,7 +7,6 @@ from types import TracebackType
 from partybox.bluetooth.scanner import PartyBoxCandidate
 from partybox.bluetooth.transport import ControlTransport, NotConnectedError
 from partybox.protocol.codec import encode
-from partybox.protocol.constants import BATTERY_SERVICE_UUID
 from partybox.protocol.messages import FirmwareVersionRequest
 
 from .capabilities.battery import BatteryCapability
@@ -20,6 +19,32 @@ from .capabilities.volume import VolumeCapability
 # by whatever drains notifications). What matters is that the ATT write
 # round-trips the link.
 _VERIFY_PROBE = encode(FirmwareVersionRequest())
+
+
+# How long connect() waits for a battery reply before concluding the speaker
+# has no battery. Generous vs. the ~1 s a real PartyBox takes, to avoid a false
+# negative on a slow link.
+_BATTERY_DETECT_TIMEOUT = 3.0
+
+
+async def _detect_battery(
+    transport: ControlTransport, *, timeout: float = _BATTERY_DETECT_TIMEOUT
+) -> BatteryCapability | None:
+    """Return a battery capability if the speaker answers a battery query.
+
+    PartyBox models with a battery (including the 520) respond to the vendor
+    battery request (opcode ``0x9D`` → ``0x9E``); they do not expose the
+    standard BLE Battery Service, so a service probe cannot detect them. We
+    detect by asking: a speaker that answers has a battery. A speaker that stays
+    silent (times out) does not, and we return ``None``. Transport failures are
+    left to propagate so the caller can treat them as a connection problem.
+    """
+    capability = BatteryCapability(transport)
+    try:
+        await capability.status(timeout=timeout)
+    except TimeoutError:
+        return None
+    return capability
 
 
 class PartyBoxDevice:
@@ -53,20 +78,23 @@ class PartyBoxDevice:
         self._volume: VolumeCapability | None = None
 
     @classmethod
-    def _from_transport(cls, transport: ControlTransport) -> PartyBoxDevice:
+    def _from_transport(
+        cls, transport: ControlTransport, *, battery: bool = False
+    ) -> PartyBoxDevice:
         """Build a device from an already-connected transport.
 
         For testing only — allows capabilities to be exercised with a
         :class:`~partybox.bluetooth.MockTransport` without needing a real BLE
-        candidate or an actual ``connect()`` call.
+        candidate or an actual ``connect()`` call. ``battery`` explicitly sets
+        whether the battery capability is present (the real ``connect()`` path
+        detects this by probing; see :func:`_detect_battery`).
         """
         obj: PartyBoxDevice = object.__new__(cls)
         obj._candidate = None
         obj._transport = transport
         obj._power = PowerCapability(transport)
         obj._device_info = DeviceInfoCapability(transport)
-        has_battery = transport.has_service(BATTERY_SERVICE_UUID)
-        obj._battery = BatteryCapability(transport) if has_battery else None
+        obj._battery = BatteryCapability(transport) if battery else None
         obj._volume = VolumeCapability()
         return obj
 
@@ -93,8 +121,7 @@ class PartyBoxDevice:
         transport: ControlTransport = await self._candidate.connect()
         self._power = PowerCapability(transport)
         self._device_info = DeviceInfoCapability(transport)
-        if transport.has_service(BATTERY_SERVICE_UUID):
-            self._battery = BatteryCapability(transport)
+        self._battery = await _detect_battery(transport)
         self._volume = VolumeCapability()
         self._transport = transport
 
@@ -201,11 +228,12 @@ class PartyBoxDevice:
 
     @property
     def battery(self) -> BatteryCapability | None:
-        """Battery capability, or ``None`` on mains-powered models.
+        """Battery capability, or ``None`` if the speaker has no battery.
 
-        The PartyBox 520 is mains-powered and returns ``None`` after connecting.
-        Portable models (110, 310, …) expose the BLE Battery Service and return
-        a :class:`~partybox.device.capabilities.BatteryCapability`.
+        Detected at connect time by probing the vendor battery command: a
+        speaker that answers (the PartyBox 520 and other battery models do)
+        exposes a :class:`~partybox.device.capabilities.BatteryCapability`; one
+        that stays silent returns ``None``. See :func:`_detect_battery`.
 
         Raises:
             NotConnectedError: if :meth:`connect` has not been called.

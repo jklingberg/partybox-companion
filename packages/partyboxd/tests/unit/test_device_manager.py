@@ -8,8 +8,7 @@ import pytest
 from partybox.bluetooth.mock import MockTransport
 from partybox.device.partybox import PartyBoxDevice
 from partybox.protocol.codec import encode
-from partybox.protocol.constants import BATTERY_LEVEL_CHAR_UUID, BATTERY_SERVICE_UUID
-from partybox.protocol.messages import FirmwareVersionRequest
+from partybox.protocol.messages import BatteryStatusRequest, FirmwareVersionRequest
 from partyboxd.config import SpeakerSettings
 from partyboxd.device.events import ConnectedEvent, DisconnectedEvent, PowerChangedEvent
 from partyboxd.device.manager import DeviceManager, DeviceNotConnectedError
@@ -17,6 +16,14 @@ from partyboxd.device.manager import DeviceManager, DeviceNotConnectedError
 FIRMWARE_REQUEST = encode(FirmwareVersionRequest())
 # Real hardware capture: firmware 26.2.10
 FIRMWARE_RESPONSE = bytes.fromhex("AA22041a020a00")
+
+BATTERY_REQUEST = encode(BatteryStatusRequest())
+# Real PartyBox 520 capture (on battery); derives to 90 %. See test_codec.py.
+BATTERY_RESPONSE = bytes.fromhex(
+    "aa9e3f01104850303030362d4350303034313234320202ca02030200000402c810"
+    "0502b21206025c1207020100080163090102"
+    "0a01000b04e00d00000c04cc060000"
+)
 
 
 def _settings(**kw: object) -> SpeakerSettings:
@@ -65,16 +72,15 @@ async def test_refresh_populates_firmware() -> None:
 
 async def test_refresh_populates_battery_when_present() -> None:
     manager = _make_manager()
-    services = frozenset([BATTERY_SERVICE_UUID])
-    transport = MockTransport(address="AA:BB:CC:DD:EE:FF", services=services)
+    transport = MockTransport(address="AA:BB:CC:DD:EE:FF")
     transport.stub(FIRMWARE_REQUEST, FIRMWARE_RESPONSE)
-    transport.stub_read(BATTERY_LEVEL_CHAR_UUID, bytes([84]))
+    transport.stub(BATTERY_REQUEST, BATTERY_RESPONSE)
     await transport.connect()
-    device = PartyBoxDevice._from_transport(transport)
+    device = PartyBoxDevice._from_transport(transport, battery=True)
 
     await manager._refresh(device)
 
-    assert manager.snapshot.battery == 84
+    assert manager.snapshot.battery == 90
 
 
 async def test_refresh_tolerates_firmware_error() -> None:
