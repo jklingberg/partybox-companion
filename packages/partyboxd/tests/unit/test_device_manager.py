@@ -83,6 +83,25 @@ async def test_refresh_populates_battery_when_present() -> None:
     assert manager.snapshot.battery == 90
 
 
+async def test_poll_battery_recovers_missed_detection() -> None:
+    """A battery missed at connect (speaker asleep) is recovered on a later poll."""
+    manager = _make_manager()
+    transport = MockTransport(address="AA:BB:CC:DD:EE:FF")
+    transport.stub(FIRMWARE_REQUEST, FIRMWARE_RESPONSE)
+    transport.stub(BATTERY_REQUEST, BATTERY_RESPONSE)
+    await transport.connect()
+    # Detection missed the battery at connect (battery=False), as in standby.
+    device = PartyBoxDevice._from_transport(transport, battery=False)
+    await manager._refresh(device)
+    assert manager.snapshot.battery is None
+
+    # Speaker is awake now; the periodic poll re-detects and fills in the level.
+    await manager._poll_battery(device)
+
+    assert manager.snapshot.battery == 90
+    assert manager.snapshot.battery_status is not None
+
+
 async def test_refresh_tolerates_firmware_error() -> None:
     """If firmware query fails, snapshot still records connected=True with firmware=None."""
     manager = _make_manager(SpeakerSettings(scan_timeout=0.1, reconnect_delay=0.0))

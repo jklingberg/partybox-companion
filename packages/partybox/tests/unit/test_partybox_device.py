@@ -66,6 +66,24 @@ async def test_detect_battery_returns_none_when_speaker_silent() -> None:
         assert await _detect_battery(transport, timeout=0.05) is None
 
 
+async def test_redetect_battery_recovers_when_speaker_wakes() -> None:
+    transport = _connected_transport(has_battery=False)
+    async with transport:
+        device = PartyBoxDevice._from_transport(transport, battery=False)
+        assert device.battery is None
+        # Speaker was asleep at connect; it now answers the battery query.
+        transport.stub(BATTERY_REQUEST, BATTERY_RESPONSE)
+        cap = await device.redetect_battery()
+        assert isinstance(cap, BatteryCapability)
+        assert device.battery is cap
+        assert await device.battery.level() == 90
+
+
+async def test_redetect_battery_before_connect_raises() -> None:
+    with pytest.raises(NotConnectedError):
+        await _unconnected_device().redetect_battery()
+
+
 async def test_is_connected_reflects_transport_state() -> None:
     transport = _connected_transport()
     async with transport:

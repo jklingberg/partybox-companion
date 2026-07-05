@@ -649,6 +649,7 @@ async function boot() {
   updateHealthPill();
   connectWS();
   startSpotifyPolling();
+  startBatteryPolling();
 }
 
 // == Provisioning mode entry ==============================================
@@ -986,6 +987,17 @@ function startSpotifyPolling() {
     const r = await get('/api/v1/spotify');
     if (r && r.ok) { S.spotify = await r.json(); updateSpotify(); }
   }, 15000);
+}
+
+// The daemon re-reads battery on its own cadence while connected; poll so the
+// level (and mains/battery state) stay current without a page reload.
+function startBatteryPolling() {
+  if (MOCK || S._batteryPoll) return;
+  S._batteryPoll = setInterval(async () => {
+    if (!(S.speaker && S.speaker.connected)) return;
+    await loadBattery();
+    updateSpeaker();
+  }, 20000);
 }
 
 async function restartSpotify() {

@@ -145,6 +145,24 @@ class PartyBoxDevice:
         """Whether the control connection is currently live."""
         return self._transport is not None and self._transport.is_connected
 
+    async def redetect_battery(self) -> BatteryCapability | None:
+        """Re-run battery detection on the live connection and refresh the cache.
+
+        Detection at :meth:`connect` is one-shot. If the speaker was asleep (in
+        standby, which stays BLE-connectable but stops answering control
+        queries) at connect time, ``battery`` stays ``None`` for the whole
+        session even after it wakes. Calling this while connected re-probes and
+        recovers the capability. Returns the (possibly newly detected)
+        capability, or ``None`` if the speaker still reports no battery.
+
+        Raises:
+            NotConnectedError: if :meth:`connect` has not been called.
+        """
+        if self._transport is None:
+            raise NotConnectedError("call connect() before re-detecting battery")
+        self._battery = await _detect_battery(self._transport)
+        return self._battery
+
     @property
     def address(self) -> str | None:
         """BLE address of the connected speaker, or ``None`` when not connected.
