@@ -18,6 +18,8 @@ One intentional gap: `device_info.model()` and `serial_number()` raise `NotImple
 
 **M6 — Daemon**, **M7 — REST API**, **M8 — Companion Portal MVP**, **M9 — Spotify Connect**, **M10 — Portal UX**, **M11 — Companion Portal: Complete**, **M12 — Appliance Runtime**, and **M13 — Distribution & Packaging** are complete.
 
+**M14 — Network Provisioning**, **M15 — Unified Volume Model**, **M16 — First Boot Experience**, **M17 — Reliability**, and **M18 — Appliance Validation & QA** are complete. The appliance has been validated end-to-end on real hardware (RC13); one physical-action item (FAULT-05 stale-bond hardware recovery — fix merged, unit-tested) is deferred to M19's fresh-pairing validation. Next up is **M19 — Release Candidate**. See [runs/2026-07-02-rc13.md](validation/runs/2026-07-02-rc13.md).
+
 ---
 
 ## Design filter
@@ -441,7 +443,7 @@ M14 gets the appliance onto the network and binds port 80. M16 validates the end
 
 ---
 
-### M17 — Reliability
+### M17 — Reliability ✅
 
 **Packages:** `companion`, `partyboxd`
 
@@ -465,7 +467,7 @@ Build confidence in the appliance's ability to run unattended. M17 introduces no
 
 ---
 
-### M18 — Appliance Validation & QA
+### M18 — Appliance Validation & QA ✅
 
 **Packages:** `companion`, `partyboxd`
 
@@ -496,29 +498,32 @@ surprise us, fix what blocks release, and document the rest.
   operation (VAL-LOG scenarios pass).
 * The appliance demonstrates stable unattended operation (soak scenarios).
 
-**Status:** RC13 run essentially complete — see
-[runs/2026-07-02-rc13.md](validation/runs/2026-07-02-rc13.md). Every
-autonomously-runnable scenario has a verdict; release-blocking defects found
-and fixed: fresh pairing, bluetoothd-restart zombie recovery, corrupt-config
-crash loop, debug-bundle logs, plus incident fixes (librespot log surfacing,
-playback-state detection) and one confirmed audio-UX defect deferred to M19
-(INC-2: WirePlumber's 0.40 default sink volume ships music at 40 % — pin the
-A2DP node to 100 % on connect).
-
-**Remaining — one human-assisted scenario:**
-- **FAULT-05** — stale-bond recovery (needs `bluetoothctl remove` + a
-  pairing-mode button press; best run right before a deliberate re-pair,
-  which also re-confirms BOOT-02's happy path).
-
-SPKR-06 (out-of-range walk) was **descoped** — the Pi and speaker are a
-co-located fixed install, so BLE range loss is not a realistic consumer
-scenario, and its supervision-timeout code path is already exercised by
-speaker power-off (SPKR-02/05). See the suite for the rationale.
-
-Everything else — boot/reboot, speaker lifecycle, host lifecycle, Bluetooth
-contention (BT-01/02/03), streaming (STREAM-01/02/03/04), fault injection
+**Status: ✅ Complete.** The RC13 run was executed end-to-end on real
+hardware — see [runs/2026-07-02-rc13.md](validation/runs/2026-07-02-rc13.md).
+Every autonomously-runnable scenario has a verdict; every release-blocking
+defect found was fixed: fresh pairing, bluetoothd-restart zombie recovery,
+corrupt-config crash loop, debug-bundle logs, plus incident fixes (librespot
+log surfacing, playback-state detection). Validated coverage spans
+boot/reboot, speaker lifecycle, host lifecycle, Bluetooth contention
+(BT-01/02/03), streaming (STREAM-01/02/03/04), fault injection
 (FAULT-01/02/03/04/06), network, resources, soak (11.5 h continuous), log
-quality, and the full REST/auth surface (API-01/02/03/04) — is validated.
+quality, and the full REST/auth surface (API-01/02/03/04).
+
+**Deferred (do not block M18 close):**
+- **FAULT-05** — stale-bond recovery. The fix is merged and unit-tested
+  (a stale bond now yields a clean, classified failure instead of a
+  traceback; see [ADR-028](adr/028-audio-readiness-model.md) and PR #44); the
+  end-to-end hardware recovery leg needs `bluetoothctl remove` + a
+  pairing-mode button press, so it is carried into **M19's fresh-pairing
+  validation** (the same physical action), tracked in the run report.
+- **INC-2** — WirePlumber's `0.40` default sink volume ships music at 40 %
+  (music quiet vs. loud native sounds). Confirmed audio-UX defect; the
+  product fix (pin the A2DP node to 100 % on connect) is on the **M19** punch
+  list.
+- **SPKR-06** (out-of-range walk) was **descoped** — the Pi and speaker are a
+  co-located fixed install, so BLE range loss is not a realistic consumer
+  scenario, and its supervision-timeout code path is already exercised by
+  speaker power-off (SPKR-02/05). See the suite for the rationale.
 
 ---
 
@@ -535,13 +540,13 @@ No significant new functionality. This milestone verifies that all the pieces wo
 - Version bumped to `1.0.0` in all packages
 - Bug fixing only — no scope additions
 
-**Done when:** Every M12–M17 milestone is complete. A clean flash-to-stream walkthrough succeeds without workarounds. The project is ready to tag.
+**Done when:** Every M12–M18 milestone is complete. A clean flash-to-stream walkthrough succeeds without workarounds. The project is ready to tag.
 
 ---
 
 ### v1.0
 
-Not a milestone. The point at which M12–M18 are complete and the release candidate is accepted.
+Not a milestone. The point at which M12–M19 are complete and the release candidate is accepted.
 
 ```
 git tag v1.0.0
