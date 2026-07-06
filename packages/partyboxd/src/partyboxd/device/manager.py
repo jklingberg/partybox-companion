@@ -259,9 +259,13 @@ class DeviceManager:
             if drain in done:
                 await drain  # propagates ConnectionLostError / NotConnectedError
                 return
-            # Interval elapsed and the link still looks alive. Reclaim the single
-            # notification reader (drain owns it) so we can do request/response
-            # round-trips: the liveness probe, then a battery refresh.
+            # Interval elapsed and the link still looks alive. The transport
+            # supports only ONE notification consumer at a time (a single
+            # receive() reader); drain_until_disconnect() is currently that
+            # consumer. Cancel it to reclaim the reader before we issue any
+            # request/response round-trip (the liveness probe, then the battery
+            # refresh) — otherwise the response would race into the drain and be
+            # discarded. Drain is recreated at the top of the next iteration.
             drain.cancel()
             await asyncio.gather(drain, return_exceptions=True)
             try:
@@ -289,9 +293,13 @@ class DeviceManager:
                 return
             status = await capability.status()
         except ConnectionLostError, NotConnectedError:
+            # A dead link must trigger a reconnect, not be silently skipped.
             raise
-        except Exception as exc:  # asleep speaker, timeout, malformed frame
-            log.debug("battery poll skipped: %s", exc)
+        except TimeoutError as exc:
+            # The only expected operational failure: the speaker is asleep
+            # (standby) or slow to answer. Not fatal — try again next tick.
+            # Anything else (a programmer error) propagates deliberately.
+            log.debug("battery poll skipped, speaker not answering: %s", exc)
             return
 
         level = status.charge_percent

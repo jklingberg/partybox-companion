@@ -989,8 +989,10 @@ function startSpotifyPolling() {
   }, 15000);
 }
 
-// The daemon re-reads battery on its own cadence while connected; poll so the
-// level (and mains/battery state) stay current without a page reload.
+// The daemon re-reads battery on its own cadence (_HEALTH_CHECK_INTERVAL, 15s in
+// device/manager.py) while connected; this poll just surfaces that fresh snapshot
+// without a page reload. Keep this interval >= the daemon's — polling faster only
+// re-fetches an unchanged value. If one cadence changes, revisit the other.
 function startBatteryPolling() {
   if (MOCK || S._batteryPoll) return;
   S._batteryPoll = setInterval(async () => {
