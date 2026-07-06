@@ -102,6 +102,34 @@ async def test_poll_battery_recovers_missed_detection() -> None:
     assert manager.snapshot.battery_status is not None
 
 
+async def test_poll_battery_clears_after_sustained_no_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A speaker that stops answering (standby) clears the cached reading, so
+    a stale value is not served indefinitely — but only after a tolerance."""
+    manager = _make_manager()
+    transport = MockTransport(address="AA:BB:CC:DD:EE:FF")
+    transport.stub(FIRMWARE_REQUEST, FIRMWARE_RESPONSE)
+    transport.stub(BATTERY_REQUEST, BATTERY_RESPONSE)
+    await transport.connect()
+    device = PartyBoxDevice._from_transport(transport, battery=True)
+    await manager._refresh(device)
+    assert manager.snapshot.battery == 90
+
+    # Speaker goes to standby: battery status now times out.
+    async def _timeout(*_a: object, **_k: object) -> object:
+        raise TimeoutError
+
+    assert device.battery is not None
+    monkeypatch.setattr(device.battery, "status", _timeout)
+
+    await manager._poll_battery(device)  # first miss — tolerated, value kept
+    assert manager.snapshot.battery == 90
+    await manager._poll_battery(device)  # second miss — cleared
+    assert manager.snapshot.battery is None
+    assert manager.snapshot.battery_status is None
+
+
 async def test_refresh_tolerates_firmware_error() -> None:
     """If firmware query fails, snapshot still records connected=True with firmware=None."""
     manager = _make_manager(SpeakerSettings(scan_timeout=0.1, reconnect_delay=0.0))

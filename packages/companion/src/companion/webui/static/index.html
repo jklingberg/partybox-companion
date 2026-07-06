@@ -742,8 +742,16 @@ function updateSpeaker() {
     const bat = batteryText();
     if (bat) detail += '  ·  ' + bat;
     id('sp-detail').textContent = detail;
-    id('btn-on').classList.remove('hidden');
-    id('btn-off').classList.remove('hidden');
+    // The speaker exposes no direct power-state signal. It answers control
+    // queries (so it reports battery) only when awake, and goes silent in
+    // standby — so a live battery reading is our proxy for "on". The daemon
+    // clears the reading after the speaker stops answering, making 404 (→ null
+    // here) a live standby signal. Show OFF when awake, ON when asleep; if the
+    // signal is ever ambiguous, fall back to showing both.
+    const awake  = !!(S.battery && typeof S.battery.level === 'number');
+    const asleep = S.battery === null;
+    id('btn-on').classList.toggle('hidden', awake);
+    id('btn-off').classList.toggle('hidden', asleep);
   } else {
     id('sp-detail').textContent = sp ? 'Reconnecting automatically' : '—';
     id('btn-on').classList.add('hidden');

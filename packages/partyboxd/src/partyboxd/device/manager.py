@@ -46,6 +46,13 @@ _HEALTH_CHECK_INTERVAL = 15.0
 # health check that exists to detect exactly that state.
 _PROBE_TIMEOUT = 10.0
 
+# Consecutive battery-poll timeouts before the cached reading is cleared. The
+# speaker stops answering control queries in standby (while staying BLE-
+# connected), so a sustained run of misses means "asleep": we drop the stale
+# battery so "no battery" reliably signals standby. A small tolerance avoids
+# clearing on a single transient miss while the speaker is genuinely awake.
+_BATTERY_MISS_LIMIT = 2
+
 
 class DeviceNotConnectedError(Exception):
     """Raised when a device operation is attempted while the speaker is not connected."""
@@ -97,6 +104,8 @@ class DeviceManager:
         self._snapshot: StatusSnapshot = _DISCONNECTED
         self._device: PartyBoxDevice | None = None
         self._bus = EventBus()
+        #: Consecutive battery-poll timeouts on the current connection.
+        self._battery_poll_misses = 0
 
     @property
     def snapshot(self) -> StatusSnapshot:
@@ -299,9 +308,17 @@ class DeviceManager:
             # The only expected operational failure: the speaker is asleep
             # (standby) or slow to answer. Not fatal — try again next tick.
             # Anything else (a programmer error) propagates deliberately.
+            self._battery_poll_misses += 1
+            if (
+                self._battery_poll_misses >= _BATTERY_MISS_LIMIT
+                and self._snapshot.battery is not None
+            ):
+                log.info("speaker not answering battery poll (likely standby); clearing")
+                self._snapshot = replace(self._snapshot, battery=None, battery_status=None)
             log.debug("battery poll skipped, speaker not answering: %s", exc)
             return
 
+        self._battery_poll_misses = 0
         level = status.charge_percent
         prev = self._snapshot
         if level == prev.battery and status == prev.battery_status:
@@ -320,6 +337,7 @@ class DeviceManager:
 
     async def _refresh(self, device: PartyBoxDevice) -> None:
         """Query initial device state and update the snapshot."""
+        self._battery_poll_misses = 0
         firmware: str | None = None
         battery: int | None = None
         battery_status: BatteryStatusResponse | None = None
