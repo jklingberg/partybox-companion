@@ -7,7 +7,7 @@ import json
 import zipfile
 from io import BytesIO
 from pathlib import Path
-from unittest.mock import MagicMock, PropertyMock
+from unittest.mock import AsyncMock, MagicMock, PropertyMock
 
 from companion.config import SpotifySettings
 from companion.config_store import ConfigStore, PortalConfig
@@ -278,3 +278,99 @@ async def test_debug_bundle_has_content_disposition(tmp_path: Path) -> None:
         r = await client.get("/api/v1/debug/bundle")
     assert "attachment" in r.headers.get("content-disposition", "")
     assert ".zip" in r.headers.get("content-disposition", "")
+
+
+# ---------------------------------------------------------------------------
+# POST /api/v1/factory-reset
+# ---------------------------------------------------------------------------
+
+
+def _reset_client(
+    tmp_path: Path,
+    *,
+    sink_address: str | None = None,
+    audio: MagicMock | None = None,
+    pairing: MagicMock | None = None,
+) -> tuple[AsyncClient, MagicMock, ConfigStore]:
+    spotify = MagicMock()
+    type(spotify).status = PropertyMock(return_value=_READY)
+    spotify.settings = SpotifySettings(connect_name="Living Room", bitrate=160, backend="pipewire")
+    spotify.update_settings = MagicMock()
+
+    store = ConfigStore(tmp_path / "config.json")
+    store.write(
+        PortalConfig(
+            device_name="Den",
+            spotify_connect_name="Living Room",
+            spotify_bitrate=160,
+            audio_sink_address=sink_address,
+        )
+    )
+
+    app = create_daemon_app(_make_manager(), DaemonSettings())
+    app.include_router(make_services_router(spotify, store, audio=audio, pairing=pairing))
+    client = AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+    return client, spotify, store
+
+
+async def test_factory_reset_returns_204(tmp_path: Path) -> None:
+    client, _, _ = _reset_client(tmp_path)
+    async with client:
+        r = await client.post("/api/v1/factory-reset")
+    assert r.status_code == 204
+
+
+async def test_factory_reset_clears_config(tmp_path: Path) -> None:
+    client, _, store = _reset_client(tmp_path, sink_address="50:1B:6A:14:FD:1D")
+    async with client:
+        r = await client.post("/api/v1/factory-reset")
+    assert r.status_code == 204
+    assert store.read() == PortalConfig()
+
+
+async def test_factory_reset_forgets_audio_and_removes_bond(tmp_path: Path) -> None:
+    audio = MagicMock()
+    pairing = MagicMock()
+    pairing.forget = AsyncMock()
+    client, _, _ = _reset_client(
+        tmp_path, sink_address="50:1B:6A:14:FD:1D", audio=audio, pairing=pairing
+    )
+    async with client:
+        await client.post("/api/v1/factory-reset")
+    audio.forget.assert_called_once_with()
+    pairing.forget.assert_awaited_once_with("50:1B:6A:14:FD:1D")
+
+
+async def test_factory_reset_skips_bond_removal_when_no_address(tmp_path: Path) -> None:
+    pairing = MagicMock()
+    pairing.forget = AsyncMock()
+    client, _, _ = _reset_client(tmp_path, sink_address=None, pairing=pairing)
+    async with client:
+        await client.post("/api/v1/factory-reset")
+    pairing.forget.assert_not_awaited()
+
+
+async def test_factory_reset_restarts_spotify_with_defaults(tmp_path: Path) -> None:
+    client, spotify, _ = _reset_client(tmp_path)
+    async with client:
+        await client.post("/api/v1/factory-reset")
+    spotify.update_settings.assert_called_once()
+    new = spotify.update_settings.call_args[0][0]
+    assert new.connect_name == SpotifySettings().connect_name
+    assert new.bitrate == SpotifySettings().bitrate
+    assert new.backend == "pipewire"  # env-driven backend preserved, not user config
+
+
+async def test_factory_reset_resilient_to_bond_removal_failure(tmp_path: Path) -> None:
+    audio = MagicMock()
+    pairing = MagicMock()
+    pairing.forget = AsyncMock(side_effect=RuntimeError("dbus down"))
+    client, spotify, store = _reset_client(
+        tmp_path, sink_address="50:1B:6A:14:FD:1D", audio=audio, pairing=pairing
+    )
+    async with client:
+        r = await client.post("/api/v1/factory-reset")
+    assert r.status_code == 204
+    # Config is still wiped even though bond removal raised.
+    assert store.read() == PortalConfig()
+    spotify.update_settings.assert_called_once()

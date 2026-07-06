@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import logging
 import platform
 import zipfile
 from datetime import UTC, datetime
@@ -23,6 +24,8 @@ from companion.services.audio import AudioService
 from companion.services.pairing import PairingService, PairingState
 from companion.services.spotify import SpotifyService
 from companion.volume import VolumeState
+
+log = logging.getLogger(__name__)
 
 _JOURNAL_LINES = 500
 
@@ -262,6 +265,62 @@ def make_services_router(
             backend=spotify.settings.backend,
         )
         spotify.update_settings(new_settings)
+
+    # ------------------------------------------------------------------
+    # POST /api/v1/factory-reset — unauthenticated
+    # ------------------------------------------------------------------
+
+    @router.post(
+        "/factory-reset",
+        status_code=204,
+        summary="Factory reset the appliance",
+    )
+    async def post_factory_reset() -> None:
+        """Return the appliance to its as-shipped state without a reboot.
+
+        The contract — "indistinguishable from a freshly-flashed image" — and
+        the rule for what future state must be added here are recorded in
+        docs/adr/031-factory-reset-contract.md.
+
+        Clears every piece of state that survives a power cycle, in order:
+
+        1. Un-sets the live A2DP sink so the audio loop stops chasing the
+           speaker whose bond is about to be removed.
+        2. Removes the Bluetooth bond (``Adapter1.RemoveDevice``) so the
+           speaker must be paired again.
+        3. Deletes the saved configuration — device name, Spotify name,
+           bitrate, remembered speaker — reverting to factory defaults.
+        4. Restarts Spotify Connect so its advertised name reflects the
+           reset immediately.
+
+        Bond removal is best-effort: a BlueZ failure is logged but does not
+        abort the reset, so the configuration is always cleared. The appliance
+        keeps running and returns to the un-paired state a fresh image starts
+        in — no reboot required.
+
+        **Responses:**
+
+        | Code | Meaning |
+        |------|---------|
+        | 204  | Reset complete |
+        """
+        cfg = config.read()
+        mac = cfg.audio_sink_address
+
+        if audio is not None:
+            audio.forget()
+
+        if mac is not None and pairing is not None:
+            try:
+                await pairing.forget(mac)
+            except Exception as exc:
+                log.warning("Factory reset: bond removal for %s failed: %s", mac, exc)
+
+        config.reset()
+
+        defaults = SpotifySettings(backend=spotify.settings.backend)
+        spotify.update_settings(defaults)
+        log.info("Factory reset complete — appliance returned to defaults")
 
     # ------------------------------------------------------------------
     # GET /api/v1/debug/bundle — unauthenticated

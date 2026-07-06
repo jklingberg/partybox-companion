@@ -40,4 +40,5 @@ New ADRs should be added when a significant design decision is made. Superseded 
 | [028](028-audio-readiness-model.md) | Audio Readiness Model and A2DP Connection Management | Accepted |
 | [029](029-python-3-14-standardization.md) | Python 3.14 Standardization | Accepted |
 | [030](030-bluez-gatt-configuration.md) | BlueZ GATT Configuration: Disable EATT, Enable AutoEnable | Accepted |
+| [031](031-factory-reset-contract.md) | Factory Reset Contract | Accepted |
 | [032](032-capability-probing.md) | Detect Optional Capabilities by Probing the Vendor Protocol | Accepted |
