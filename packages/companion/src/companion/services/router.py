@@ -110,6 +110,8 @@ def _device_snapshot_dict(snapshot: StatusSnapshot | None) -> dict[str, object]:
     return {
         "available": True,
         "connected": snapshot.connected,
+        "speaker_state": snapshot.speaker_state,
+        "has_battery": snapshot.has_battery,
         "address": snapshot.address,
         "firmware": snapshot.firmware,
         "battery_percent": snapshot.battery,

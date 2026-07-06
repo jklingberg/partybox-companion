@@ -299,7 +299,12 @@ async def test_connected_event_emitted_after_refresh(monkeypatch: pytest.MonkeyP
     await asyncio.wait_for(connected_event.wait(), timeout=2.0)
     await asyncio.sleep(0.05)
 
+    # _refresh() sets the initial snapshot (emitting SpeakerStateChangedEvent
+    # for the off->on transition) before _connect_and_maintain emits
+    # ConnectedEvent explicitly — find it regardless of exact ordering.
     event = await asyncio.wait_for(queue.get(), timeout=1.0)
+    if not isinstance(event, ConnectedEvent):
+        event = await asyncio.wait_for(queue.get(), timeout=1.0)
     assert isinstance(event, ConnectedEvent)
     assert event.address == "BB:CC:DD:EE:FF:AA"
     assert event.firmware == "26.2.10"

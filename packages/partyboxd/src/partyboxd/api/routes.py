@@ -25,6 +25,7 @@ class HealthResponse(BaseModel):
     version: str
     ble_connected: bool
     audio_ready: bool | None = None
+    speaker_state: Literal["off", "standby", "on"]
 
 
 class SpeakerResponse(BaseModel):
@@ -130,7 +131,11 @@ def make_router(
         has an active BLE GATT connection to the speaker.  ``audio_ready``
         indicates whether the appliance can currently produce audio (A2DP
         connected); ``null`` when running as standalone partyboxd without
-        Companion.
+        Companion. ``speaker_state`` is the coarse power state derived from
+        the connection and battery signal: ``"off"`` (BLE disconnected —
+        speaker unplugged or unreachable), ``"standby"`` (BLE connected but
+        the speaker is asleep — only detectable on battery-capable models),
+        or ``"on"``.
 
         No authentication required — safe to poll from monitoring tools.
 
@@ -145,6 +150,7 @@ def make_router(
             version=partyboxd.__version__,
             ble_connected=manager.snapshot.connected,
             audio_ready=audio_ready_fn() if audio_ready_fn is not None else None,
+            speaker_state=manager.snapshot.speaker_state,
         )
 
     # ------------------------------------------------------------------

@@ -604,10 +604,6 @@ const S = {
   health: null, speaker: null, battery: null, spotify: null, audio: null,
   wifi: null,
   config: { device_name: 'PartyBox', spotify_connect_name: 'PartyBox Companion', spotify_bitrate: 320 },
-  // Whether we have ever observed a real battery reading on this speaker.
-  // Only then can "battery is silent" be trusted as a standby signal rather
-  // than "this model has no battery" — see docs/design/portal-redesign.md §2.
-  hasSeenBattery: false,
   apiKey: localStorage.getItem('_pb_key') || null,
   ws: null,
   fetchFailed: false,
@@ -621,7 +617,7 @@ const MOCK = location.search.includes('mock');
 const MOCK_PROVISION = location.search.includes('provision');
 const MOCK_STATE = new URLSearchParams(location.search).get('state'); // off|standby|pair|on
 
-const MOCK_HEALTH  = { status: 'ok', version: '0.2.0-dev', ble_connected: true, audio_ready: true };
+const MOCK_HEALTH  = { status: 'ok', version: '0.2.0-dev', ble_connected: true, audio_ready: true, speaker_state: 'on' };
 const MOCK_SPEAKER = { connected: true, address: 'AA:BB:CC:DD:EE:FF', firmware: '26.2.10', battery: 87 };
 const MOCK_BATTERY = { level: 87, power_source: 'battery', charging: false,
                         remaining_playtime_minutes: 612, state_of_health_percent: 99, cycle_count: 4 };
@@ -684,10 +680,9 @@ function bootMock() {
   S.audio   = MOCK_AUDIO;
   S.config  = MOCK_CONFIG;
   S.battery = MOCK_BATTERY;
-  S.hasSeenBattery = true;
 
-  if (MOCK_STATE === 'off') { S.health = { ...MOCK_HEALTH, ble_connected: false }; S.battery = null; }
-  if (MOCK_STATE === 'standby') { S.battery = null; }
+  if (MOCK_STATE === 'off') { S.health = { ...MOCK_HEALTH, ble_connected: false, speaker_state: 'off' }; S.battery = null; }
+  if (MOCK_STATE === 'standby') { S.health = { ...MOCK_HEALTH, speaker_state: 'standby' }; S.battery = null; }
   if (MOCK_STATE === 'pair') { S.audio = { connected: false, address: null, pairing_state: 'idle' }; }
 
   S.scene = deriveScene();
@@ -730,28 +725,25 @@ async function refreshSpeaker() {
   if (r && r.ok) S.speaker = await r.json();
   if (!(S.speaker && S.speaker.connected)) { S.battery = null; return; }
   const br = await get('/api/v1/battery', true);
-  if (br && br.ok) {
-    S.battery = await br.json();
-    S.hasSeenBattery = true;
-  } else {
-    S.battery = null;
-  }
+  S.battery = (br && br.ok) ? await br.json() : null;
 }
 
 // The scene is derived, never stored ad hoc, so it can never drift from the
 // signals that produced it. See docs/design/portal-redesign.md §2.
+//
+// off/standby/on come straight from health.speaker_state — computed in the
+// daemon (partyboxd/device/manager.py StatusSnapshot.speaker_state), which
+// knows the speaker's battery *capability* independently of its current
+// reading. That fixes a real gap the old client-side heuristic had: if the
+// Portal loaded while the speaker was already asleep, it had never observed
+// a battery value and defaulted to ON — showing a "Turn off" button on a
+// speaker that was already off.
 function deriveScene() {
   if (S.fetchFailed && !S.health) return Scene.UNREACHABLE;
   if (!S.health) return Scene.BOOT;
-  if (!S.health.ble_connected) return Scene.OFF;
+  if (S.health.speaker_state === 'off') return Scene.OFF;
   if (!S.audio || !S.audio.address) return Scene.PAIR;
-  // Battery-capable speakers go silent (no reading) when put into standby via
-  // their own power button, while the BLE link stays up — see manager.py
-  // _BATTERY_MISS_LIMIT. Only trust that signal once we've seen a real
-  // reading; otherwise a batteryless model would be mistaken for "asleep".
-  const awake  = S.battery && typeof S.battery.level === 'number';
-  const silent = !awake && S.hasSeenBattery;
-  if (silent) return Scene.STANDBY;
+  if (S.health.speaker_state === 'standby') return Scene.STANDBY;
   return Scene.ON;
 }
 
@@ -1138,6 +1130,7 @@ function onEvent(ev) {
   switch (ev.type) {
     case 'connected':
     case 'disconnected':
+    case 'speaker_state_changed':
     case 'power_changed':
       refresh().then(render);
       break;
@@ -1221,7 +1214,6 @@ async function factoryReset() {
   if (r && r.status === 204) {
     toast('Appliance reset to factory defaults.');
     closeSettings();
-    S.hasSeenBattery = false;
     await refresh();
     render();
   } else {

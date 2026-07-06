@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, replace
+from typing import Literal
 
 from partybox import (
     BatteryStatusResponse,
@@ -31,6 +32,7 @@ from partyboxd.device.events import (
     DisconnectedEvent,
     EventBus,
     PowerChangedEvent,
+    SpeakerStateChangedEvent,
 )
 
 log = logging.getLogger(__name__)
@@ -73,6 +75,27 @@ class StatusSnapshot:
     #: Full battery reading (charging source, health, capacities), or None when
     #: the speaker has no battery. ``battery`` above is its derived percentage.
     battery_status: BatteryStatusResponse | None = None
+    #: Whether the connected speaker has a battery capability at all — known
+    #: once connected (``PartyBoxDevice.battery is not None``), independent of
+    #: whether it is currently reporting a value. ``False`` while disconnected.
+    has_battery: bool = False
+
+    @property
+    def speaker_state(self) -> Literal["off", "standby", "on"]:
+        """Coarse power state, derived — never stored redundantly.
+
+        Battery-capable speakers stop answering control queries when put
+        into standby via their own power button while the BLE link stays up
+        (see ``_BATTERY_MISS_LIMIT`` below); a silent battery reading on a
+        battery-capable speaker is that "asleep" signal. Speakers with no
+        battery capability cannot be distinguished from "on" this way — they
+        report "on" whenever connected, since no better signal exists yet.
+        """
+        if not self.connected:
+            return "off"
+        if self.has_battery and self.battery is None:
+            return "standby"
+        return "on"
 
 
 _DISCONNECTED = StatusSnapshot(
@@ -81,6 +104,7 @@ _DISCONNECTED = StatusSnapshot(
     firmware=None,
     battery=None,
     battery_status=None,
+    has_battery=False,
 )
 
 
@@ -122,6 +146,19 @@ class DeviceManager:
     def unsubscribe(self, queue: asyncio.Queue[DeviceEvent]) -> None:
         """Stop delivering events to *queue*."""
         self._bus.unsubscribe(queue)
+
+    def _set_snapshot(self, snapshot: StatusSnapshot) -> None:
+        """Update the snapshot, emitting SpeakerStateChangedEvent on transition.
+
+        The single choke point for snapshot mutation, so ``speaker_state``
+        transitions (off/standby/on) are never missed regardless of which
+        code path produced the new snapshot.
+        """
+        prev_state = self._snapshot.speaker_state
+        self._snapshot = snapshot
+        new_state = snapshot.speaker_state
+        if new_state != prev_state:
+            self._bus.emit(SpeakerStateChangedEvent(state=new_state))
 
     async def power_on(self) -> None:
         """Send a power-on command to the connected speaker.
@@ -247,7 +284,7 @@ class DeviceManager:
             log.info("disconnected from %s", device.address)
         finally:
             self._device = None
-            self._snapshot = _DISCONNECTED
+            self._set_snapshot(_DISCONNECTED)
             self._bus.emit(DisconnectedEvent())
 
     async def _drain_with_health_check(self, device: PartyBoxDevice) -> None:
@@ -300,6 +337,11 @@ class DeviceManager:
                 capability = await device.redetect_battery()
             if capability is None:
                 return
+            # Redetection can confirm battery capability after connect (the
+            # speaker was asleep and gave no answer at _refresh() time) — make
+            # sure has_battery reflects that even if status() below times out.
+            if not self._snapshot.has_battery:
+                self._set_snapshot(replace(self._snapshot, has_battery=True))
             status = await capability.status()
         except ConnectionLostError, NotConnectedError:
             # A dead link must trigger a reconnect, not be silently skipped.
@@ -314,7 +356,7 @@ class DeviceManager:
                 and self._snapshot.battery is not None
             ):
                 log.info("speaker not answering battery poll (likely standby); clearing")
-                self._snapshot = replace(self._snapshot, battery=None, battery_status=None)
+                self._set_snapshot(replace(self._snapshot, battery=None, battery_status=None))
             log.debug("battery poll skipped, speaker not answering: %s", exc)
             return
 
@@ -325,7 +367,7 @@ class DeviceManager:
             return
         if prev.battery is None and level is not None:
             log.info("battery recovered on re-probe: %d%%", level)
-        self._snapshot = replace(prev, battery=level, battery_status=status)
+        self._set_snapshot(replace(prev, battery=level, battery_status=status))
 
     async def _scan(self) -> PartyBoxDevice | None:
         log.info("scanning for speaker")
@@ -341,6 +383,8 @@ class DeviceManager:
         firmware: str | None = None
         battery: int | None = None
         battery_status: BatteryStatusResponse | None = None
+        battery_capability = device.battery
+        has_battery = battery_capability is not None
 
         try:
             firmware = await device.device_info.firmware_version()
@@ -349,8 +393,8 @@ class DeviceManager:
             log.warning("could not read firmware version: %s", exc)
 
         try:
-            if device.battery is not None:
-                battery_status = await device.battery.status()
+            if battery_capability is not None:
+                battery_status = await battery_capability.status()
                 battery = battery_status.charge_percent
                 log.info(
                     "battery: %s%% (%s)",
@@ -362,12 +406,15 @@ class DeviceManager:
         except Exception as exc:
             log.warning("could not read battery status: %s", exc)
 
-        self._snapshot = StatusSnapshot(
-            connected=True,
-            address=device.address,
-            firmware=firmware,
-            battery=battery,
-            battery_status=battery_status,
+        self._set_snapshot(
+            StatusSnapshot(
+                connected=True,
+                address=device.address,
+                firmware=firmware,
+                battery=battery,
+                battery_status=battery_status,
+                has_battery=has_battery,
+            )
         )
 
     async def _disconnect(self) -> None:
@@ -378,4 +425,4 @@ class DeviceManager:
                 log.warning("error during disconnect: %s", exc)
             finally:
                 self._device = None
-                self._snapshot = _DISCONNECTED
+                self._set_snapshot(_DISCONNECTED)

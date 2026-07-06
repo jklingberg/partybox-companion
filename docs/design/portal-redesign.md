@@ -1,6 +1,8 @@
 # Companion Portal Redesign — "Ember"
 
-Status: **proposal** · Author: UX redesign pass, 2026-07-06
+Status: **in progress** — steps 1–2 of §13 shipped 2026-07-06 (commits
+`2eb3342`, and the `speaker_state` follow-up); steps 3–4 remain.
+Author: UX redesign pass, 2026-07-06
 
 A ground-up redesign of the Companion Portal. Goal: the Portal should feel
 like the control surface of a premium consumer audio appliance — not a
@@ -410,8 +412,15 @@ scenes — one concession to serviceability, visually near-invisible.
 
 ## 12. Further simplification (backend-assisted)
 
-1. **`speaker_state` in `/health` + WS event** (§2) — deletes all frontend
-   power inference.
+1. **`speaker_state` in `/health` + WS event** (§2) — **shipped.**
+   `StatusSnapshot.speaker_state` (`partyboxd/device/manager.py`) derives
+   off/standby/on from `connected` + a new `has_battery` capability flag
+   (checked once via `device.battery is not None`, not inferred from a
+   client-side "have we ever seen a reading" heuristic); `SpeakerStateChangedEvent`
+   fires over the WS on any transition. The frontend's `deriveScene()` now
+   reads `health.speaker_state` directly — this closed a real bug where the
+   Portal defaulted to the ON scene (showing a "Turn off" button on an
+   asleep speaker) if it loaded before ever observing a battery value.
 2. **Push, don't poll.** Add `audio_changed` / `spotify_changed` /
    `pairing_progress` WS events; drop the 2s/15s/20s polling loops to a
    single slow reconciliation poll (~30s safety net). Kills the staleness

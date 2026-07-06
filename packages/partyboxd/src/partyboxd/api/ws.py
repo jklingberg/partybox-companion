@@ -41,6 +41,7 @@ def make_ws_router(manager: DeviceManager, settings: Settings) -> APIRouter:
         |----------|--------|------|
         | ``connected`` | ``address``, ``firmware``, ``battery`` | Speaker connected |
         | ``disconnected`` | — | Speaker disconnected |
+        | ``speaker_state_changed`` | ``state`` (off/standby/on) | Power state changed |
         | ``power_changed`` | ``state`` (``"on"`` or ``"off"``) | Power command accepted |
         | ``ping`` | — | Heartbeat sent every ~20 s when idle |
 
