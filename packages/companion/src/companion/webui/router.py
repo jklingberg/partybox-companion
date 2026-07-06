@@ -67,8 +67,14 @@ def make_portal_router(settings: CompanionSettings, store: ConfigStore) -> APIRo
     # ------------------------------------------------------------------
 
     @router.get("/", response_class=HTMLResponse, include_in_schema=False)
-    async def portal() -> str:
-        """Serve the Companion Portal single-page application."""
-        return (_STATIC_DIR / "index.html").read_text()
+    async def portal() -> HTMLResponse:
+        """Serve the Companion Portal single-page application.
+
+        Sent with ``Cache-Control: no-cache`` so a freshly deployed appliance is
+        picked up on the next page load — without it, browsers may serve a stale
+        cached copy and miss new Portal features until a manual hard refresh.
+        """
+        html = (_STATIC_DIR / "index.html").read_text()
+        return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
     return router
