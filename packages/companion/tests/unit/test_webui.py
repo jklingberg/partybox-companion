@@ -158,18 +158,20 @@ async def test_portal_html_contains_product_name(tmp_path: Path) -> None:
     assert "PartyBox" in r.text
 
 
-async def test_portal_html_contains_streaming_placeholders(tmp_path: Path) -> None:
+async def test_portal_html_contains_spotify_source_card(tmp_path: Path) -> None:
     async with _make_app(tmp_path) as client:
         r = await client.get("/")
     html = r.text
-    assert "Spotify" in html
-    assert "AirPlay" in html
+    assert "Spotify Connect" in html
+    # AirPlay has no placeholder row — it appears only once the feature ships
+    # (progressive disclosure; see docs/design/portal-redesign.md §10).
+    assert "AirPlay" not in html
 
 
-async def test_portal_html_contains_diagnostics(tmp_path: Path) -> None:
+async def test_portal_html_contains_health_sheet(tmp_path: Path) -> None:
     async with _make_app(tmp_path) as client:
         r = await client.get("/")
-    assert "Diagnostics" in r.text
+    assert "System health" in r.text
 
 
 async def test_portal_html_contains_settings_sections(tmp_path: Path) -> None:
@@ -178,7 +180,7 @@ async def test_portal_html_contains_settings_sections(tmp_path: Path) -> None:
     html = r.text
     assert "spotify_connect_name" in html
     assert "spotify_bitrate" in html
-    assert "Debug Bundle" in html
+    assert "debug/bundle" in html
 
 
 # ---------------------------------------------------------------------------
