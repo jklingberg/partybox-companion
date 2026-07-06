@@ -8,20 +8,25 @@ from partybox.bluetooth.transport import ConnectionLostError, NotConnectedError
 from partybox.device.capabilities.battery import BatteryCapability
 from partybox.device.capabilities.device_info import DeviceInfoCapability
 from partybox.device.capabilities.power import PowerCapability
-from partybox.device.partybox import PartyBoxDevice
-from partybox.protocol.constants import (
-    BATTERY_LEVEL_CHAR_UUID,
-    BATTERY_SERVICE_UUID,
-)
+from partybox.device.partybox import PartyBoxDevice, _detect_battery
+from partybox.protocol.codec import encode
+from partybox.protocol.messages import BatteryStatusRequest
 
 POWER_ON_FRAME = bytes.fromhex("AA030105")
 
+# Real PartyBox 520 capture (on battery); derives to 90 %. See test_codec.py.
+BATTERY_REQUEST = encode(BatteryStatusRequest())
+BATTERY_RESPONSE = bytes.fromhex(
+    "aa9e3f01104850303030362d4350303034313234320202ca02030200000402c810"
+    "0502b21206025c1207020100080163090102"
+    "0a01000b04e00d00000c04cc060000"
+)
+
 
 def _connected_transport(*, has_battery: bool = False) -> MockTransport:
-    services = frozenset([BATTERY_SERVICE_UUID]) if has_battery else frozenset()
-    t = MockTransport(services=services)
+    t = MockTransport()
     if has_battery:
-        t.stub_read(BATTERY_LEVEL_CHAR_UUID, bytes([80]))
+        t.stub(BATTERY_REQUEST, BATTERY_RESPONSE)
     return t
 
 
@@ -33,19 +38,50 @@ async def test_capabilities_after_connect() -> None:
         assert isinstance(device.device_info, DeviceInfoCapability)
 
 
-async def test_battery_is_none_without_battery_service() -> None:
+async def test_battery_is_none_when_absent() -> None:
     transport = _connected_transport(has_battery=False)
     async with transport:
-        device = PartyBoxDevice._from_transport(transport)
+        device = PartyBoxDevice._from_transport(transport, battery=False)
         assert device.battery is None
 
 
-async def test_battery_present_with_battery_service() -> None:
+async def test_battery_present_when_constructed_with_battery() -> None:
     transport = _connected_transport(has_battery=True)
     async with transport:
-        device = PartyBoxDevice._from_transport(transport)
+        device = PartyBoxDevice._from_transport(transport, battery=True)
         assert isinstance(device.battery, BatteryCapability)
-        assert await device.battery.level() == 80
+        assert await device.battery.level() == 90
+
+
+async def test_detect_battery_returns_capability_when_speaker_answers() -> None:
+    transport = _connected_transport(has_battery=True)
+    async with transport:
+        assert isinstance(await _detect_battery(transport), BatteryCapability)
+
+
+async def test_detect_battery_returns_none_when_speaker_silent() -> None:
+    # No stub for the battery request → status() times out → no battery.
+    transport = MockTransport()
+    async with transport:
+        assert await _detect_battery(transport, timeout=0.05) is None
+
+
+async def test_redetect_battery_recovers_when_speaker_wakes() -> None:
+    transport = _connected_transport(has_battery=False)
+    async with transport:
+        device = PartyBoxDevice._from_transport(transport, battery=False)
+        assert device.battery is None
+        # Speaker was asleep at connect; it now answers the battery query.
+        transport.stub(BATTERY_REQUEST, BATTERY_RESPONSE)
+        cap = await device.redetect_battery()
+        assert isinstance(cap, BatteryCapability)
+        assert device.battery is cap
+        assert await device.battery.level() == 90
+
+
+async def test_redetect_battery_before_connect_raises() -> None:
+    with pytest.raises(NotConnectedError):
+        await _unconnected_device().redetect_battery()
 
 
 async def test_is_connected_reflects_transport_state() -> None:

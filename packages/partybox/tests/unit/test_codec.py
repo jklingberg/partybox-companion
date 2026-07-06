@@ -5,8 +5,12 @@ docs/reverse-engineering/discoveries.md. Never fabricated.
 """
 
 import pytest
-from partybox.protocol.codec import decode, encode
+from partybox.protocol.codec import FrameReassembler, decode, encode
 from partybox.protocol.messages import (
+    BatteryFeature,
+    BatteryStatusRequest,
+    BatteryStatusResponse,
+    ChargingStatus,
     FirmwareVersionRequest,
     FirmwareVersionResponse,
     PowerCommand,
@@ -77,3 +81,139 @@ def test_decode_too_short_returns_none() -> None:
 
 def test_decode_wrong_sof_returns_none() -> None:
     assert decode(bytes.fromhex("BB22041a020a00")) is None
+
+
+# --- Battery status (opcode 0x9D request / 0x9E response) -------------------
+#
+# Both response frames are real captures from a JBL PartyBox 520 (2026-07-05),
+# requested with AA 9D 0C 01..0C. The only difference between them is the power
+# source: the first was captured on battery, the second on mains.
+BATTERY_REQUEST_FRAME = bytes.fromhex("AA9D0C0102030405060708090A0B0C")
+
+BATTERY_RESPONSE_ON_BATTERY = bytes.fromhex(
+    "aa9e3f01104850303030362d4350303034313234320202ca02030200000402c810"
+    "0502b21206025c1207020100080163090102"
+    "0a01000b04e00d00000c04cc060000"
+)
+BATTERY_RESPONSE_ON_MAINS = bytes.fromhex(
+    "aa9e3f01104850303030362d4350303034313234320202ffff030200000402fd10"
+    "0502b21206025c1207020100080163090101"
+    "0a01000b04e80d00000c04cc060000"
+)
+# Real capture on mains once fully charged (remaining == full capacity):
+# CHARGING_STATUS reads 3, distinct from the 1 seen while still charging.
+BATTERY_RESPONSE_ON_MAINS_FULL = bytes.fromhex(
+    "aa9e3f01104850303030362d43503030343132343202"
+    "02ffff0302000004029312050293120602"
+    "5c1207020100080163090103"
+    "0a01000b040f0e00000c04d1060000"
+)
+
+
+def test_encode_battery_request_default_all_features() -> None:
+    assert encode(BatteryStatusRequest()) == BATTERY_REQUEST_FRAME
+
+
+def test_encode_battery_request_subset() -> None:
+    frame = encode(BatteryStatusRequest(features=(BatteryFeature.CHARGING_STATUS,)))
+    assert frame == bytes.fromhex("AA9D0109")
+
+
+def test_decode_battery_on_battery() -> None:
+    result = decode(BATTERY_RESPONSE_ON_BATTERY)
+    assert isinstance(result, BatteryStatusResponse)
+    assert result.battery_id == "HP0006-CP0041242"
+    assert result.remaining_playtime_minutes == 714
+    assert result.temperature_max == 0
+    assert result.remaining_capacity_mah == 4296
+    assert result.full_charge_capacity_mah == 4786
+    assert result.design_capacity_mah == 4700
+    assert result.cycle_count == 1
+    assert result.state_of_health_percent == 99
+    assert result.charging_status is ChargingStatus.DISCHARGING
+    assert result.total_power_on_minutes == 3552
+    assert result.total_playback_minutes == 1740
+
+
+def test_decode_battery_on_battery_derived_charge_percent() -> None:
+    result = decode(BATTERY_RESPONSE_ON_BATTERY)
+    assert isinstance(result, BatteryStatusResponse)
+    # 4296 / 4786 ≈ 89.76 → 90
+    assert result.charge_percent == 90
+
+
+def test_decode_battery_on_mains_charging_status() -> None:
+    result = decode(BATTERY_RESPONSE_ON_MAINS)
+    assert isinstance(result, BatteryStatusResponse)
+    assert result.charging_status is ChargingStatus.CHARGING
+    # 4349 / 4786 ≈ 90.87 → 91
+    assert result.charge_percent == 91
+
+
+def test_decode_battery_on_mains_full_charging_status() -> None:
+    result = decode(BATTERY_RESPONSE_ON_MAINS_FULL)
+    assert isinstance(result, BatteryStatusResponse)
+    # Fully charged on mains reads CHARGING_STATUS 3 (FULL), still "on mains".
+    assert result.charging_status is ChargingStatus.FULL
+    assert result.charging_status.on_mains is True
+    assert result.charge_percent == 100  # 4755 / 4755
+
+
+def test_decode_battery_on_mains_playtime_sentinel_is_none() -> None:
+    result = decode(BATTERY_RESPONSE_ON_MAINS)
+    assert isinstance(result, BatteryStatusResponse)
+    # 0xFFFF is the "not meaningful" sentinel on mains — surfaced as None.
+    assert result.remaining_playtime_minutes is None
+
+
+def test_decode_battery_ignores_unknown_feature_id() -> None:
+    # feature id 0x7F is unknown; a known field (charging_status=1) still parses.
+    frame = bytes.fromhex("AA9E067F0100090101")
+    result = decode(frame)
+    assert isinstance(result, BatteryStatusResponse)
+    assert result.charging_status is ChargingStatus.CHARGING
+
+
+# ---------------------------------------------------------------------------
+# FrameReassembler — multi-notification frames
+# ---------------------------------------------------------------------------
+
+
+def test_reassembler_returns_whole_frame_in_one_push() -> None:
+    r = FrameReassembler()
+    assert r.push(BATTERY_RESPONSE_ON_MAINS_FULL) == [BATTERY_RESPONSE_ON_MAINS_FULL]
+
+
+def test_reassembler_incomplete_frame_returns_nothing() -> None:
+    r = FrameReassembler()
+    # Header declares 0x3f payload bytes; only a prefix is delivered.
+    assert r.push(BATTERY_RESPONSE_ON_MAINS_FULL[:20]) == []
+
+
+def test_reassembler_joins_fragments_into_one_frame() -> None:
+    # The full 0x9E battery response exceeds a small ATT MTU and arrives split
+    # across notifications. Only the first fragment carries the header; the
+    # split falls before the CHARGING_STATUS TLV so a lone first fragment would
+    # decode without it. Reassembly must recover the complete frame.
+    r = FrameReassembler()
+    assert r.push(BATTERY_RESPONSE_ON_MAINS_FULL[:20]) == []
+    assert r.push(BATTERY_RESPONSE_ON_MAINS_FULL[20:45]) == []
+    frames = r.push(BATTERY_RESPONSE_ON_MAINS_FULL[45:])
+    assert frames == [BATTERY_RESPONSE_ON_MAINS_FULL]
+    result = decode(frames[0])
+    assert isinstance(result, BatteryStatusResponse)
+    assert result.charging_status is ChargingStatus.FULL
+    assert result.charge_percent == 100
+
+
+def test_reassembler_splits_back_to_back_frames() -> None:
+    r = FrameReassembler()
+    power = bytes.fromhex("AA030105")
+    frames = r.push(BATTERY_RESPONSE_ON_MAINS_FULL + power)
+    assert frames == [BATTERY_RESPONSE_ON_MAINS_FULL, power]
+
+
+def test_reassembler_resyncs_past_leading_garbage() -> None:
+    r = FrameReassembler()
+    frames = r.push(b"\x00\x99" + BATTERY_RESPONSE_ON_MAINS_FULL)
+    assert frames == [BATTERY_RESPONSE_ON_MAINS_FULL]

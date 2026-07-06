@@ -203,7 +203,13 @@ async def test_debug_bundle_contains_expected_files(tmp_path: Path) -> None:
         r = await client.get("/api/v1/debug/bundle")
     with zipfile.ZipFile(BytesIO(r.content)) as zf:
         names = set(zf.namelist())
-    assert {"version.json", "config.json", "services.json", "system.json"} <= names
+    assert {
+        "version.json",
+        "config.json",
+        "services.json",
+        "system.json",
+        "device.json",
+    } <= names
 
 
 async def test_debug_bundle_version_json_has_required_fields(tmp_path: Path) -> None:
@@ -223,6 +229,48 @@ async def test_debug_bundle_services_json_has_spotify(tmp_path: Path) -> None:
         services = json.loads(zf.read("services.json"))
     assert services["spotify"]["running"] is True
     assert services["spotify"]["active"] is True
+
+
+async def test_debug_bundle_services_json_has_audio(tmp_path: Path) -> None:
+    async with _make_client(_READY, tmp_path) as client:
+        r = await client.get("/api/v1/debug/bundle")
+    with zipfile.ZipFile(BytesIO(r.content)) as zf:
+        services = json.loads(zf.read("services.json"))
+    assert "audio" in services
+
+
+async def test_debug_bundle_device_json_captures_battery_status(tmp_path: Path) -> None:
+    from partybox.protocol.messages import BatteryStatusResponse, ChargingStatus
+
+    spotify = MagicMock()
+    type(spotify).status = PropertyMock(return_value=_READY)
+    store = ConfigStore(tmp_path / "config.json")
+
+    manager = _make_manager()
+    type(manager).snapshot = PropertyMock(
+        return_value=StatusSnapshot(
+            connected=True,
+            address="AA:BB:CC:DD:EE:FF",
+            firmware="26.2.10",
+            battery=100,
+            battery_status=BatteryStatusResponse(
+                remaining_capacity_mah=4755,
+                full_charge_capacity_mah=4755,
+                charging_status=ChargingStatus.FULL,
+            ),
+        )
+    )
+
+    app = create_daemon_app(manager, DaemonSettings())
+    app.include_router(make_services_router(spotify, store, manager=manager))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.get("/api/v1/debug/bundle")
+    with zipfile.ZipFile(BytesIO(r.content)) as zf:
+        device = json.loads(zf.read("device.json"))
+    assert device["available"] is True
+    assert device["connected"] is True
+    assert device["battery_status"]["charging_status"] == "full"
+    assert device["battery_status"]["charge_percent"] == 100
 
 
 async def test_debug_bundle_has_content_disposition(tmp_path: Path) -> None:

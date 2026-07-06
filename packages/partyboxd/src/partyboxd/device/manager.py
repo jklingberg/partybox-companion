@@ -13,9 +13,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
-from partybox import ConnectionFailedError, ConnectionLostError, PartyBoxDevice, Scanner
+from partybox import (
+    BatteryStatusResponse,
+    ConnectionFailedError,
+    ConnectionLostError,
+    PartyBoxDevice,
+    Scanner,
+)
 from partybox.bluetooth.transport import NotConnectedError
 
 from partyboxd.config import SpeakerSettings
@@ -40,6 +46,13 @@ _HEALTH_CHECK_INTERVAL = 15.0
 # health check that exists to detect exactly that state.
 _PROBE_TIMEOUT = 10.0
 
+# Consecutive battery-poll timeouts before the cached reading is cleared. The
+# speaker stops answering control queries in standby (while staying BLE-
+# connected), so a sustained run of misses means "asleep": we drop the stale
+# battery so "no battery" reliably signals standby. A small tolerance avoids
+# clearing on a single transient miss while the speaker is genuinely awake.
+_BATTERY_MISS_LIMIT = 2
+
 
 class DeviceNotConnectedError(Exception):
     """Raised when a device operation is attempted while the speaker is not connected."""
@@ -57,6 +70,9 @@ class StatusSnapshot:
     address: str | None
     firmware: str | None
     battery: int | None
+    #: Full battery reading (charging source, health, capacities), or None when
+    #: the speaker has no battery. ``battery`` above is its derived percentage.
+    battery_status: BatteryStatusResponse | None = None
 
 
 _DISCONNECTED = StatusSnapshot(
@@ -64,6 +80,7 @@ _DISCONNECTED = StatusSnapshot(
     address=None,
     firmware=None,
     battery=None,
+    battery_status=None,
 )
 
 
@@ -87,6 +104,8 @@ class DeviceManager:
         self._snapshot: StatusSnapshot = _DISCONNECTED
         self._device: PartyBoxDevice | None = None
         self._bus = EventBus()
+        #: Consecutive battery-poll timeouts on the current connection.
+        self._battery_poll_misses = 0
 
     @property
     def snapshot(self) -> StatusSnapshot:
@@ -243,23 +262,70 @@ class DeviceManager:
         round-trip: :meth:`PartyBoxDevice.verify_connection` fails on a dead
         link even when no disconnect was ever signalled.
         """
-        drain = asyncio.create_task(device.drain_until_disconnect())
+        while True:
+            drain = asyncio.create_task(device.drain_until_disconnect())
+            done, _ = await asyncio.wait({drain}, timeout=_HEALTH_CHECK_INTERVAL)
+            if drain in done:
+                await drain  # propagates ConnectionLostError / NotConnectedError
+                return
+            # Interval elapsed and the link still looks alive. The transport
+            # supports only ONE notification consumer at a time (a single
+            # receive() reader); drain_until_disconnect() is currently that
+            # consumer. Cancel it to reclaim the reader before we issue any
+            # request/response round-trip (the liveness probe, then the battery
+            # refresh) — otherwise the response would race into the drain and be
+            # discarded. Drain is recreated at the top of the next iteration.
+            drain.cancel()
+            await asyncio.gather(drain, return_exceptions=True)
+            try:
+                await asyncio.wait_for(device.verify_connection(), timeout=_PROBE_TIMEOUT)
+            except (ConnectionLostError, NotConnectedError, TimeoutError) as exc:
+                raise ConnectionLostError(
+                    f"connection health probe failed (bluetoothd restart?): {exc}"
+                ) from exc
+            await self._poll_battery(device)
+
+    async def _poll_battery(self, device: PartyBoxDevice) -> None:
+        """Refresh battery status on the live connection, best-effort.
+
+        Also recovers a battery that detection missed at connect (e.g. the
+        speaker was in standby then): if the cached capability is ``None`` it is
+        re-detected. A speaker that is asleep simply does not answer — that is
+        not an error, so it is swallowed. Genuine connection loss propagates so
+        the maintain loop reconnects.
+        """
         try:
-            while True:
-                done, _ = await asyncio.wait({drain}, timeout=_HEALTH_CHECK_INTERVAL)
-                if drain in done:
-                    await drain  # propagates ConnectionLostError / NotConnectedError
-                    return
-                try:
-                    await asyncio.wait_for(device.verify_connection(), timeout=_PROBE_TIMEOUT)
-                except (ConnectionLostError, NotConnectedError, TimeoutError) as exc:
-                    raise ConnectionLostError(
-                        f"connection health probe failed (bluetoothd restart?): {exc}"
-                    ) from exc
-        finally:
-            if not drain.done():
-                drain.cancel()
-                await asyncio.gather(drain, return_exceptions=True)
+            capability = device.battery
+            if capability is None:
+                capability = await device.redetect_battery()
+            if capability is None:
+                return
+            status = await capability.status()
+        except ConnectionLostError, NotConnectedError:
+            # A dead link must trigger a reconnect, not be silently skipped.
+            raise
+        except TimeoutError as exc:
+            # The only expected operational failure: the speaker is asleep
+            # (standby) or slow to answer. Not fatal — try again next tick.
+            # Anything else (a programmer error) propagates deliberately.
+            self._battery_poll_misses += 1
+            if (
+                self._battery_poll_misses >= _BATTERY_MISS_LIMIT
+                and self._snapshot.battery is not None
+            ):
+                log.info("speaker not answering battery poll (likely standby); clearing")
+                self._snapshot = replace(self._snapshot, battery=None, battery_status=None)
+            log.debug("battery poll skipped, speaker not answering: %s", exc)
+            return
+
+        self._battery_poll_misses = 0
+        level = status.charge_percent
+        prev = self._snapshot
+        if level == prev.battery and status == prev.battery_status:
+            return
+        if prev.battery is None and level is not None:
+            log.info("battery recovered on re-probe: %d%%", level)
+        self._snapshot = replace(prev, battery=level, battery_status=status)
 
     async def _scan(self) -> PartyBoxDevice | None:
         log.info("scanning for speaker")
@@ -271,8 +337,10 @@ class DeviceManager:
 
     async def _refresh(self, device: PartyBoxDevice) -> None:
         """Query initial device state and update the snapshot."""
+        self._battery_poll_misses = 0
         firmware: str | None = None
         battery: int | None = None
+        battery_status: BatteryStatusResponse | None = None
 
         try:
             firmware = await device.device_info.firmware_version()
@@ -282,16 +350,24 @@ class DeviceManager:
 
         try:
             if device.battery is not None:
-                battery = await device.battery.level()
-                log.info("battery level: %d%%", battery)
+                battery_status = await device.battery.status()
+                battery = battery_status.charge_percent
+                log.info(
+                    "battery: %s%% (%s)",
+                    battery,
+                    battery_status.charging_status.name.lower()
+                    if battery_status.charging_status is not None
+                    else "unknown source",
+                )
         except Exception as exc:
-            log.warning("could not read battery level: %s", exc)
+            log.warning("could not read battery status: %s", exc)
 
         self._snapshot = StatusSnapshot(
             connected=True,
             address=device.address,
             firmware=firmware,
             battery=battery,
+            battery_status=battery_status,
         )
 
     async def _disconnect(self) -> None:

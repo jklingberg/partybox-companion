@@ -41,11 +41,19 @@ from partybox.device import (
     PowerCapability,
     VolumeCapability,
 )
+from partybox.protocol.messages import (
+    BatteryFeature,
+    BatteryStatusResponse,
+    ChargingStatus,
+)
 from partybox.scanner import Scanner
 
 __all__ = [
     "BatteryCapability",
+    "BatteryFeature",
+    "BatteryStatusResponse",
     "BluetoothError",
+    "ChargingStatus",
     "ConnectionFailedError",
     "ConnectionLostError",
     "DeviceInfoCapability",

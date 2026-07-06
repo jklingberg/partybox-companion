@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
+from partybox import ChargingStatus
 from pydantic import BaseModel
 
 import partyboxd
 from partyboxd.device import DeviceManager
-from partyboxd.device.manager import DeviceNotConnectedError
+from partyboxd.device.manager import DeviceNotConnectedError, StatusSnapshot
 
 # ---------------------------------------------------------------------------
 # Response models
@@ -35,9 +37,37 @@ class SpeakerResponse(BaseModel):
 
 
 class BatteryResponse(BaseModel):
-    """Response body for GET /api/v1/battery."""
+    """Response body for GET /api/v1/battery.
+
+    ``level`` is the derived charge percentage. The remaining fields come from
+    the speaker's vendor battery report and are ``None`` if unavailable.
+    """
 
     level: int
+    power_source: Literal["mains", "battery"] | None = None
+    charging: bool | None = None
+    remaining_playtime_minutes: int | None = None
+    state_of_health_percent: int | None = None
+    cycle_count: int | None = None
+
+
+def _battery_response(snap: StatusSnapshot) -> BatteryResponse:
+    """Build the battery response from the daemon snapshot."""
+    status = snap.battery_status
+    source: Literal["mains", "battery"] | None = None
+    charging: bool | None = None
+    if status is not None and status.charging_status is not None:
+        cs = status.charging_status
+        source = "mains" if cs.on_mains else "battery"
+        charging = cs is ChargingStatus.CHARGING
+    return BatteryResponse(
+        level=snap.battery if snap.battery is not None else 0,
+        power_source=source,
+        charging=charging,
+        remaining_playtime_minutes=status.remaining_playtime_minutes if status else None,
+        state_of_health_percent=status.state_of_health_percent if status else None,
+        cycle_count=status.cycle_count if status else None,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -159,10 +189,14 @@ def make_router(
         summary="Battery level",
     )
     async def get_battery() -> BatteryResponse:
-        """Current battery level as a percentage (0-100).
+        """Current battery status.
 
-        Only available on battery-powered models. Mains-powered speakers
-        (e.g. PartyBox 520) return **404**.
+        ``level`` is the charge percentage (0-100), derived from the speaker's
+        reported capacities. The response also reports the power source
+        (``power_source``/``charging``), remaining playtime, state of health and
+        charge-cycle count when the speaker provides them. Available on models
+        with an internal battery (including the PartyBox 520); speakers with no
+        battery return **404**.
 
         **Responses:**
 
@@ -178,7 +212,7 @@ def make_router(
             raise _speaker_disconnected()
         if snap.battery is None:
             raise _capability_unavailable()
-        return BatteryResponse(level=snap.battery)
+        return _battery_response(snap)
 
     # ------------------------------------------------------------------
     # POST /api/v1/power/on

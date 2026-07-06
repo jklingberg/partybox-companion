@@ -15,7 +15,7 @@ import partyboxd
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from partyboxd.device import DeviceManager
-from partyboxd.device.manager import DeviceNotConnectedError
+from partyboxd.device.manager import DeviceNotConnectedError, StatusSnapshot
 from pydantic import BaseModel, Field
 
 from companion.config import SpotifySettings
@@ -80,6 +80,41 @@ async def _collect_journal_logs() -> str:
         return output if output.strip() else "(no journal entries found)\n"
     except OSError, TimeoutError:
         return "(journalctl not available)\n"
+
+
+def _device_snapshot_dict(snapshot: StatusSnapshot | None) -> dict[str, object]:
+    """Serialise the daemon's device snapshot for the debug bundle.
+
+    Includes the full battery reading (charging source, capacities, health)
+    so a bundle captures exactly what the speaker reported — e.g. whether
+    ``charging_status`` was present or ``null`` at collection time.
+    """
+    if snapshot is None:
+        return {"available": False}
+    bs = snapshot.battery_status
+    battery: dict[str, object] | None = None
+    if bs is not None:
+        battery = {
+            "charge_percent": bs.charge_percent,
+            "charging_status": (
+                bs.charging_status.name.lower() if bs.charging_status is not None else None
+            ),
+            "remaining_capacity_mah": bs.remaining_capacity_mah,
+            "full_charge_capacity_mah": bs.full_charge_capacity_mah,
+            "design_capacity_mah": bs.design_capacity_mah,
+            "state_of_health_percent": bs.state_of_health_percent,
+            "cycle_count": bs.cycle_count,
+            "remaining_playtime_minutes": bs.remaining_playtime_minutes,
+            "battery_id": bs.battery_id,
+        }
+    return {
+        "available": True,
+        "connected": snapshot.connected,
+        "address": snapshot.address,
+        "firmware": snapshot.firmware,
+        "battery_percent": snapshot.battery,
+        "battery_status": battery,
+    }
 
 
 def make_services_router(
@@ -311,6 +346,8 @@ def make_services_router(
         """
         cfg = config.read()
         spotify_status = spotify.status
+        audio_status = audio.status if audio is not None else None
+        snapshot = manager.snapshot if manager is not None else None
         ts = datetime.now(tz=UTC)
         logs = await _collect_journal_logs()
 
@@ -336,10 +373,18 @@ def make_services_router(
                             "running": spotify_status.running,
                             "active": spotify_status.active,
                             "device_name": spotify_status.device_name,
-                        }
+                        },
+                        "audio": {
+                            "connected": audio_status.connected if audio_status else None,
+                            "address": audio_status.address if audio_status else None,
+                        },
                     },
                     indent=2,
                 ),
+            )
+            zf.writestr(
+                "device.json",
+                json.dumps(_device_snapshot_dict(snapshot), indent=2),
             )
             zf.writestr(
                 "system.json",

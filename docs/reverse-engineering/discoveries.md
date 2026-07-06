@@ -86,6 +86,46 @@ Sub-byte is always `0x00` in observed captures. Known TLV tags (all confirmed fr
 
 The large state dump (tags 0x31–0x5b) is only observed during the power-off shutdown sequence. Sending `AA 12 00` triggers a partial state response (tag `0x53`, opcode `0x62`, `0xd2`, `0xe2`) but does **not** trigger the full serial/firmware dump.
 
+### Battery status (opcodes 0x9D / 0x9E)
+
+Confirmed on a PartyBox 520 (2026-07-05), captured on both battery and mains power. The 520 **has an internal battery** but exposes neither the standard BLE Battery Service (`0x180F`) nor Device Information Service (`0x180A`); battery status comes only through this vendor command.
+
+| Direction | Bytes | Meaning |
+|---|---|---|
+| Request (TX) | `AA 9D <n> <feature-id…>` | Request battery status; payload is a list of one-byte feature ids |
+| Response (RX) | `AA 9E <len> <TLV…>` | Repeating `[feature-id:1][len:1][value:len]` |
+
+Requesting all features (`AA 9D 0C 01 02 03 04 05 06 07 08 09 0A 0B 0C`) yields, on battery:
+
+```
+aa 9e 3f 01 10 48 50 30 30 30 36 2d 43 50 30 30 34 31 32 34 32
+      02 02 ca 02 03 02 00 00 04 02 c8 10 05 02 b2 12 06 02 5c 12
+      07 02 01 00 08 01 63 09 01 02 0a 01 00 0b 04 e0 0d 00 00 0c 04 cc 06 00 00
+```
+
+Numeric values are **little-endian**; `BATTERY_ID` (id 1) is ASCII, not a number.
+
+| id | Feature | Example | Meaning |
+|---|---|---|---|
+| 1 | BATTERY_ID | `"HP0006-CP0041242"` | ASCII battery part/serial string |
+| 2 | REMAINING_PLAYTIME | `ca 02` = 714 | minutes; `0xFFFF` sentinel when on mains |
+| 3 | TEMPERATURE_MAX | `00 00` = 0 | — |
+| 4 | REMAINING_CAPACITY | `c8 10` = 4296 | mAh |
+| 5 | FULL_CHARGE_CAPACITY | `b2 12` = 4786 | mAh |
+| 6 | DESIGN_CAPACITY | `5c 12` = 4700 | mAh |
+| 7 | CYCLE_COUNT | `01 00` = 1 | charge cycles |
+| 8 | STATE_OF_HEALTH | `63` = 99 | percent |
+| 9 | CHARGING_STATUS | `02` | `1` = charging (mains), `2` = discharging (battery), `3` = full (mains) |
+| 10 | BATTERY_HEALTH_NOTIFICATION | `00` = 0 | — |
+| 11 | TOTAL_POWER_ON_DURATION | `e0 0d 00 00` = 3552 | minutes |
+| 12 | TOTAL_PLAYBACK_TIME_DURATION | `cc 06 00 00` = 1740 | minutes |
+
+**Charge percentage is derived**, not reported directly: `REMAINING_CAPACITY / FULL_CHARGE_CAPACITY` (battery capture 4296/4786 ≈ 90 %; mains 4349/4786 ≈ 91 %; full 4755/4755 = 100 %). `CHARGING_STATUS` distinguishes power source: values `1` and `3` are mains, `2` is battery.
+
+**The `0x9E` response spans multiple notifications.** The full reading declares a `0x3f` (63-byte) payload — larger than a small ATT MTU — so the speaker splits it across several BLE notifications; only the first carries the `SOF/opcode/length` header, the rest are raw payload continuation. Decoding a lone first fragment silently truncates the frame and drops the late TLV fields, notably `CHARGING_STATUS` (id 9) near the end — observed on the appliance as `100% (unknown source)` when the MTU was small, `100% (full)` when the whole frame fit one notification. The SDK reassembles fragments by the declared length (`FrameReassembler` in `codec.py`) before decoding.
+
+Implemented in `BatteryCapability` (SDK reads via `0x9D`/`0x9E`; detection probes at connect since no service advertises the battery). Surfaced through `/api/v1/battery` (level, power source, charging, health, cycles) and the Companion Portal. Codec fixtures use the real captures — see `test_codec.py`. A second, older command (request sub-code `0x13`, response `0x12` — the power-off state-dump opcode) also carries battery data; `0x9D`/`0x9E` is the cleaner dedicated path. Probe/exploration script: `research/scripts/probe_battery.py`.
+
 ### Opcode 0x31 — capability list request
 
 Sending `AA 31 00` returns opcode `0x32` with a TLV listing of supported capability flags. Confirmed on PartyBox 520; contents not yet fully decoded.
