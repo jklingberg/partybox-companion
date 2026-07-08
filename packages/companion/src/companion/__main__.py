@@ -25,7 +25,7 @@ import uvicorn
 from partyboxd.api import create_app as create_daemon_app
 from partyboxd.config import Settings as DaemonSettings
 from partyboxd.device import DeviceManager
-from partyboxd.device.events import VolumeChangedEvent
+from partyboxd.device.events import SpeakerStateChangedEvent, VolumeChangedEvent
 
 from companion.config import AudioSettings, CompanionSettings, SpotifySettings
 from companion.config_store import ConfigStore
@@ -154,6 +154,27 @@ async def _forward_ble_volume(manager: DeviceManager, volume_state: VolumeState)
         manager.unsubscribe(queue)
 
 
+async def _recheck_audio_on_standby(manager: DeviceManager, audio: AudioService) -> None:
+    """Nudge AudioService to re-check A2DP as soon as the speaker leaves "on".
+
+    The BLE control link and the A2DP audio link are separate Bluetooth
+    subsystems (see ``AudioService``'s module docstring), but in practice
+    they tend to drop together — the speaker going into standby is a strong
+    signal the audio link just went with it. Without this, the Portal's
+    "Bluetooth Audio" status can show a stale "connected" for up to
+    AudioService's 60s idle check interval after the speaker visibly went
+    idle. Runs until cancelled.
+    """
+    queue = manager.subscribe()
+    try:
+        while True:
+            event = await queue.get()
+            if isinstance(event, SpeakerStateChangedEvent) and event.state != "on":
+                audio.recheck_now()
+    finally:
+        manager.unsubscribe(queue)
+
+
 def main() -> None:
     level = os.environ.get("COMPANION_LOG_LEVEL", "INFO").upper()
     logging.config.dictConfig(_make_log_config(level))
@@ -223,6 +244,11 @@ async def _run(
         policy=RestartPolicy(initial_delay=1.0, max_delay=30.0),
     )
     supervisor.register("provisioning", provisioning.run)
+    supervisor.register(
+        "audio-standby-recheck",
+        lambda: _recheck_audio_on_standby(manager, audio),
+        policy=RestartPolicy(initial_delay=1.0, max_delay=30.0),
+    )
 
     supervisor_task = asyncio.create_task(supervisor.run(), name="supervisor")
     try:

@@ -227,29 +227,21 @@ async def test_run_backoff_resets_on_success() -> None:
 
     async def fake_wait_retry(delay: float) -> bool:
         retry_calls.append(delay)
-        return False  # simulate timeout (not woken by re-pair)
-
-    sleep_calls: list[float] = []
-    call_count = 0
-
-    async def fake_sleep(delay: float) -> None:
-        nonlocal call_count
-        sleep_calls.append(delay)
-        call_count += 1
-        if call_count >= 1:
+        if len(retry_calls) >= 3:
             raise asyncio.CancelledError
+        return False  # simulate timeout (not woken by re-pair)
 
     with (
         patch("companion.services.audio.asyncio.create_subprocess_exec", side_effect=fake_exec),
         patch.object(svc, "_wait_retry", side_effect=fake_wait_retry),
-        patch("companion.services.audio.asyncio.sleep", side_effect=fake_sleep),
     ):
         with pytest.raises(asyncio.CancelledError):
             await svc.run()
 
-    # Two retry waits (10s, 20s), then _CHECK_INTERVAL (60s) after success
-    assert retry_calls == [10.0, 20.0]
-    assert sleep_calls == [60.0]
+    # Two retry waits (10s, 20s), then _CHECK_INTERVAL (60s) after success —
+    # the connected-idle wait is interruptible (see recheck_now()), so it now
+    # goes through _wait_retry too, not a bare asyncio.sleep.
+    assert retry_calls == [10.0, 20.0, 60.0]
 
 
 async def test_run_update_address_resets_backoff() -> None:
@@ -284,6 +276,22 @@ async def test_run_update_address_resets_backoff() -> None:
     assert retry_calls[2] == 10.0  # reset after re-pair wakeup
 
 
+async def test_recheck_now_wakes_a_pending_wait_retry() -> None:
+    """recheck_now() interrupts _wait_retry immediately instead of waiting out
+    its full delay — the mechanism _recheck_audio_on_standby (companion.
+    __main__) depends on to avoid a stale "connected" status for up to 60s
+    after the speaker leaves standby (ADR-034)."""
+    svc = _service()
+
+    wait_task = asyncio.create_task(svc._wait_retry(60.0))
+    await asyncio.sleep(0)  # let _wait_retry start waiting on _reconnect_now
+
+    svc.recheck_now()
+
+    woke_early = await asyncio.wait_for(wait_task, timeout=1.0)
+    assert woke_early is True
+
+
 async def test_run_skips_connect_when_already_connected() -> None:
     svc = _service()
 
@@ -302,11 +310,11 @@ async def test_run_skips_connect_when_already_connected() -> None:
 
     svc._connect = spy_connect  # type: ignore[method-assign]
 
-    async def fake_sleep(delay: float) -> None:
+    async def fake_wait_retry(delay: float) -> bool:
         raise asyncio.CancelledError
 
     with patch("companion.services.audio.asyncio.create_subprocess_exec", side_effect=fake_exec):
-        with patch("companion.services.audio.asyncio.sleep", side_effect=fake_sleep):
+        with patch.object(svc, "_wait_retry", side_effect=fake_wait_retry):
             with pytest.raises(asyncio.CancelledError):
                 await svc.run()
 
@@ -324,11 +332,11 @@ async def test_run_cancels_cleanly() -> None:
     async def fake_exec(*args: object, **kwargs: object) -> MagicMock:
         return _mock_proc(b"true")
 
-    async def fake_sleep(delay: float) -> None:
+    async def fake_wait_retry(delay: float) -> bool:
         raise asyncio.CancelledError
 
     with patch("companion.services.audio.asyncio.create_subprocess_exec", side_effect=fake_exec):
-        with patch("companion.services.audio.asyncio.sleep", side_effect=fake_sleep):
+        with patch.object(svc, "_wait_retry", side_effect=fake_wait_retry):
             task = asyncio.create_task(svc.run())
             with pytest.raises(asyncio.CancelledError):
                 await task
@@ -658,11 +666,11 @@ async def test_run_emits_audio_ready_true_on_connect() -> None:
     async def fake_exec(*args: object, **kwargs: object) -> MagicMock:
         return responses.pop(0)
 
-    async def fake_sleep(delay: float) -> None:
+    async def fake_wait_retry(delay: float) -> bool:
         raise asyncio.CancelledError
 
     with patch("companion.services.audio.asyncio.create_subprocess_exec", side_effect=fake_exec):
-        with patch("companion.services.audio.asyncio.sleep", side_effect=fake_sleep):
+        with patch.object(svc, "_wait_retry", side_effect=fake_wait_retry):
             with pytest.raises(asyncio.CancelledError):
                 await svc.run()
 
@@ -682,14 +690,15 @@ async def test_run_emits_audio_ready_false_on_cancel() -> None:
     async def fake_exec(*args: object, **kwargs: object) -> MagicMock:
         return _mock_proc(b"true")
 
-    async def fake_sleep(delay: float) -> None:
+    async def fake_wait_retry(delay: float) -> bool:
         nonlocal call_count
         call_count += 1
         if call_count >= 2:
             raise asyncio.CancelledError
+        return False
 
     with patch("companion.services.audio.asyncio.create_subprocess_exec", side_effect=fake_exec):
-        with patch("companion.services.audio.asyncio.sleep", side_effect=fake_sleep):
+        with patch.object(svc, "_wait_retry", side_effect=fake_wait_retry):
             with pytest.raises(asyncio.CancelledError):
                 await svc.run()
 
