@@ -39,3 +39,5 @@ This keeps the [ADR-006](006-capability-model.md) contract intact (callers still
 **Rejected alternatives:**
 - **Relying on GATT service discovery** (`0x180F`) — fails for the 520, the only combination validated on hardware to date.
 - **A static model → capability table** — already rejected in ADR-006; requires manual updates per model and firmware and cannot handle modified firmware.
+
+**Follow-on:** [ADR-033](033-speaker-standby-detection.md) reuses this same probe-and-classify pattern at runtime — not to detect *whether* a capability exists, but to detect the speaker's *liveness* (awake vs. standby) on every health-check cycle.
