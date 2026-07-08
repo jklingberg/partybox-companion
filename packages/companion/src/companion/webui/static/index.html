@@ -130,10 +130,12 @@
   .scene-unreachable  { --wash: rgba(90,88,112,.5); }
   .scene-off          { --wash: rgba(255,61,46,.28); }
   .scene-standby      { --wash: rgba(255,179,0,.26); }
+  .scene-powering     { --wash: rgba(154,151,172,.14); }
   .scene-off         .center-ring, .scene-off         .center-ring-icon { --ring: var(--heat-1); }
   .scene-standby     .center-ring, .scene-standby     .center-ring-icon { --ring: var(--heat-3); }
   .scene-unreachable .center-ring, .scene-unreachable .center-ring-icon { --ring: var(--faint); }
   .scene-boot        .center-ring, .scene-boot        .center-ring-icon { --ring: var(--faint); }
+  .scene-powering    .center-ring, .scene-powering    .center-ring-icon { --ring: var(--heat-2); }
 
   @keyframes breathe { 0%, 100% { opacity: .5; } 50% { opacity: 1; } }
 
@@ -593,6 +595,7 @@ const Scene = Object.freeze({
   OFF:          'off',
   STANDBY:      'standby',
   ON:           'on',
+  POWERING:     'powering',
 });
 
 // ==========================================================================
@@ -607,6 +610,13 @@ const S = {
   apiKey: localStorage.getItem('_pb_key') || null,
   ws: null,
   fetchFailed: false,
+  //: 'on' | 'off' | null — set while a power command we just sent is still
+  //: settling (the speaker resets its own BLE stack for ~15-20s after any
+  //: power command, see ADR-034). While set, a resulting speaker_state of
+  //: 'off' is this expected self-inflicted transient, not a real
+  //: disconnect, so deriveScene() shows Scene.POWERING instead of the
+  //: "can't reach the speaker, plug it in" Scene.OFF copy.
+  powerPending: null,
 };
 
 let mountedScene = null;
@@ -683,6 +693,11 @@ function bootMock() {
 
   if (MOCK_STATE === 'off') { S.health = { ...MOCK_HEALTH, ble_connected: false, speaker_state: 'off' }; S.battery = null; }
   if (MOCK_STATE === 'standby') { S.health = { ...MOCK_HEALTH, speaker_state: 'standby' }; S.battery = null; }
+  if (MOCK_STATE === 'powering') {
+    S.health = { ...MOCK_HEALTH, ble_connected: false, speaker_state: 'off' };
+    S.battery = null;
+    S.powerPending = 'off';
+  }
   if (MOCK_STATE === 'pair') { S.audio = { connected: false, address: null, pairing_state: 'idle' }; }
 
   S.scene = deriveScene();
@@ -741,7 +756,15 @@ async function refreshSpeaker() {
 function deriveScene() {
   if (S.fetchFailed && !S.health) return Scene.UNREACHABLE;
   if (!S.health) return Scene.BOOT;
-  if (S.health.speaker_state === 'off') return Scene.OFF;
+  if (S.health.speaker_state === 'off') {
+    // A power command we just sent makes the speaker drop its own BLE link
+    // for ~15-20s before reconnecting (ADR-034) — indistinguishable from a
+    // real disconnect by speaker_state alone. S.powerPending (set in
+    // sendPower, cleared once speaker_state moves off 'off') tells the two
+    // apart so this expected, self-inflicted gap doesn't show the "can't
+    // reach the speaker, plug it in" copy.
+    return S.powerPending ? Scene.POWERING : Scene.OFF;
+  }
   if (!S.audio || !S.audio.address) return Scene.PAIR;
   if (S.health.speaker_state === 'standby') return Scene.STANDBY;
   return Scene.ON;
@@ -767,6 +790,7 @@ function mountScene(scene) {
     case Scene.PAIR:        root.innerHTML = pairSceneHTML(); break;
     case Scene.OFF:         root.innerHTML = centerSceneHTML('off'); break;
     case Scene.STANDBY:     root.innerHTML = centerSceneHTML('standby'); break;
+    case Scene.POWERING:    root.innerHTML = centerSceneHTML('powering'); break;
     case Scene.ON:          root.innerHTML = onSceneHTML(); break;
   }
 }
@@ -795,13 +819,24 @@ const CENTER_COPY = {
     body: 'The speaker is plugged in but powered down.',
     action: true,
   },
+  powering: {
+    // Title is set dynamically below from S.powerPending — the speaker
+    // drops its own BLE link for ~15-20s after any power command (ADR-034),
+    // and this is that expected gap, not a real disconnect. Reusing the
+    // Scene.OFF "plug it in" copy here would tell the user to go fix
+    // something that isn't broken.
+    icon: 'i-power', body: 'This can take up to 20 seconds.',
+  },
 };
 
 function centerSceneHTML(kind) {
   const c = CENTER_COPY[kind];
-  // Standby breathes (alive, waiting to be woken). Off is unlit (dead — no
+  const title = kind === 'powering'
+    ? (S.powerPending === 'on' ? 'Turning speaker on…' : 'Turning speaker off…')
+    : c.title;
+  // Standby/powering breathe (alive, working). Off is unlit (dead — no
   // power, nothing to wait for). Unreachable/boot are neutral and static.
-  const ringClass = kind === 'standby' ? ' breathing' : kind === 'off' ? ' unlit' : '';
+  const ringClass = kind === 'standby' || kind === 'powering' ? ' breathing' : kind === 'off' ? ' unlit' : '';
   return `
     <div class="center-scene scene-${kind}">
       <div class="center-card">
@@ -810,7 +845,7 @@ function centerSceneHTML(kind) {
           <div class="center-ring-icon"><svg class="icon" style="width:1.4em;height:1.4em"><use href="#${c.icon}"/></svg></div>
         </div>
         <div>
-          <div class="center-title">${c.title}</div>
+          <div class="center-title">${title}</div>
           <p class="center-body" style="margin-top:8px">${c.body}</p>
         </div>
         ${c.action ? `<button class="btn btn-heat" id="standby-power-btn" data-action="power-on">Turn speaker on</button>` : ''}
@@ -1097,18 +1132,49 @@ function audioAwake() {
 // ==========================================================================
 // Power control
 // ==========================================================================
+let powerPendingTimer = null;
+
 async function sendPower(cmd) {
   const btn = document.getElementById('power-toggle-btn') || document.getElementById('standby-power-btn');
-  if (btn) { btn.disabled = true; btn.dataset.busy = '1'; }
   const label = document.getElementById('power-toggle-label');
-  if (label) label.textContent = '…';
+  const busyText = cmd === 'on' ? 'Powering on…' : 'Powering off…';
+  if (btn) { btn.disabled = true; btn.dataset.busy = '1'; }
+  if (label) label.textContent = busyText;
+  // A power command can take up to ~20s server-side while it waits out the
+  // BLE reconnect the speaker itself triggers (ADR-034) — sticky, since the
+  // button/label above may get replaced by a scene remount before the
+  // request resolves, but the toast won't.
+  toast(busyText, { sticky: true });
+
+  // Set — and rendered — before the request even starts, so there's no gap
+  // where deriveScene() can show the alarming Scene.OFF "plug it in" copy
+  // for this expected, self-inflicted disconnect. Cleared by a bounded
+  // timer rather than reactively on the first non-'off' reading: the 'off'
+  // command's own request resolves near-instantly, well before the speaker
+  // actually drops the link, so an early "not off yet" reading would clear
+  // the flag right before the transient window it exists to cover.
+  clearTimeout(powerPendingTimer);
+  S.powerPending = cmd;
+  S.scene = deriveScene();
+  render();
+  powerPendingTimer = setTimeout(() => {
+    if (S.powerPending === cmd) { S.powerPending = null; S.scene = deriveScene(); render(); }
+  }, 22000);
 
   const r = await get('/api/v1/power/' + cmd, true, 'POST');
   if (btn) { btn.disabled = false; delete btn.dataset.busy; }
 
-  if (!r) toast("Can't reach the appliance.");
-  else if (r.status === 503) toast('Speaker is not connected.');
-  else if (r.status === 204) toast(cmd === 'on' ? 'Turning speaker on…' : 'Turning speaker off…');
+  if (!r) {
+    clearTimeout(powerPendingTimer);
+    S.powerPending = null;
+    toast("Can't reach the appliance.");
+  } else if (r.status === 503) {
+    clearTimeout(powerPendingTimer);
+    S.powerPending = null;
+    toast('Speaker is not connected.');
+  } else if (r.status === 204) {
+    toast(cmd === 'on' ? 'Speaker turned on.' : 'Speaker turned off.');
+  }
   await refresh();
   render();
 }
@@ -1467,12 +1533,18 @@ function esc(s) {
 }
 
 let toastTimer = null;
-function toast(msg) {
+function toast(msg, { sticky = false } = {}) {
+  // #toast lives outside #scene, so — unlike a scene-local button label —
+  // it survives the full scene remounts that can happen mid-request (e.g.
+  // the speaker_state churn while a power command's own BLE reconnect is
+  // in flight, see ADR-034). sticky keeps it up until the next toast()
+  // call instead of auto-hiding, for messages that span a long-running
+  // request rather than announcing something that already happened.
   const el = document.getElementById('toast');
   el.textContent = msg;
   el.classList.remove('hidden');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.add('hidden'), 3200);
+  if (!sticky) toastTimer = setTimeout(() => el.classList.add('hidden'), 3200);
 }
 
 function setFlowMsg(id, type, msg) {

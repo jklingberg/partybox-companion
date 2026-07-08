@@ -23,6 +23,8 @@ This makes the command wait out the reconnect the speaker itself triggers, rathe
 
 **Validated on hardware:** `power/off` followed immediately by `power/on` now blocks for ~14s (matching the reconnect) and returns `204`, with the speaker actually powering back on (`audio_ready` and `speaker_state` both converge to reflect it) — versus an instant `503` before this change.
 
+**Portal-side follow-up (same root cause).** Fixing the daemon exposed a second-order UI bug: `GET /api/v1/health` legitimately reports `speaker_state: "off"` for the ~1-2s the real disconnect is in progress (before the daemon's own reconnect completes), and the Portal's `deriveScene()` (`webui/static/index.html`) mapped that straight to `Scene.OFF` — the "Companion can't reach the speaker, plug it in" screen. Visually indistinguishable from a genuine unplug, this fired on every power command and, confirmed via live Playwright screenshots against `partybox.local`, produced a confusing flash into the "unplugged" copy before settling. Fixed by adding client-side state `S.powerPending` (set the instant a power command is sent, cleared either on request failure or by a 22s safety timer — not reactively on the first "not off" reading, since the `off` command's own request resolves before the real disconnect even starts) and a new `Scene.POWERING`, so `deriveScene()` shows a neutral "Turning speaker off/on… this can take up to 20 seconds" screen instead of the alarming plug icon for this specific, expected, self-inflicted gap. Genuine disconnects (no power command in flight) are unaffected and still show `Scene.OFF`.
+
 ## Consequences
 
 **Benefits:**
