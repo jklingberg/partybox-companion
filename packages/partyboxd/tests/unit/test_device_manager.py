@@ -96,7 +96,7 @@ async def test_poll_battery_recovers_missed_detection() -> None:
     assert manager.snapshot.battery is None
 
     # Speaker is awake now; the periodic poll re-detects and fills in the level.
-    await manager._poll_battery(device)
+    await manager._poll_liveness(device)
 
     assert manager.snapshot.battery == 90
     assert manager.snapshot.battery_status is not None
@@ -116,18 +116,22 @@ async def test_poll_battery_clears_after_sustained_no_response(
     await manager._refresh(device)
     assert manager.snapshot.battery == 90
 
-    # Speaker goes to standby: battery status now times out.
+    # Speaker goes to standby: both firmware and battery now time out.
     async def _timeout(*_a: object, **_k: object) -> object:
         raise TimeoutError
 
     assert device.battery is not None
+    assert device.device_info is not None
     monkeypatch.setattr(device.battery, "status", _timeout)
+    monkeypatch.setattr(device.device_info, "firmware_version", _timeout)
 
-    await manager._poll_battery(device)  # first miss — tolerated, value kept
+    await manager._poll_liveness(device)  # first miss — tolerated, value kept
     assert manager.snapshot.battery == 90
-    await manager._poll_battery(device)  # second miss — cleared
+    assert manager.snapshot.speaker_awake
+    await manager._poll_liveness(device)  # second miss — cleared
     assert manager.snapshot.battery is None
     assert manager.snapshot.battery_status is None
+    assert not manager.snapshot.speaker_awake
 
 
 async def test_refresh_tolerates_firmware_error() -> None:
@@ -230,16 +234,52 @@ async def test_run_connects_and_snapshot_is_live(monkeypatch: pytest.MonkeyPatch
 # ---------------------------------------------------------------------------
 
 
-async def test_power_on_raises_when_not_connected() -> None:
+async def test_power_on_raises_when_not_connected(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("partyboxd.device.manager._RECONNECT_WAIT_TIMEOUT", 0.05)
     manager = _make_manager()
     with pytest.raises(DeviceNotConnectedError):
         await manager.power_on()
 
 
-async def test_power_off_raises_when_not_connected() -> None:
+async def test_power_off_raises_when_not_connected(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("partyboxd.device.manager._RECONNECT_WAIT_TIMEOUT", 0.05)
     manager = _make_manager()
     with pytest.raises(DeviceNotConnectedError):
         await manager.power_off()
+
+
+async def test_power_on_waits_for_in_progress_reconnect() -> None:
+    """A power command mid-reconnect (self._device is None) should wait for
+    the manager's connect loop to land a new connection, not fail instantly —
+    this is the fix for "turn off, then immediately turn back on" racing the
+    BLE reconnect that follows every power command on real hardware."""
+    manager = _make_manager()
+    transport = MockTransport(address="AA:BB:CC:DD:EE:FF")
+    await transport.connect()
+    device = PartyBoxDevice._from_transport(transport)
+
+    async def _connect_shortly() -> None:
+        await asyncio.sleep(0.02)
+        manager._device = device  # type: ignore[assignment]
+        manager._connected_event.set()
+
+    connect_task = asyncio.create_task(_connect_shortly())
+    queue = manager.subscribe()
+    await manager.power_on()
+    await connect_task
+
+    event = queue.get_nowait()
+    assert isinstance(event, PowerChangedEvent)
+    assert event.state == "on"
+
+
+async def test_power_on_raises_if_reconnect_does_not_land_in_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("partyboxd.device.manager._RECONNECT_WAIT_TIMEOUT", 0.05)
+    manager = _make_manager()
+    with pytest.raises(DeviceNotConnectedError):
+        await manager.power_on()
 
 
 async def test_power_on_sends_command_and_emits_event() -> None:
@@ -299,7 +339,12 @@ async def test_connected_event_emitted_after_refresh(monkeypatch: pytest.MonkeyP
     await asyncio.wait_for(connected_event.wait(), timeout=2.0)
     await asyncio.sleep(0.05)
 
+    # _refresh() sets the initial snapshot (emitting SpeakerStateChangedEvent
+    # for the off->on transition) before _connect_and_maintain emits
+    # ConnectedEvent explicitly — find it regardless of exact ordering.
     event = await asyncio.wait_for(queue.get(), timeout=1.0)
+    if not isinstance(event, ConnectedEvent):
+        event = await asyncio.wait_for(queue.get(), timeout=1.0)
     assert isinstance(event, ConnectedEvent)
     assert event.address == "BB:CC:DD:EE:FF:AA"
     assert event.firmware == "26.2.10"

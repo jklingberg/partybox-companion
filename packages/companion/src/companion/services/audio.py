@@ -195,6 +195,21 @@ class AudioService:
         """Stop delivering events to *queue*."""
         self._bus.unsubscribe(queue)
 
+    def recheck_now(self) -> None:
+        """Interrupt an idle wait and re-check the A2DP link immediately.
+
+        The connected-idle branch of :meth:`run` only re-checks every
+        ``_CHECK_INTERVAL`` (60s) — deliberately lazy for a link that isn't
+        expected to change on its own (ADR-028). But the BLE control link
+        going into standby is a strong signal that the audio link dropped at
+        the same time (they're the same speaker), and waiting out the rest of
+        that 60s window makes the Portal show a stale "connected" status for
+        up to a minute after the speaker visibly went idle. Callers that
+        observe such a signal (see ``_recheck_audio_on_standby`` in
+        ``companion.__main__``) call this to short-circuit the wait instead.
+        """
+        self._reconnect_now.set()
+
     def update_address(self, address: str) -> None:
         """Set or update the A2DP sink address and interrupt any backoff sleep.
 
@@ -291,7 +306,9 @@ class AudioService:
                         log.info("A2DP connection stable, backoff reset")
                     self._set_audio_ready(True)
                     retry_delay = _RETRY_BASE
-                    await asyncio.sleep(_CHECK_INTERVAL)
+                    # Interruptible so recheck_now() can cut this short — see
+                    # its docstring for why.
+                    await self._wait_retry(_CHECK_INTERVAL)
         except asyncio.CancelledError:
             self._set_audio_ready(False)
             log.info("Audio service stopping")

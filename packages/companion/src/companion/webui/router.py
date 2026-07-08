@@ -6,6 +6,7 @@ from pathlib import Path
 
 from fastapi import APIRouter
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
 from companion.config import CompanionSettings
 from companion.config_store import ConfigStore, PortalConfig
@@ -25,6 +26,17 @@ def make_portal_router(settings: CompanionSettings, store: ConfigStore) -> APIRo
     carry the auth requirement.
     """
     router = APIRouter()
+
+    # ------------------------------------------------------------------
+    # /assets/* — fonts, favicon (self-hosted; no CDN dependency, since the
+    # Portal must render fully on the appliance's own AP during provisioning)
+    # ------------------------------------------------------------------
+
+    router.mount(
+        "/assets",
+        StaticFiles(directory=_STATIC_DIR / "assets"),
+        name="portal-assets",
+    )
 
     # ------------------------------------------------------------------
     # GET /api/v1/config — unauthenticated
