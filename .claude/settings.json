@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s 'http://localhost:7999/api/v1/health?state=standby')",
+      "Bash(pkill -f \"python -m partyboxd\")",
+      "Bash(cat)",
+      "Bash(chmod +x /tmp/deploy.sh)",
+      "Bash(/tmp/deploy.sh)",
+      "Bash(sshpass -p raspberry rsync -a --delete --exclude='__pycache__' -e \"ssh -o StrictHostKeyChecking=no\" packages/partyboxd/src/partyboxd/ pi@partybox.local:/tmp/partyboxd_new)",
+      "Bash(sshpass -p raspberry ssh -o StrictHostKeyChecking=no pi@partybox.local \"sudo mv /tmp/partyboxd_new /opt/partybox-companion/lib/python3.14/site-packages/partyboxd && sudo systemctl restart companion\")",
+      "Bash(sshpass -p raspberry ssh -o StrictHostKeyChecking=no pi@partybox.local \"curl -s http://localhost/api/v1/health | jq '.speaker_state'\")",
+      "Bash(sshpass -p raspberry ssh -o StrictHostKeyChecking=no pi@partybox.local \"curl -s http://localhost/api/v1/health | grep speaker_state\")",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)"
+    ]
+  }
+}

@@ -96,7 +96,7 @@ async def test_poll_battery_recovers_missed_detection() -> None:
     assert manager.snapshot.battery is None
 
     # Speaker is awake now; the periodic poll re-detects and fills in the level.
-    await manager._poll_battery(device)
+    await manager._poll_liveness(device)
 
     assert manager.snapshot.battery == 90
     assert manager.snapshot.battery_status is not None
@@ -116,18 +116,22 @@ async def test_poll_battery_clears_after_sustained_no_response(
     await manager._refresh(device)
     assert manager.snapshot.battery == 90
 
-    # Speaker goes to standby: battery status now times out.
+    # Speaker goes to standby: both firmware and battery now time out.
     async def _timeout(*_a: object, **_k: object) -> object:
         raise TimeoutError
 
     assert device.battery is not None
+    assert device.device_info is not None
     monkeypatch.setattr(device.battery, "status", _timeout)
+    monkeypatch.setattr(device.device_info, "firmware_version", _timeout)
 
-    await manager._poll_battery(device)  # first miss — tolerated, value kept
+    await manager._poll_liveness(device)  # first miss — tolerated, value kept
     assert manager.snapshot.battery == 90
-    await manager._poll_battery(device)  # second miss — cleared
+    assert manager.snapshot.speaker_awake
+    await manager._poll_liveness(device)  # second miss — cleared
     assert manager.snapshot.battery is None
     assert manager.snapshot.battery_status is None
+    assert not manager.snapshot.speaker_awake
 
 
 async def test_refresh_tolerates_firmware_error() -> None:
