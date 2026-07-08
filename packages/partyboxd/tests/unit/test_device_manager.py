@@ -234,16 +234,52 @@ async def test_run_connects_and_snapshot_is_live(monkeypatch: pytest.MonkeyPatch
 # ---------------------------------------------------------------------------
 
 
-async def test_power_on_raises_when_not_connected() -> None:
+async def test_power_on_raises_when_not_connected(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("partyboxd.device.manager._RECONNECT_WAIT_TIMEOUT", 0.05)
     manager = _make_manager()
     with pytest.raises(DeviceNotConnectedError):
         await manager.power_on()
 
 
-async def test_power_off_raises_when_not_connected() -> None:
+async def test_power_off_raises_when_not_connected(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("partyboxd.device.manager._RECONNECT_WAIT_TIMEOUT", 0.05)
     manager = _make_manager()
     with pytest.raises(DeviceNotConnectedError):
         await manager.power_off()
+
+
+async def test_power_on_waits_for_in_progress_reconnect() -> None:
+    """A power command mid-reconnect (self._device is None) should wait for
+    the manager's connect loop to land a new connection, not fail instantly —
+    this is the fix for "turn off, then immediately turn back on" racing the
+    BLE reconnect that follows every power command on real hardware."""
+    manager = _make_manager()
+    transport = MockTransport(address="AA:BB:CC:DD:EE:FF")
+    await transport.connect()
+    device = PartyBoxDevice._from_transport(transport)
+
+    async def _connect_shortly() -> None:
+        await asyncio.sleep(0.02)
+        manager._device = device  # type: ignore[assignment]
+        manager._connected_event.set()
+
+    connect_task = asyncio.create_task(_connect_shortly())
+    queue = manager.subscribe()
+    await manager.power_on()
+    await connect_task
+
+    event = queue.get_nowait()
+    assert isinstance(event, PowerChangedEvent)
+    assert event.state == "on"
+
+
+async def test_power_on_raises_if_reconnect_does_not_land_in_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("partyboxd.device.manager._RECONNECT_WAIT_TIMEOUT", 0.05)
+    manager = _make_manager()
+    with pytest.raises(DeviceNotConnectedError):
+        await manager.power_on()
 
 
 async def test_power_on_sends_command_and_emits_event() -> None:

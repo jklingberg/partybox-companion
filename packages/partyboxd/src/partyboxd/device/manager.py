@@ -55,6 +55,14 @@ _PROBE_TIMEOUT = 10.0
 # single transient miss while the speaker is genuinely awake.
 _LIVENESS_MISS_LIMIT = 2
 
+# How long a power command's caller waits for the manager to land a fresh
+# connection when the speaker is mid-reconnect. Sending a power on/off command
+# makes the PartyBox reset its own BLE stack for a stretch before it
+# reconnects (observed ~15-17s on hardware, even on mains power) — see
+# ADR-034. Without this wait, "turn off, then immediately turn back on" would
+# race the reconnect and fail with DeviceNotConnectedError nearly every time.
+_RECONNECT_WAIT_TIMEOUT = 20.0
+
 
 class DeviceNotConnectedError(Exception):
     """Raised when a device operation is attempted while the speaker is not connected."""
@@ -135,6 +143,9 @@ class DeviceManager:
         self._bus = EventBus()
         #: Consecutive liveness-probe misses on the current connection.
         self._liveness_misses = 0
+        #: Set while `_device` is non-None; lets callers await a reconnect
+        #: instead of failing instantly during a transient BLE drop.
+        self._connected_event = asyncio.Event()
 
     @property
     def snapshot(self) -> StatusSnapshot:
@@ -165,15 +176,39 @@ class DeviceManager:
         if new_state != prev_state:
             self._bus.emit(SpeakerStateChangedEvent(state=new_state))
 
+    async def _get_connected_device(self) -> PartyBoxDevice:
+        """Return the connected device, waiting briefly for an in-progress reconnect.
+
+        A power command makes the PartyBox reset its own BLE stack for a
+        stretch before it reconnects (see ``_RECONNECT_WAIT_TIMEOUT``), so a
+        caller landing in that window should not see an instant failure —
+        it waits for the manager's connect loop to land a fresh connection
+        instead.
+
+        Raises:
+            DeviceNotConnectedError: if no connection is established within
+                ``_RECONNECT_WAIT_TIMEOUT``.
+        """
+        if self._device is not None:
+            return self._device
+        try:
+            await asyncio.wait_for(self._connected_event.wait(), timeout=_RECONNECT_WAIT_TIMEOUT)
+        except TimeoutError:
+            raise DeviceNotConnectedError() from None
+        if self._device is None:
+            raise DeviceNotConnectedError()
+        return self._device
+
     async def power_on(self) -> None:
         """Send a power-on command to the connected speaker.
+
+        Waits for an in-progress reconnect (see ``_get_connected_device``)
+        before giving up.
 
         Raises :exc:`DeviceNotConnectedError` if the speaker is not connected
         or if the connection is lost during the command.
         """
-        device = self._device
-        if device is None:
-            raise DeviceNotConnectedError()
+        device = await self._get_connected_device()
         try:
             await device.power.turn_on()
         except (ConnectionLostError, NotConnectedError) as exc:
@@ -183,12 +218,13 @@ class DeviceManager:
     async def get_volume(self) -> int | None:
         """Return the current hardware volume (0-100), or None if not readable.
 
+        Waits for an in-progress reconnect (see ``_get_connected_device``)
+        before giving up.
+
         Raises:
             DeviceNotConnectedError: if the speaker is not connected.
         """
-        device = self._device
-        if device is None:
-            raise DeviceNotConnectedError()
+        device = await self._get_connected_device()
         try:
             level: int | None = await device.volume.get()
             return level
@@ -200,15 +236,16 @@ class DeviceManager:
     async def set_volume(self, percent: int) -> None:
         """Set the hardware volume (0-100).
 
+        Waits for an in-progress reconnect (see ``_get_connected_device``)
+        before giving up.
+
         Raises:
             ValueError: if *percent* is outside [0, 100].
             DeviceNotConnectedError: if the speaker is not connected or the
                 connection is lost during the command.
             NotImplementedError: if the BLE volume opcode is not yet confirmed.
         """
-        device = self._device
-        if device is None:
-            raise DeviceNotConnectedError()
+        device = await self._get_connected_device()
         try:
             await device.volume.set(percent)
         except (ConnectionLostError, NotConnectedError) as exc:
@@ -217,12 +254,13 @@ class DeviceManager:
     async def power_off(self) -> None:
         """Send a power-off command to the connected speaker.
 
+        Waits for an in-progress reconnect (see ``_get_connected_device``)
+        before giving up.
+
         Raises :exc:`DeviceNotConnectedError` if the speaker is not connected
         or if the connection is lost during the command.
         """
-        device = self._device
-        if device is None:
-            raise DeviceNotConnectedError()
+        device = await self._get_connected_device()
         try:
             await device.power.turn_off()
         except (ConnectionLostError, NotConnectedError) as exc:
@@ -267,6 +305,7 @@ class DeviceManager:
             return
 
         self._device = device
+        self._connected_event.set()
         log.info("connected to %s (attempt %d)", device.address, attempt)
 
         await self._refresh(device)
@@ -289,6 +328,7 @@ class DeviceManager:
             log.info("disconnected from %s", device.address)
         finally:
             self._device = None
+            self._connected_event.clear()
             self._set_snapshot(_DISCONNECTED)
             self._bus.emit(DisconnectedEvent())
 
@@ -465,4 +505,5 @@ class DeviceManager:
                 log.warning("error during disconnect: %s", exc)
             finally:
                 self._device = None
+                self._connected_event.clear()
                 self._set_snapshot(_DISCONNECTED)

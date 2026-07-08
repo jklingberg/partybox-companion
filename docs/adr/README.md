@@ -43,3 +43,4 @@ New ADRs should be added when a significant design decision is made. Superseded 
 | [031](031-factory-reset-contract.md) | Factory Reset Contract | Accepted |
 | [032](032-capability-probing.md) | Detect Optional Capabilities by Probing the Vendor Protocol | Accepted |
 | [033](033-speaker-standby-detection.md) | Speaker Power State — Standby Detection via Control-Plane Liveness Probing | Accepted |
+| [034](034-power-command-reconnect-wait.md) | Wait for Reconnect Across a Power Command's Own BLE Drop | Accepted |
