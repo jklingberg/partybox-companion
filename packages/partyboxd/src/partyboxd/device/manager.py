@@ -140,7 +140,7 @@ class DeviceManager:
         self._settings = settings
         self._snapshot: StatusSnapshot = _DISCONNECTED
         self._device: PartyBoxDevice | None = None
-        self._bus = EventBus()
+        self._bus: EventBus[DeviceEvent] = EventBus()
         #: Consecutive liveness-probe misses on the current connection.
         self._liveness_misses = 0
         #: Set while `_device` is non-None; lets callers await a reconnect
