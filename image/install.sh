@@ -318,11 +318,11 @@ chmod 0644 /etc/polkit-1/rules.d/51-companion-nm.rules
 # ──────────────────────────────────────────────────────────────────────────────
 # 10. Hostname
 #
-# "partybox" is the appliance default — it determines the mDNS address
-# (partybox.local) and the router hostname. It is not a permanent value.
-# A future Portal rename feature should call: hostnamectl set-hostname <name>
-# and restart avahi-daemon. /etc/hostname is a standard file; nothing here
-# prevents that.
+# "partybox" is the fixed, permanent appliance hostname — it determines the
+# mDNS address (partybox.local) and the router hostname. Companion is
+# designed around the common case of a single appliance in a household, so
+# this is not user-configurable: there is no Portal setting for renaming the
+# appliance or its hostname.
 # ──────────────────────────────────────────────────────────────────────────────
 log "Setting hostname to 'partybox'"
 echo "partybox" > /etc/hostname

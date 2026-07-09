@@ -52,8 +52,7 @@ async def test_get_config_returns_defaults_on_first_boot(tmp_path: Path) -> None
         r = await client.get("/api/v1/config")
     assert r.status_code == 200
     body = r.json()
-    assert body["device_name"] == "PartyBox"
-    assert body["spotify_connect_name"] == "PartyBox Companion"
+    assert body["spotify_connect_name"] == "PartyBox"
     assert body["spotify_bitrate"] == 320
 
 
@@ -74,14 +73,12 @@ async def test_put_config_returns_updated_body(tmp_path: Path) -> None:
         r = await client.put(
             "/api/v1/config",
             json={
-                "device_name": "Kitchen",
                 "spotify_connect_name": "Kitchen",
                 "spotify_bitrate": 160,
             },
         )
     assert r.status_code == 200
     body = r.json()
-    assert body["device_name"] == "Kitchen"
     assert body["spotify_connect_name"] == "Kitchen"
     assert body["spotify_bitrate"] == 160
 
@@ -91,7 +88,6 @@ async def test_put_config_writes_to_disk(tmp_path: Path) -> None:
         await client.put(
             "/api/v1/config",
             json={
-                "device_name": "Garage",
                 "spotify_connect_name": "Garage",
                 "spotify_bitrate": 320,
             },
@@ -99,7 +95,6 @@ async def test_put_config_writes_to_disk(tmp_path: Path) -> None:
     config_file = tmp_path / "config.json"
     assert config_file.exists()
     cfg = PortalConfig.model_validate_json(config_file.read_text())
-    assert cfg.device_name == "Garage"
     assert cfg.spotify_connect_name == "Garage"
 
 
@@ -108,23 +103,21 @@ async def test_config_persists_across_requests(tmp_path: Path) -> None:
         await client.put(
             "/api/v1/config",
             json={
-                "device_name": "Living Room",
                 "spotify_connect_name": "Living Room",
                 "spotify_bitrate": 320,
             },
         )
         r = await client.get("/api/v1/config")
-    assert r.json()["device_name"] == "Living Room"
     assert r.json()["spotify_connect_name"] == "Living Room"
 
 
 async def test_put_config_accepts_partial_with_defaults(tmp_path: Path) -> None:
-    """PUT with only device_name — other fields take defaults."""
+    """PUT with only spotify_connect_name — other fields take defaults."""
     async with _make_app(tmp_path) as client:
-        r = await client.put("/api/v1/config", json={"device_name": "Den"})
+        r = await client.put("/api/v1/config", json={"spotify_connect_name": "Den"})
     assert r.status_code == 200
     body = r.json()
-    assert body["device_name"] == "Den"
+    assert body["spotify_connect_name"] == "Den"
     assert body["spotify_bitrate"] == 320
 
 
@@ -204,19 +197,15 @@ async def test_daemon_health_still_reachable(tmp_path: Path) -> None:
 def test_config_store_returns_defaults_when_no_file(tmp_path: Path) -> None:
     store = ConfigStore(tmp_path / "config.json")
     cfg = store.read()
-    assert cfg.device_name == "PartyBox"
-    assert cfg.spotify_connect_name == "PartyBox Companion"
+    assert cfg.spotify_connect_name == "PartyBox"
     assert cfg.spotify_bitrate == 320
 
 
 def test_config_store_roundtrip(tmp_path: Path) -> None:
     store = ConfigStore(tmp_path / "config.json")
-    original = PortalConfig(
-        device_name="Patio", spotify_connect_name="Patio Speaker", spotify_bitrate=160
-    )
+    original = PortalConfig(spotify_connect_name="Patio Speaker", spotify_bitrate=160)
     store.write(original)
     loaded = store.read()
-    assert loaded.device_name == "Patio"
     assert loaded.spotify_connect_name == "Patio Speaker"
     assert loaded.spotify_bitrate == 160
 

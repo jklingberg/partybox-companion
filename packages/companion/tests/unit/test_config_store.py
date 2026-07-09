@@ -19,9 +19,9 @@ def test_missing_file_returns_defaults(tmp_path: Path) -> None:
 
 def test_roundtrip(tmp_path: Path) -> None:
     store = ConfigStore(tmp_path / "config.json")
-    store.write(PortalConfig(device_name="Den", spotify_bitrate=160))
+    store.write(PortalConfig(spotify_connect_name="Den", spotify_bitrate=160))
     cfg = store.read()
-    assert cfg.device_name == "Den"
+    assert cfg.spotify_connect_name == "Den"
     assert cfg.spotify_bitrate == 160
 
 
@@ -50,14 +50,14 @@ def test_write_after_quarantine_starts_clean(tmp_path: Path) -> None:
     path.write_text("{broken json!!")
     store = ConfigStore(path)
     store.read()
-    store.write(PortalConfig(device_name="Fixed"))
-    assert store.read().device_name == "Fixed"
+    store.write(PortalConfig(spotify_connect_name="Fixed"))
+    assert store.read().spotify_connect_name == "Fixed"
 
 
 def test_reset_deletes_file_and_restores_defaults(tmp_path: Path) -> None:
     path = tmp_path / "config.json"
     store = ConfigStore(path)
-    store.write(PortalConfig(device_name="Den", audio_sink_address="50:1B:6A:14:FD:1D"))
+    store.write(PortalConfig(spotify_connect_name="Den", audio_sink_address="50:1B:6A:14:FD:1D"))
     assert path.exists()
 
     store.reset()

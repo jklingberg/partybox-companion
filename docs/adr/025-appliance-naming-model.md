@@ -1,6 +1,13 @@
 # ADR-021: Appliance Naming Model — Single Identity with Optional Service Overrides
 
-**Status:** Proposed
+**Status:** Rejected
+
+> **Rejected:** Companion is designed around the common case of a single
+> appliance in a household, so there's no appliance identity for
+> `spotify_connect_name`/future `airplay_name` to inherit from — this ADR's
+> premise doesn't apply. `PortalConfig.device_name` has been removed rather
+> than built out. The body below is retained as a historical record of the
+> proposal.
 
 ---
 
