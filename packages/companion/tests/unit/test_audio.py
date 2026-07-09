@@ -22,6 +22,8 @@ import pytest
 from companion.config import AudioSettings
 from companion.services._a2dp_connect import STALE_BOND_CODE, error_code
 from companion.services.audio import (
+    _FAILURE_COOLDOWN,
+    _FAILURE_LIMIT,
     _FLAP_COOLDOWN,
     _FLAP_LIMIT,
     _FLAP_WINDOW,
@@ -756,3 +758,87 @@ async def test_run_enters_cooldown_when_flap_limit_reached() -> None:
 
     assert retry_calls == [_FLAP_COOLDOWN]
     assert svc._flap_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Sustained-failure detection — outright connect failures (never reaching
+# audio_ready=True) trigger their own cooldown, independent of flap detection
+# ---------------------------------------------------------------------------
+
+
+async def test_consecutive_failures_increments_on_outright_connect_failure() -> None:
+    """An outright connect failure (ConnectProfile never succeeds) increments
+    the separate consecutive-failure counter — flap detection never fires here
+    because audio_ready never transitions to True in the first place."""
+    svc = _service()
+
+    # _is_connected() -> false, _connect() -> fail, _is_connected() post-check -> false
+    call_results = [_mock_proc(b"false"), _mock_proc(b""), _mock_proc(b"false")]
+
+    async def fake_exec(*args: object, **kwargs: object) -> MagicMock:
+        return call_results.pop(0)
+
+    async def fake_wait_retry(delay: float) -> bool:
+        raise asyncio.CancelledError
+
+    with (
+        patch("companion.services.audio.asyncio.create_subprocess_exec", side_effect=fake_exec),
+        patch.object(svc, "_wait_retry", side_effect=fake_wait_retry),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await svc.run()
+
+    assert svc._consecutive_failures == 1
+    assert svc._flap_count == 0
+
+
+async def test_consecutive_failures_resets_on_successful_connect() -> None:
+    """A successful ConnectProfile clears the consecutive-failure counter."""
+    svc = _service()
+    svc._consecutive_failures = 3
+
+    call_results = [_mock_proc(b"false"), _mock_proc(b"ok")]
+
+    async def fake_exec(*args: object, **kwargs: object) -> MagicMock:
+        return call_results.pop(0)
+
+    async def fake_sleep(delay: float) -> None:
+        raise asyncio.CancelledError
+
+    with (
+        patch("companion.services.audio.asyncio.create_subprocess_exec", side_effect=fake_exec),
+        patch("companion.services.audio.asyncio.sleep", side_effect=fake_sleep),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await svc.run()
+
+    assert svc._consecutive_failures == 0
+
+
+async def test_run_enters_cooldown_when_consecutive_failures_reach_limit() -> None:
+    """run() waits _FAILURE_COOLDOWN once outright connect failures accumulate
+    to _FAILURE_LIMIT — the gap the flap cooldown doesn't cover, since
+    audio_ready never went True during a sustained outright-failure loop."""
+    svc = _service()
+    svc._consecutive_failures = _FAILURE_LIMIT - 1  # one more failure trips the limit
+
+    call_results = [_mock_proc(b"false"), _mock_proc(b""), _mock_proc(b"false")]
+
+    async def fake_exec(*args: object, **kwargs: object) -> MagicMock:
+        return call_results.pop(0)
+
+    retry_calls: list[float] = []
+
+    async def fake_wait_retry(delay: float) -> bool:
+        retry_calls.append(delay)
+        raise asyncio.CancelledError
+
+    with (
+        patch("companion.services.audio.asyncio.create_subprocess_exec", side_effect=fake_exec),
+        patch.object(svc, "_wait_retry", side_effect=fake_wait_retry),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await svc.run()
+
+    assert retry_calls == [_FAILURE_COOLDOWN]
+    assert svc._consecutive_failures == 0

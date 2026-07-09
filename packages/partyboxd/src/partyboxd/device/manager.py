@@ -63,6 +63,16 @@ _LIVENESS_MISS_LIMIT = 2
 # race the reconnect and fail with DeviceNotConnectedError nearly every time.
 _RECONNECT_WAIT_TIMEOUT = 20.0
 
+# Cap on the scan/connect retry backoff. A controller wedged by BCM4345 HCI
+# UART corruption (ADR-028) can fail every scan or ConnectProfile call for
+# minutes at a time; without a cap, `reconnect_delay` (5s default, flat, no
+# backoff) retries continuously and adds BLE scan traffic to a controller
+# already struggling — the same failure mode AudioService's A2DP retry loop
+# hits on the Classic side. 60s matches AudioService's cap (companion's
+# audio.py `_RETRY_MAX`) so neither loop hammers the shared radio faster than
+# the other once both have backed off.
+_RECONNECT_MAX = 60.0
+
 
 class DeviceNotConnectedError(Exception):
     """Raised when a device operation is attempted while the speaker is not connected."""
@@ -146,6 +156,9 @@ class DeviceManager:
         #: Set while `_device` is non-None; lets callers await a reconnect
         #: instead of failing instantly during a transient BLE drop.
         self._connected_event = asyncio.Event()
+        #: Current scan/connect retry delay; doubles on failure up to
+        #: `_RECONNECT_MAX`, resets to `settings.reconnect_delay` on success.
+        self._retry_delay = settings.reconnect_delay
 
     @property
     def snapshot(self) -> StatusSnapshot:
@@ -294,16 +307,17 @@ class DeviceManager:
         log.info("scan attempt %d", attempt)
         device = await self._scan()
         if device is None:
-            await asyncio.sleep(self._settings.reconnect_delay)
+            await self._sleep_and_backoff()
             return
 
         try:
             await device.connect()
         except ConnectionFailedError as exc:
             log.warning("connection failed (attempt %d): %s", attempt, exc)
-            await asyncio.sleep(self._settings.reconnect_delay)
+            await self._sleep_and_backoff()
             return
 
+        self._retry_delay = self._settings.reconnect_delay
         self._device = device
         self._connected_event.set()
         log.info("connected to %s (attempt %d)", device.address, attempt)
@@ -444,6 +458,16 @@ class DeviceManager:
 
         if new_snapshot is not prev:
             self._set_snapshot(new_snapshot)
+
+    async def _sleep_and_backoff(self) -> None:
+        """Sleep the current scan/connect retry delay, then grow it for next time.
+
+        Resets to `settings.reconnect_delay` on the next successful connect
+        (see `_connect_and_maintain`) — a transient failure doesn't leave a
+        stale slow delay in place once the speaker is reachable again.
+        """
+        await asyncio.sleep(self._retry_delay)
+        self._retry_delay = min(self._retry_delay * 2, _RECONNECT_MAX)
 
     async def _scan(self) -> PartyBoxDevice | None:
         log.info("scanning for speaker")

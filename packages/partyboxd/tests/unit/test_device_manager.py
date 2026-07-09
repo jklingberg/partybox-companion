@@ -11,7 +11,7 @@ from partybox.protocol.codec import encode
 from partybox.protocol.messages import BatteryStatusRequest, FirmwareVersionRequest
 from partyboxd.config import SpeakerSettings
 from partyboxd.device.events import ConnectedEvent, DisconnectedEvent, PowerChangedEvent
-from partyboxd.device.manager import DeviceManager, DeviceNotConnectedError
+from partyboxd.device.manager import _RECONNECT_MAX, DeviceManager, DeviceNotConnectedError
 
 FIRMWARE_REQUEST = encode(FirmwareVersionRequest())
 # Real hardware capture: firmware 26.2.10
@@ -360,3 +360,90 @@ async def test_unsubscribe_stops_delivery() -> None:
     manager.unsubscribe(queue)
     manager._bus.emit(DisconnectedEvent())
     assert queue.empty()
+
+
+# ---------------------------------------------------------------------------
+# scan/connect retry backoff
+# ---------------------------------------------------------------------------
+
+
+async def test_scan_failure_backs_off_exponentially(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Repeated scan failures double the retry delay up to _RECONNECT_MAX,
+    instead of retrying at a flat `reconnect_delay` forever — the gap that let
+    a wedged controller (ADR-028) get hammered with a scan roughly every 13s
+    for the whole length of an outage."""
+
+    async def _no_speaker(*_: object, **__: object) -> None:
+        return None
+
+    monkeypatch.setattr("partyboxd.device.manager.Scanner.find", _no_speaker)
+
+    manager = _make_manager(_settings(reconnect_delay=1.0))
+
+    sleep_calls: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleep_calls.append(delay)
+        if len(sleep_calls) >= 4:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr("partyboxd.device.manager.asyncio.sleep", fake_sleep)
+
+    task = asyncio.create_task(manager.run())
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert sleep_calls == [1.0, 2.0, 4.0, 8.0]
+
+
+async def test_scan_backoff_caps_at_reconnect_max(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The backoff stops doubling once it reaches _RECONNECT_MAX."""
+
+    async def _no_speaker(*_: object, **__: object) -> None:
+        return None
+
+    monkeypatch.setattr("partyboxd.device.manager.Scanner.find", _no_speaker)
+
+    manager = _make_manager(_settings(reconnect_delay=_RECONNECT_MAX))
+
+    sleep_calls: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleep_calls.append(delay)
+        if len(sleep_calls) >= 2:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr("partyboxd.device.manager.asyncio.sleep", fake_sleep)
+
+    task = asyncio.create_task(manager.run())
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert sleep_calls == [_RECONNECT_MAX, _RECONNECT_MAX]
+
+
+async def test_retry_delay_resets_after_successful_connect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A successful connect resets the backoff delay, not leaving a stale
+    grown value in place from a prior run of failures."""
+    transport = MockTransport(address="BB:CC:DD:EE:FF:AA")
+    transport.stub(FIRMWARE_REQUEST, FIRMWARE_RESPONSE)
+
+    async def _fake_find(*_: object, **__: object) -> PartyBoxDevice:
+        await transport.connect()
+        return PartyBoxDevice._from_transport(transport)
+
+    monkeypatch.setattr("partyboxd.device.manager.Scanner.find", _fake_find)
+
+    manager = _make_manager(_settings(reconnect_delay=1.0))
+    manager._retry_delay = 32.0  # simulate prior backoff growth
+
+    task = asyncio.create_task(manager.run())
+    await asyncio.sleep(0.05)  # let it connect and refresh
+
+    assert manager._retry_delay == 1.0
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
