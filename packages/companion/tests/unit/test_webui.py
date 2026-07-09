@@ -138,6 +138,7 @@ async def test_portal_html_references_api_endpoints(tmp_path: Path) -> None:
         r = await client.get("/")
     html = r.text
     assert "/api/v1/health" in html
+    assert "/api/v1/health/details" in html
     assert "/api/v1/config" in html
     assert "/api/v1/events" in html
     assert "/api/v1/power/" in html
@@ -174,6 +175,19 @@ async def test_portal_html_contains_settings_sections(tmp_path: Path) -> None:
     assert "spotify_connect_name" in html
     assert "spotify_bitrate" in html
     assert "debug/bundle" in html
+
+
+async def test_portal_html_factory_reset_uses_typed_inline_confirm(tmp_path: Path) -> None:
+    """Factory reset must not use a native window.confirm() dialog.
+
+    docs/design/portal-redesign.md §12 item 6: restyled as an in-sheet typed
+    confirmation step in the settings sheet's own visual language.
+    """
+    async with _make_app(tmp_path) as client:
+        r = await client.get("/")
+    html = r.text
+    assert "factory-reset-confirm" in html
+    assert "confirm(" not in html
 
 
 # ---------------------------------------------------------------------------

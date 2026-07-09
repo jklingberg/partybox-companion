@@ -8,11 +8,12 @@ import json
 import logging
 import platform
 import zipfile
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import Annotated
+from typing import Annotated, Literal
 
 import partyboxd
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from partyboxd.device import DeviceManager
 from partyboxd.device.manager import DeviceNotConnectedError, StatusSnapshot
@@ -23,6 +24,7 @@ from companion.config_store import ConfigStore
 from companion.services.audio import AudioService
 from companion.services.pairing import PairingService, PairingState
 from companion.services.spotify import SpotifyService
+from companion.supervisor import Supervisor
 from companion.volume import VolumeState
 
 log = logging.getLogger(__name__)
@@ -58,6 +60,27 @@ class VolumeBody(BaseModel):
     """Request body for POST /api/v1/volume."""
 
     level: Annotated[int, Field(ge=0, le=100)]
+
+
+class TaskHealthResponse(BaseModel):
+    """Serialised view of one supervised task, from ``Supervisor.health()``.
+
+    ``last_exception`` is formatted as ``"<ExceptionType>: <message>"``, or
+    ``None`` if the task has never failed or its last exit was a clean
+    (unexpected) return. Timestamps are omitted — ``TaskHealth``'s are
+    ``time.monotonic()`` values with no cross-process meaning to a client.
+    """
+
+    name: str
+    state: Literal["waiting", "running"]
+    last_exception: str | None
+    total_failures: int
+
+
+class HealthDetailsResponse(BaseModel):
+    """Response body for GET /api/v1/health/details."""
+
+    tasks: list[TaskHealthResponse]
 
 
 async def _collect_journal_logs() -> str:
@@ -127,15 +150,23 @@ def make_services_router(
     volume_state: VolumeState | None = None,
     audio: AudioService | None = None,
     pairing: PairingService | None = None,
+    supervisor: Supervisor | None = None,
+    auth: Callable[..., Awaitable[None]] | None = None,
 ) -> APIRouter:
     """Return an APIRouter with service-status and diagnostics endpoints.
 
-    These endpoints are intentionally unauthenticated — they expose read-only
-    appliance state and contain no sensitive data. The restart endpoint is also
-    unauthenticated because it can only affect the local appliance and requires
-    physical network access.
+    Most of these endpoints are intentionally unauthenticated — they expose
+    read-only appliance state and contain no sensitive data. The restart
+    endpoint is also unauthenticated because it can only affect the local
+    appliance and requires physical network access.
+
+    ``GET /api/v1/health/details`` is the exception: it exposes per-task crash
+    detail (exception messages), so it requires *auth* — the same API-key
+    dependency partyboxd's private routes use (``partyboxd.api.auth``) — when
+    provided. See ADR-037.
     """
     router = APIRouter(prefix="/api/v1", tags=["services"])
+    health_details_dependencies = [Depends(auth)] if auth is not None else []
 
     # ------------------------------------------------------------------
     # GET /api/v1/audio — unauthenticated
@@ -269,6 +300,52 @@ def make_services_router(
             backend=spotify.settings.backend,
         )
         spotify.update_settings(new_settings)
+
+    # ------------------------------------------------------------------
+    # GET /api/v1/health/details — authenticated
+    # ------------------------------------------------------------------
+
+    @router.get(
+        "/health/details",
+        response_model=HealthDetailsResponse,
+        summary="Per-task supervisor health",
+        dependencies=health_details_dependencies,
+    )
+    async def get_health_details() -> HealthDetailsResponse:
+        """Per-task health detail for every task registered with the Supervisor.
+
+        Powers the Portal's health sheet (docs/design/portal-redesign.md §4.4)
+        with real per-task state instead of a synthesized view. ``state`` is
+        ``"running"`` for a healthy task and ``"waiting"`` while it is backed
+        off after an unexpected exit; ``last_exception`` and ``total_failures``
+        describe the most recent and cumulative failures.
+
+        Requires authentication (see ADR-037) — unlike the other endpoints in
+        this router, it can reveal internal exception detail.
+
+        **Responses:**
+
+        | Code | Meaning |
+        |------|---------|
+        | 200 | Task health returned |
+        | 401 | Missing or invalid API key |
+        """
+        tasks = supervisor.health() if supervisor is not None else []
+        return HealthDetailsResponse(
+            tasks=[
+                TaskHealthResponse(
+                    name=t.name,
+                    state=t.state,
+                    last_exception=(
+                        f"{type(t.last_exception).__name__}: {t.last_exception}"
+                        if t.last_exception is not None
+                        else None
+                    ),
+                    total_failures=t.total_failures,
+                )
+                for t in tasks
+            ]
+        )
 
     # ------------------------------------------------------------------
     # POST /api/v1/factory-reset — unauthenticated

@@ -23,6 +23,7 @@ from contextlib import suppress
 
 import uvicorn
 from partyboxd.api import create_app as create_daemon_app
+from partyboxd.api.auth import make_auth_dependency
 from partyboxd.config import Settings as DaemonSettings
 from partyboxd.device import DeviceManager
 from partyboxd.device.events import SpeakerStateChangedEvent, VolumeChangedEvent
@@ -212,6 +213,12 @@ async def _run(
 
     provisioning = ProvisioningService(companion_settings.wifi.interface)
 
+    # Created before the routers so make_services_router can read live task
+    # health via supervisor.health() — registrations happen below, after the
+    # app is assembled, but Supervisor.health() only reflects what's
+    # registered by the time supervisor.run() starts.
+    supervisor = Supervisor()
+
     app = create_daemon_app(
         manager,
         daemon_settings,
@@ -227,6 +234,8 @@ async def _run(
             volume_state=volume_state,
             audio=audio,
             pairing=pairing,
+            supervisor=supervisor,
+            auth=make_auth_dependency(daemon_settings),
         )
     )
     app.include_router(make_wifi_router(provisioning))
@@ -240,7 +249,6 @@ async def _run(
     )
     server = uvicorn.Server(server_config)
 
-    supervisor = Supervisor()
     supervisor.register("device-manager", manager.run)
     supervisor.register("spotify-audio-gate", lambda: _gate_spotify_on_audio(audio, spotify))
     supervisor.register("audio-service", audio.run)
