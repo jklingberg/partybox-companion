@@ -501,14 +501,6 @@
     </div>
 
     <div class="section">
-      <div class="section-title">Appliance</div>
-      <div class="field">
-        <label for="set-name">Name shown in this Portal</label>
-        <input id="set-name" type="text" maxlength="48" />
-      </div>
-    </div>
-
-    <div class="section">
       <div class="section-title">Spotify Connect</div>
       <div class="field">
         <label for="set-spotify-name">Device name shown in Spotify</label>
@@ -606,7 +598,7 @@ const S = {
   scene: Scene.BOOT,
   health: null, speaker: null, battery: null, spotify: null, audio: null,
   wifi: null,
-  config: { device_name: 'PartyBox', spotify_connect_name: 'PartyBox Companion', spotify_bitrate: 320 },
+  config: { spotify_connect_name: 'PartyBox', spotify_bitrate: 320 },
   apiKey: localStorage.getItem('_pb_key') || null,
   ws: null,
   fetchFailed: false,
@@ -637,7 +629,7 @@ const MOCK_HEALTH  = { status: 'ok', version: '0.2.0-dev', ble_connected: true, 
 const MOCK_SPEAKER = { connected: true, address: 'AA:BB:CC:DD:EE:FF', firmware: '26.2.10', battery: 87 };
 const MOCK_BATTERY = { level: 87, power_source: 'battery', charging: false,
                         remaining_playtime_minutes: 612, state_of_health_percent: 99, cycle_count: 4 };
-const MOCK_CONFIG  = { device_name: 'Living Room', spotify_connect_name: 'Living Room', spotify_bitrate: 320 };
+const MOCK_CONFIG  = { spotify_connect_name: 'Living Room', spotify_bitrate: 320 };
 const MOCK_SPOTIFY = { running: true, active: true, device_name: 'Living Room' };
 const MOCK_AUDIO   = { connected: true, address: '50:1B:6A:14:FD:1D', pairing_state: 'idle' };
 const MOCK_NETWORKS = [
@@ -927,7 +919,7 @@ function onSceneHTML() {
       <header class="on-header">
         <div class="on-name">
           <svg class="icon"><use href="#i-music"/></svg>
-          <span id="on-device-name">${esc(S.config.device_name || 'PartyBox')}</span>
+          <span id="on-device-name">PartyBox Companion</span>
         </div>
         <button class="icon-btn" data-action="open-settings" aria-label="Settings">
           <svg class="icon"><use href="#i-settings"/></svg>
@@ -969,10 +961,7 @@ function onSceneHTML() {
 }
 
 function patchOnScene() {
-  const name = S.config.device_name || 'PartyBox';
-  const nameEl = document.getElementById('on-device-name');
-  if (nameEl) nameEl.textContent = name;
-  document.title = name + ' · Companion';
+  document.title = 'PartyBox Companion';
 
   // -- Hero: playback + power + battery
   const ring = document.getElementById('hero-ring');
@@ -1244,7 +1233,6 @@ function startReconcilePoll() {
 // Settings sheet
 // ==========================================================================
 function openSettings() {
-  document.getElementById('set-name').value = S.config.device_name || '';
   document.getElementById('set-spotify-name').value = S.config.spotify_connect_name || '';
   const br = String(S.config.spotify_bitrate || 320);
   const sel = document.getElementById('set-bitrate');
@@ -1256,7 +1244,6 @@ function openSettings() {
 function closeSettings() { document.getElementById('settings-overlay').classList.add('hidden'); }
 
 async function saveSettings() {
-  const newName    = document.getElementById('set-name').value.trim()         || 'PartyBox';
   const newSvcName = document.getElementById('set-spotify-name').value.trim() || 'PartyBox';
   const newBitrate = parseInt(document.getElementById('set-bitrate').value, 10) || 320;
 
@@ -1268,7 +1255,6 @@ async function saveSettings() {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        device_name: newName,
         spotify_connect_name: newSvcName,
         spotify_bitrate: newBitrate,
       }),

@@ -9,8 +9,8 @@
 ## Context
 
 The appliance persists state that survives a power cycle: the Portal configuration
-(`/var/lib/companion/config.json` — device name, Spotify Connect name, bitrate,
-remembered speaker address) and the Bluetooth bond (`/var/lib/bluetooth/…` plus the
+(`/var/lib/companion/config.json` — Spotify Connect name, bitrate, remembered
+speaker address) and the Bluetooth bond (`/var/lib/bluetooth/…` plus the
 BlueZ `Device1` object). Pulling the power restarts the appliance but clears none of
 it. Before this feature, the only way to return the appliance to a clean state — to
 hand it to someone else, or to recover from a stale/broken Bluetooth bond — was to

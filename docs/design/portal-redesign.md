@@ -251,7 +251,7 @@ on the speaker until the LEDs flash…"), with the live progress line driven by
 ## 5. Navigation
 
 Removed. One screen, two sheets (Settings, Health), both dismissible. The
-settings gear is the only persistent chrome besides the device name.
+settings gear is the only persistent chrome besides the header title.
 
 ---
 
@@ -321,7 +321,7 @@ Cheap (pure CSS), atmospheric, no images.
 
 ### 7.2 Typography
 
-- **Display** (device name, scene messages, "Playing"): a geometric
+- **Display** (header title, scene messages, "Playing"): a geometric
   grotesque with techno character — *Space Grotesk*, self-hosted as a single
   woff2 (~28 KB, weights via `font-variation`). No CDN: the appliance must
   render on a LAN with no internet.

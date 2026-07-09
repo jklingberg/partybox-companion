@@ -80,8 +80,8 @@ async def _gate_spotify_on_audio(audio: AudioService, spotify: SpotifyService) -
     """Gate SpotifyService on audio readiness.
 
     librespot advertises a Spotify Connect device over Zeroconf.  If it runs
-    while A2DP is absent, Spotify clients can select "PartyBox Companion" and
-    receive silence.  This gate ensures Spotify is visible only when the
+    while A2DP is absent, Spotify clients can select "PartyBox" and receive
+    silence.  This gate ensures Spotify is visible only when the
     appliance can actually produce audio.
 
     Subscribes to AudioService events; the BehaviorSubject-style subscribe()
@@ -190,8 +190,9 @@ async def _run(
     # Single ConfigStore shared across all routers — one file handle, one source of truth.
     config_store = ConfigStore(companion_settings.data_dir / "config.json")
 
-    # Load portal config so user-saved settings (device name, bitrate) survive
-    # reboots. The config file may not exist on first boot — defaults are used.
+    # Load portal config so user-saved settings (Spotify Connect name, bitrate)
+    # survive reboots. The config file may not exist on first boot — defaults
+    # are used.
     portal_cfg = config_store.read()
     effective_spotify = SpotifySettings(
         connect_name=portal_cfg.spotify_connect_name,

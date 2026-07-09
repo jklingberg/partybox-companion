@@ -57,7 +57,7 @@ This is a load-bearing architectural principle:
 | `/etc/companion/companion.env` | Image / installer / operator | Machine-level deployment settings. Set once. Rarely changed. Never modified by the running appliance. |
 | `/var/lib/companion/config.json` | The running appliance | User configuration. Written exclusively by the Portal via `PUT /api/v1/config`. Never modified by operators directly. |
 
-**The Portal never modifies `/etc/companion/companion.env`.** The env file is for deployment-time decisions (which Bluetooth MAC to use, what port to bind). The config file is for user preferences (device name, Spotify name, bitrate). These are different domains with different lifecycles and different owners.
+**The Portal never modifies `/etc/companion/companion.env`.** The env file is for deployment-time decisions (which Bluetooth MAC to use, what port to bind). The config file is for user preferences (Spotify name, bitrate). These are different domains with different lifecycles and different owners.
 
 This separation means:
 - Upgrading the appliance (replacing `/opt/partybox-companion/`) leaves both config locations untouched.

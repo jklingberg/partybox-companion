@@ -292,8 +292,8 @@ def make_services_router(
            speaker whose bond is about to be removed.
         2. Removes the Bluetooth bond (``Adapter1.RemoveDevice``) so the
            speaker must be paired again.
-        3. Deletes the saved configuration — device name, Spotify name,
-           bitrate, remembered speaker — reverting to factory defaults.
+        3. Deletes the saved configuration — Spotify name, bitrate,
+           remembered speaker — reverting to factory defaults.
         4. Restarts Spotify Connect so its advertised name reflects the
            reset immediately.
 
