@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from companion.config import SpotifySettings
-from companion.services.spotify import SpotifyService, SpotifyStatus
+from companion.services.spotify import SpotifyService, SpotifyStatus, SpotifyStatusChanged
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -159,6 +159,51 @@ def test_infer_idempotent_when_already_inactive() -> None:
     svc = _service()
     svc._infer_playback_state("track stopped")
     assert svc._active is False
+
+
+# ---------------------------------------------------------------------------
+# subscribe / unsubscribe
+# ---------------------------------------------------------------------------
+
+
+def test_subscribe_delivers_current_state_immediately() -> None:
+    svc = _service(connect_name="Living Room")
+    queue = svc.subscribe()
+    assert not queue.empty()
+    assert queue.get_nowait() == SpotifyStatusChanged(
+        running=False, active=False, device_name="Living Room"
+    )
+
+
+def test_subscribe_returns_queue_that_receives_events() -> None:
+    svc = _service()
+    queue = svc.subscribe()
+    queue.get_nowait()  # drain initial-state event
+
+    svc._infer_playback_state("is now playing")
+    assert not queue.empty()
+    event = queue.get_nowait()
+    assert event.running is False
+    assert event.active is True
+
+
+def test_no_event_emitted_when_status_unchanged() -> None:
+    svc = _service()
+    queue = svc.subscribe()
+    queue.get_nowait()  # drain initial-state event
+
+    svc._infer_playback_state("track stopped")  # already inactive — no-op
+    assert queue.empty()
+
+
+def test_unsubscribe_stops_delivery() -> None:
+    svc = _service()
+    queue = svc.subscribe()
+    queue.get_nowait()  # drain initial-state event
+    svc.unsubscribe(queue)
+
+    svc._infer_playback_state("is now playing")
+    assert queue.empty()
 
 
 # ---------------------------------------------------------------------------

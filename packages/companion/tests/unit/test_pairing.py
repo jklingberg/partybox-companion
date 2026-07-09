@@ -27,7 +27,7 @@ from companion.config import AudioSettings
 from companion.config_store import ConfigStore, PortalConfig
 from companion.services.audio import AudioService
 from companion.services.bluez_dbus import PairingFailedError
-from companion.services.pairing import PairingService, PairingState
+from companion.services.pairing import PairingProgressEvent, PairingService, PairingState
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -183,6 +183,66 @@ async def test_start_returns_false_when_already_pairing() -> None:
     second = await svc.start()
     assert second is False
     blocked.set()
+
+
+# ---------------------------------------------------------------------------
+# subscribe / unsubscribe
+# ---------------------------------------------------------------------------
+
+
+def test_subscribe_delivers_current_state_immediately() -> None:
+    svc = _service()
+    queue = svc.subscribe()
+    assert not queue.empty()
+    assert queue.get_nowait() == PairingProgressEvent(state=PairingState.IDLE, error=None)
+
+
+def test_subscribe_returns_queue_that_receives_events() -> None:
+    svc = _service()
+    queue = svc.subscribe()
+    queue.get_nowait()  # drain initial-state event
+
+    svc._set_state(PairingState.SCANNING)
+    assert not queue.empty()
+    assert queue.get_nowait() == PairingProgressEvent(state=PairingState.SCANNING, error=None)
+
+
+def test_set_state_carries_error() -> None:
+    svc = _service()
+    queue = svc.subscribe()
+    queue.get_nowait()  # drain initial-state event
+
+    svc._set_state(PairingState.FAILED, "Speaker not found.")
+    assert queue.get_nowait() == PairingProgressEvent(
+        state=PairingState.FAILED, error="Speaker not found."
+    )
+
+
+def test_unsubscribe_stops_delivery() -> None:
+    svc = _service()
+    queue = svc.subscribe()
+    queue.get_nowait()  # drain initial-state event
+    svc.unsubscribe(queue)
+
+    svc._set_state(PairingState.SCANNING)
+    assert queue.empty()
+
+
+async def test_successful_pairing_emits_progress_events() -> None:
+    """The full flow emits SCANNING then IDLE — not just a status snapshot."""
+    audio = _audio()
+    svc = PairingService(_store(), audio)
+    queue = svc.subscribe()
+    queue.get_nowait()  # drain initial-state event
+    fake = _FakeBluezClient(discovered_mac=_SPEAKER_MAC)
+
+    with _patch_bluez(fake):
+        await _run_to_completion(svc)
+
+    states = []
+    while not queue.empty():
+        states.append(queue.get_nowait().state)
+    assert states == [PairingState.SCANNING, PairingState.PAIRING, PairingState.IDLE]
 
 
 # ---------------------------------------------------------------------------

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 from fastapi import FastAPI
 
@@ -11,13 +11,14 @@ from partyboxd.device import DeviceManager
 
 from .auth import make_auth_dependency
 from .routes import make_router
-from .ws import make_ws_router
+from .ws import EventSource, make_ws_router
 
 
 def create_app(
     manager: DeviceManager,
     settings: Settings,
     audio_ready_fn: Callable[[], bool] | None = None,
+    extra_event_sources: Sequence[EventSource] = (),
 ) -> FastAPI:
     """Create and return the FastAPI application.
 
@@ -26,6 +27,10 @@ def create_app(
 
     API key authentication is controlled by ``settings.api.api_key``. When
     ``None`` (the default) all requests are accepted without credentials.
+
+    *extra_event_sources* lets a layer above partyboxd (companion) fan
+    additional events into the same WebSocket stream — see
+    ``docs/adr/035-state-ownership-and-signal-pipeline.md``.
     """
     app = FastAPI(
         title="partyboxd",
@@ -40,5 +45,5 @@ def create_app(
 
     auth = make_auth_dependency(settings)
     app.include_router(make_router(manager, auth, audio_ready_fn=audio_ready_fn))
-    app.include_router(make_ws_router(manager, settings))
+    app.include_router(make_ws_router(manager, settings, extra_sources=extra_event_sources))
     return app

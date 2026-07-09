@@ -32,6 +32,9 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
+from typing import Literal
+
+from partyboxd.eventbus import EventBus
 
 from companion.config import AudioSettings
 from companion.services._a2dp_connect import STALE_BOND_CODE, error_code
@@ -43,7 +46,6 @@ _CHECK_INTERVAL = 60.0  # seconds between health checks when connected
 _POST_CONNECT_SETTLE = 5.0  # wait after ConnectProfile ok before re-checking
 _RETRY_BASE = 10.0  # initial retry delay after a failed/lost connection
 _RETRY_MAX = 60.0  # cap backoff at 60 s — 5 min was too slow to recover
-_QUEUE_MAX = 64
 
 # Flap protection: a controller exhibiting HCI transport errors (see ADR-028
 # "WirePlumber endpoint degradation investigation") can accept ConnectProfile
@@ -66,7 +68,11 @@ class AudioReadyChanged:
     """Emitted when audio readiness transitions between ready and not ready.
 
     ``audio_ready`` is ``True`` when A2DP is connected and the appliance
-    can produce audio; ``False`` when the A2DP link is absent.
+    can produce audio; ``False`` when the A2DP link is absent. ``address``
+    is the current sink address (or ``None``), included so WS subscribers
+    (the Portal, via the merged event stream) can update their view of
+    ``GET /api/v1/audio`` without an extra round-trip — see
+    docs/adr/035-state-ownership-and-signal-pipeline.md.
 
     Subscribers receive this event on every transition.  Events are NOT
     emitted when the state is unchanged (e.g. if the connection check
@@ -74,41 +80,11 @@ class AudioReadyChanged:
     """
 
     audio_ready: bool
+    address: str | None = None
+    type: Literal["audio_changed"] = "audio_changed"
 
 
 type AudioServiceEvent = AudioReadyChanged
-
-
-class _AudioEventBus:
-    """Broadcast dispatcher for AudioService events.
-
-    Mirrors the EventBus pattern used by DeviceManager. Slow consumers
-    have events dropped silently rather than stalling the emitter.
-    """
-
-    def __init__(self) -> None:
-        self._queues: list[asyncio.Queue[AudioServiceEvent]] = []
-
-    def subscribe(self) -> asyncio.Queue[AudioServiceEvent]:
-        """Return a queue that receives all future events until unsubscribed."""
-        q: asyncio.Queue[AudioServiceEvent] = asyncio.Queue(maxsize=_QUEUE_MAX)
-        self._queues.append(q)
-        return q
-
-    def unsubscribe(self, queue: asyncio.Queue[AudioServiceEvent]) -> None:
-        """Stop delivering events to *queue*."""
-        try:
-            self._queues.remove(queue)
-        except ValueError:
-            pass
-
-    def emit(self, event: AudioServiceEvent) -> None:
-        """Broadcast *event* to all current subscribers, dropping for full queues."""
-        for q in self._queues:
-            try:
-                q.put_nowait(event)
-            except asyncio.QueueFull:
-                pass
 
 
 # ---------------------------------------------------------------------------
@@ -157,7 +133,7 @@ class AudioService:
         self._address: str | None = settings.sink_address
         self._audio_ready = False
         self._address_ready = asyncio.Event()
-        self._bus = _AudioEventBus()
+        self._bus: EventBus[AudioServiceEvent] = EventBus()
         self._reconnect_now = asyncio.Event()
         self._connected_at: float | None = None
         self._flap_count = 0
@@ -188,7 +164,7 @@ class AudioService:
         must react to audio availability without polling.
         """
         q = self._bus.subscribe()
-        q.put_nowait(AudioReadyChanged(audio_ready=self._audio_ready))
+        q.put_nowait(AudioReadyChanged(audio_ready=self._audio_ready, address=self._address))
         return q
 
     def unsubscribe(self, queue: asyncio.Queue[AudioServiceEvent]) -> None:
@@ -336,7 +312,7 @@ class AudioService:
             else:
                 self._flap_count = 0
             self._connected_at = None
-        self._bus.emit(AudioReadyChanged(audio_ready=val))
+        self._bus.emit(AudioReadyChanged(audio_ready=val, address=self._address))
 
     async def _is_connected(self) -> bool:
         assert self._address is not None

@@ -171,7 +171,7 @@ async def test_run_settle_sleep_after_successful_connect() -> None:
     while not events.empty():
         emitted.append(events.get_nowait())
     # audio_ready=True was emitted before the settle sleep (and False after cancellation)
-    assert AudioReadyChanged(audio_ready=True) in emitted
+    assert AudioReadyChanged(audio_ready=True, address="AA:BB:CC:DD:EE:FF") in emitted
 
 
 async def test_run_backoff_doubles_on_repeated_failures() -> None:
@@ -557,7 +557,7 @@ async def test_set_audio_ready_emits_event_on_false_to_true() -> None:
 
     svc._set_audio_ready(True)  # False → True: event
     assert not queue.empty()
-    assert queue.get_nowait() == AudioReadyChanged(audio_ready=True)
+    assert queue.get_nowait() == AudioReadyChanged(audio_ready=True, address="AA:BB:CC:DD:EE:FF")
 
 
 async def test_set_audio_ready_emits_event_on_true_to_false() -> None:
@@ -569,7 +569,7 @@ async def test_set_audio_ready_emits_event_on_true_to_false() -> None:
 
     svc._set_audio_ready(False)  # True → False: event
     assert not queue.empty()
-    assert queue.get_nowait() == AudioReadyChanged(audio_ready=False)
+    assert queue.get_nowait() == AudioReadyChanged(audio_ready=False, address="AA:BB:CC:DD:EE:FF")
 
 
 async def test_set_audio_ready_no_event_when_unchanged() -> None:
@@ -600,12 +600,12 @@ async def test_subscribe_delivers_current_state_immediately() -> None:
     # Not ready at construction time
     queue = svc.subscribe()
     assert not queue.empty()
-    assert queue.get_nowait() == AudioReadyChanged(audio_ready=False)
+    assert queue.get_nowait() == AudioReadyChanged(audio_ready=False, address="AA:BB:CC:DD:EE:FF")
 
     # Now set ready and subscribe again
     svc._set_audio_ready(True)
     queue2 = svc.subscribe()
-    assert queue2.get_nowait() == AudioReadyChanged(audio_ready=True)
+    assert queue2.get_nowait() == AudioReadyChanged(audio_ready=True, address="AA:BB:CC:DD:EE:FF")
 
 
 async def test_subscribe_returns_queue_that_receives_events() -> None:
@@ -626,8 +626,8 @@ async def test_multiple_subscribers_each_receive_events() -> None:
     q2.get_nowait()
 
     svc._set_audio_ready(True)
-    assert q1.get_nowait() == AudioReadyChanged(audio_ready=True)
-    assert q2.get_nowait() == AudioReadyChanged(audio_ready=True)
+    assert q1.get_nowait() == AudioReadyChanged(audio_ready=True, address="AA:BB:CC:DD:EE:FF")
+    assert q2.get_nowait() == AudioReadyChanged(audio_ready=True, address="AA:BB:CC:DD:EE:FF")
 
 
 async def test_unsubscribe_stops_delivery() -> None:
@@ -678,7 +678,7 @@ async def test_run_emits_audio_ready_true_on_connect() -> None:
     while not queue.empty():
         events.append(queue.get_nowait())
 
-    assert AudioReadyChanged(audio_ready=True) in events
+    assert AudioReadyChanged(audio_ready=True, address="AA:BB:CC:DD:EE:FF") in events
 
 
 async def test_run_emits_audio_ready_false_on_cancel() -> None:
