@@ -439,7 +439,8 @@ scenes — one concession to serviceability, visually near-invisible.
    reconcile poll is slowed to 30s, since it is now a pure drift/missed-event
    safety net rather than the primary update path. Validated live against
    the appliance: an `audio_changed`/`spotify_changed` sequence was observed
-   over the WebSocket within seconds of a real power-on cycle.
+   over the WebSocket within seconds of a real power-on cycle. Full design
+   record: `docs/adr/036-push-not-poll-ws-fanin.md`.
 3. **Expose `Supervisor.health()`** as `/api/v1/health/details` to power the
    health sheet with real data instead of a synthesized view.
 4. **Volume: do not ship a slider yet.** `POST /volume` currently updates
