@@ -218,6 +218,17 @@ def test_set_state_carries_error() -> None:
     )
 
 
+def test_set_state_is_noop_when_unchanged() -> None:
+    """No event for a redundant call with the same state and error — matches
+    AudioService._set_audio_ready()/SpotifyService._set_status()."""
+    svc = _service()
+    queue = svc.subscribe()
+    queue.get_nowait()  # drain initial-state event (IDLE, None)
+
+    svc._set_state(PairingState.IDLE, None)  # same as current — no-op
+    assert queue.empty()
+
+
 def test_unsubscribe_stops_delivery() -> None:
     svc = _service()
     queue = svc.subscribe()

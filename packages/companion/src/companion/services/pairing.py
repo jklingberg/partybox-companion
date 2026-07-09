@@ -121,7 +121,17 @@ class PairingService:
         self._bus.unsubscribe(queue)
 
     def _set_state(self, state: PairingState, error: str | None = None) -> None:
-        """Update pairing state/error and emit PairingProgressEvent."""
+        """Update pairing state/error and emit PairingProgressEvent, if changed.
+
+        No-op if *state* and *error* both match the current values — matches
+        the guard `AudioService._set_audio_ready()`/`SpotifyService._set_status()`
+        already have. Not currently reachable from `_do_pair()`'s own call
+        sites (each transitions to a genuinely new state), but guarding here
+        too keeps that an enforced invariant rather than one only true by
+        inspection of today's call sites.
+        """
+        if state == self._state and error == self._error:
+            return
         self._state = state
         self._error = error
         self._bus.emit(PairingProgressEvent(state=state, error=error))
