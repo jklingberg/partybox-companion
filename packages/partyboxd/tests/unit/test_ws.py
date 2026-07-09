@@ -13,15 +13,21 @@ docs/adr/035-state-ownership-and-signal-pipeline.md.
 from __future__ import annotations
 
 import asyncio
+import json
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
+from enum import StrEnum
+from typing import Any
 
-from partyboxd.api.ws import _forward
+from partyboxd.api.ws import _forward, make_ws_router
+from partyboxd.config import ApiSettings, Settings
 
 
 @dataclass(frozen=True)
 class _Event:
     value: str
+    type: str = "fake_event"
 
 
 class _FakeSource:
@@ -48,6 +54,28 @@ async def _cancel(task: asyncio.Task[None]) -> None:
     task.cancel()
     with suppress(asyncio.CancelledError):
         await task
+
+
+async def _wait_until_subscribed(*sources: _FakeSource) -> None:
+    """Poll until every source has at least one subscriber.
+
+    Needed because ws_events -> N forwarder tasks -> N source.subscribe()
+    calls is two hops of task scheduling deep, not one: a single
+    `await asyncio.sleep(0)` after starting the endpoint task is enough for
+    *it* to run and create the forwarder tasks, but not enough for those
+    freshly-created forwarders to themselves run and subscribe. Emitting
+    before subscription has actually happened means the event has no queue
+    to land in and is silently lost -- the same brief real-world race a
+    fresh WS connection has against a source that fires the instant it
+    connects (see docs/adr/036-push-not-poll-ws-fanin.md's ordering/
+    lifecycle notes: harmless in practice, since subscribe() seeds current
+    state and the next real event or the 30s reconcile poll catches up).
+    """
+    for _ in range(200):
+        if all(len(s._queues) > 0 for s in sources):
+            return
+        await asyncio.sleep(0.005)
+    raise AssertionError("sources were never subscribed")
 
 
 async def test_forward_relays_events_into_sink() -> None:
@@ -95,3 +123,132 @@ async def test_multiple_sources_merge_into_one_sink() -> None:
 
     for task in tasks:
         await _cancel(task)
+
+
+async def test_events_from_one_source_preserve_emission_order() -> None:
+    """Ordering is only guaranteed per-source (docs/adr/036-push-not-poll-
+    ws-fanin.md's ordering section): a single source's own emit() sequence
+    must survive intact through _forward into the merged sink, in order."""
+    source = _FakeSource()
+    sink: asyncio.Queue[_Event] = asyncio.Queue()
+    task = asyncio.create_task(_forward(source, sink))
+    await asyncio.sleep(0)
+
+    source.emit(_Event(value="first"))
+    source.emit(_Event(value="second"))
+    source.emit(_Event(value="third"))
+
+    received = [(await asyncio.wait_for(sink.get(), timeout=1.0)).value for _ in range(3)]
+    assert received == ["first", "second", "third"]
+
+    await _cancel(task)
+
+
+# ---------------------------------------------------------------------------
+# End-to-end: the real ws_events handler, dataclass -> asdict -> JSON.
+#
+# Deliberately not FastAPI TestClient (see module docstring for why). Instead,
+# the actual handler function is pulled off the router FastAPI registered it
+# on (APIWebSocketRoute.endpoint is the original, unwrapped coroutine) and
+# called directly against a minimal fake WebSocket -- same event loop as the
+# test, no threads, no real ASGI transport, no hardware. This exercises the
+# real make_ws_router/_forward/dataclasses.asdict/send_json call chain the
+# fan-in unit tests above cover only piecemeal.
+# ---------------------------------------------------------------------------
+
+
+class _FakeWebSocket:
+    """Just enough of Starlette's WebSocket surface for ws_events to run."""
+
+    def __init__(self) -> None:
+        self.sent: list[dict[str, Any]] = []
+        self.accepted = False
+        self.closed_code: int | None = None
+        self.client = None  # ws.py logs websocket.client on connect/disconnect
+
+    async def accept(self) -> None:
+        self.accepted = True
+
+    async def send_json(self, data: dict[str, Any]) -> None:
+        json.dumps(data)  # must actually be JSON-serializable, not just a dict
+        self.sent.append(data)
+
+    async def close(self, code: int = 1000) -> None:
+        self.closed_code = code
+
+
+def _ws_endpoint(
+    manager: object, settings: Settings | None = None, extra_sources: tuple[object, ...] = ()
+) -> Callable[..., Awaitable[None]]:
+    router = make_ws_router(manager, settings or Settings(), extra_sources=extra_sources)  # type: ignore[arg-type]
+    (route,) = router.routes
+    return route.endpoint  # type: ignore[attr-defined]
+
+
+class _Color(StrEnum):
+    """Stands in for a real event field that's a StrEnum (e.g. PairingState
+    in companion) -- confirms json.dumps handles it without a custom encoder,
+    the same way it does for the real pairing_progress event's `state`."""
+
+    RED = "red"
+
+
+@dataclass(frozen=True)
+class _EnumEvent:
+    color: _Color
+    type: str = "enum_event"
+
+
+async def test_ws_events_delivers_real_json_serializable_payloads() -> None:
+    manager = _FakeSource()
+    audio = _FakeSource()
+    endpoint = _ws_endpoint(manager, extra_sources=(audio,))
+    ws = _FakeWebSocket()
+
+    task = asyncio.create_task(endpoint(ws, api_key=None))
+    await _wait_until_subscribed(manager, audio)
+
+    manager.emit(_Event(value="from-manager"))
+    audio.emit(_EnumEvent(color=_Color.RED))
+
+    for _ in range(200):
+        if len(ws.sent) >= 2:
+            break
+        await asyncio.sleep(0.005)
+
+    await _cancel(task)
+
+    assert ws.accepted
+    by_type = {item.get("type"): item for item in ws.sent}
+    assert by_type["fake_event"] == {"value": "from-manager", "type": "fake_event"}
+    # StrEnum survives asdict + json.dumps as its plain string value, not an
+    # enum repr -- this is the concrete case docs/adr/036 flags for
+    # PairingProgressEvent.state (a real PairingState StrEnum) in companion.
+    assert by_type["enum_event"] == {"color": "red", "type": "enum_event"}
+
+
+async def test_ws_events_closes_with_4001_on_bad_api_key() -> None:
+    manager = _FakeSource()
+    settings = Settings(api=ApiSettings(api_key="secret"))
+    endpoint = _ws_endpoint(manager, settings=settings)
+    ws = _FakeWebSocket()
+
+    await endpoint(ws, api_key="wrong")
+
+    assert not ws.accepted
+    assert ws.closed_code == 4001
+
+
+async def test_ws_events_accepts_correct_api_key() -> None:
+    manager = _FakeSource()
+    settings = Settings(api=ApiSettings(api_key="secret"))
+    endpoint = _ws_endpoint(manager, settings=settings)
+    ws = _FakeWebSocket()
+
+    task = asyncio.create_task(endpoint(ws, api_key="secret"))
+    await asyncio.sleep(0)
+
+    assert ws.accepted
+    assert ws.closed_code is None
+
+    await _cancel(task)
