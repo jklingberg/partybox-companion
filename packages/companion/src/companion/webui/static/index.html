@@ -1095,8 +1095,12 @@ function healthItems() {
 // Supervisor task names are kebab-case identifiers ("spotify-audio-gate");
 // render them as readable prose without hardcoding each one, so a task added
 // to __main__.py's supervisor.register() calls shows up sensibly for free.
+// ACRONYMS covers the one current exception (BLE) — if this list grows past
+// a couple of entries, that's the signal to move display names server-side
+// instead of guessing them client-side from an internal identifier.
+const TASK_NAME_ACRONYMS = { ble: 'BLE' };
 function humanizeTaskName(name) {
-  const words = name.split('-');
+  const words = name.split('-').map(w => TASK_NAME_ACRONYMS[w] || w);
   return words[0][0].toUpperCase() + words[0].slice(1) + (words.length > 1 ? ' ' + words.slice(1).join(' ') : '');
 }
 

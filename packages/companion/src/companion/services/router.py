@@ -67,8 +67,11 @@ class TaskHealthResponse(BaseModel):
 
     ``last_exception`` is formatted as ``"<ExceptionType>: <message>"``, or
     ``None`` if the task has never failed or its last exit was a clean
-    (unexpected) return. Timestamps are omitted — ``TaskHealth``'s are
-    ``time.monotonic()`` values with no cross-process meaning to a client.
+    (unexpected) return. It is informational only — for a human reading the
+    health sheet or a debug bundle — not a machine-readable or versioned
+    format; callers must not parse it. Timestamps are omitted —
+    ``TaskHealth``'s are ``time.monotonic()`` values with no cross-process
+    meaning to a client.
     """
 
     name: str
