@@ -57,6 +57,24 @@ _FLAP_WINDOW = 20.0  # a connection lasting less than this counts as a flap
 _FLAP_LIMIT = 3  # consecutive flaps before an extended cooldown
 _FLAP_COOLDOWN = 120.0  # backoff applied once flapping is detected
 
+# Sustained-failure protection: the same BCM4345 HCI corruption (ADR-028) can
+# also make ConnectProfile itself fail outright on every attempt instead of
+# succeeding-then-dropping. That case never sets audio_ready True, so the flap
+# counter above never moves — the loop just doubles retry_delay up to
+# _RETRY_MAX and then sits there retrying every 60s indefinitely, which is the
+# same "retry traffic adds to the traffic that provoked the errors" problem
+# the flap cooldown addresses, just on the other side of a successful connect.
+#
+# _FAILURE_LIMIT/_FAILURE_COOLDOWN are heuristic, not measured from the
+# incident. 5 is roughly "one full _RETRY_BASE..._RETRY_MAX ramp with zero
+# successes" (10+20+40+60+60s ≈ 3 min) — high enough that an ordinary
+# transient failure or two doesn't trip it. _FAILURE_COOLDOWN is set well
+# above _FLAP_COOLDOWN (120s) because a sustained outright-failure run is a
+# stronger signal of persistent controller trouble than a single flap
+# sequence. Revisit both if a future incident's timing says otherwise.
+_FAILURE_LIMIT = 5  # consecutive outright connect failures before a cooldown
+_FAILURE_COOLDOWN = 300.0  # backoff applied once sustained failure is detected
+
 
 # ---------------------------------------------------------------------------
 # Audio events
@@ -137,6 +155,7 @@ class AudioService:
         self._reconnect_now = asyncio.Event()
         self._connected_at: float | None = None
         self._flap_count = 0
+        self._consecutive_failures = 0
         if self._address is not None:
             self._address_ready.set()
 
@@ -208,6 +227,7 @@ class AudioService:
         self._address = None
         self._address_ready.clear()
         self._reconnect_now.set()
+        self._consecutive_failures = 0
         self._set_audio_ready(False)
 
     async def run(self) -> None:
@@ -235,6 +255,7 @@ class AudioService:
                     await self._address_ready.wait()
                     log.info("Audio service resuming (sink=%s)", self._address)
                     retry_delay = _RETRY_BASE
+                    self._consecutive_failures = 0
                     continue
                 if not await self._is_connected():
                     self._set_audio_ready(False)
@@ -266,10 +287,26 @@ class AudioService:
                         # connect attempt, hammering the speaker.
                         self._set_audio_ready(True)
                         retry_delay = _RETRY_BASE
+                        self._consecutive_failures = 0
                         await asyncio.sleep(_POST_CONNECT_SETTLE)
                         continue
                     # connect failed — still check in case speaker auto-connected
                     if await self._is_connected():
+                        retry_delay = _RETRY_BASE
+                        self._consecutive_failures = 0
+                        continue
+                    self._consecutive_failures += 1
+                    if self._consecutive_failures >= _FAILURE_LIMIT:
+                        log.warning(
+                            "A2DP: %d consecutive outright connect failures to %s"
+                            " — cooling down %.0fs instead of retrying immediately",
+                            self._consecutive_failures,
+                            self._address,
+                            _FAILURE_COOLDOWN,
+                        )
+                        self._consecutive_failures = 0
+                        if await self._wait_retry(_FAILURE_COOLDOWN):
+                            log.info("A2DP: re-pair detected, retrying immediately")
                         retry_delay = _RETRY_BASE
                         continue
                     if await self._wait_retry(retry_delay):
@@ -282,6 +319,7 @@ class AudioService:
                         log.info("A2DP connection stable, backoff reset")
                     self._set_audio_ready(True)
                     retry_delay = _RETRY_BASE
+                    self._consecutive_failures = 0
                     # Interruptible so recheck_now() can cut this short — see
                     # its docstring for why.
                     await self._wait_retry(_CHECK_INTERVAL)
