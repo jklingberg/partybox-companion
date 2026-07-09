@@ -59,17 +59,14 @@ async def _cancel(task: asyncio.Task[None]) -> None:
 async def _wait_until_subscribed(*sources: _FakeSource) -> None:
     """Poll until every source has at least one subscriber.
 
-    Needed because ws_events -> N forwarder tasks -> N source.subscribe()
-    calls is two hops of task scheduling deep, not one: a single
-    `await asyncio.sleep(0)` after starting the endpoint task is enough for
-    *it* to run and create the forwarder tasks, but not enough for those
-    freshly-created forwarders to themselves run and subscribe. Emitting
-    before subscription has actually happened means the event has no queue
-    to land in and is silently lost -- the same brief real-world race a
-    fresh WS connection has against a source that fires the instant it
-    connects (see docs/adr/036-push-not-poll-ws-fanin.md's ordering/
-    lifecycle notes: harmless in practice, since subscribe() seeds current
-    state and the next real event or the 30s reconcile poll catches up).
+    ws_events itself no longer has a race here: it calls source.subscribe()
+    synchronously for every source *before* creating any forwarder task (see
+    _forward's docstring and test_subscribe_before_forwarder_task_closes_
+    connection_start_race), so subscription is already done by the time the
+    endpoint task first yields. This helper is defensive belt-and-braces for
+    the test itself -- it doesn't assume exactly how many ticks the endpoint
+    task needs to reach that point -- not a workaround for a race in the
+    production code.
     """
     for _ in range(200):
         if all(len(s._queues) > 0 for s in sources):
@@ -81,7 +78,7 @@ async def _wait_until_subscribed(*sources: _FakeSource) -> None:
 async def test_forward_relays_events_into_sink() -> None:
     source = _FakeSource()
     sink: asyncio.Queue[_Event] = asyncio.Queue()
-    task = asyncio.create_task(_forward(source, sink))
+    task = asyncio.create_task(_forward(source, source.subscribe(), sink))
     await asyncio.sleep(0)  # let _forward reach queue.get()
 
     source.emit(_Event(value="x"))
@@ -94,7 +91,7 @@ async def test_forward_relays_events_into_sink() -> None:
 async def test_forward_unsubscribes_on_cancel() -> None:
     source = _FakeSource()
     sink: asyncio.Queue[_Event] = asyncio.Queue()
-    task = asyncio.create_task(_forward(source, sink))
+    task = asyncio.create_task(_forward(source, source.subscribe(), sink))
     await asyncio.sleep(0)
 
     await _cancel(task)
@@ -111,7 +108,10 @@ async def test_multiple_sources_merge_into_one_sink() -> None:
     spotify = _FakeSource()
     sink: asyncio.Queue[_Event] = asyncio.Queue()
 
-    tasks = [asyncio.create_task(_forward(src, sink)) for src in (manager, audio, spotify)]
+    tasks = [
+        asyncio.create_task(_forward(src, src.subscribe(), sink))
+        for src in (manager, audio, spotify)
+    ]
     await asyncio.sleep(0)
 
     manager.emit(_Event(value="from-manager"))
@@ -131,7 +131,7 @@ async def test_events_from_one_source_preserve_emission_order() -> None:
     must survive intact through _forward into the merged sink, in order."""
     source = _FakeSource()
     sink: asyncio.Queue[_Event] = asyncio.Queue()
-    task = asyncio.create_task(_forward(source, sink))
+    task = asyncio.create_task(_forward(source, source.subscribe(), sink))
     await asyncio.sleep(0)
 
     source.emit(_Event(value="first"))
@@ -140,6 +140,26 @@ async def test_events_from_one_source_preserve_emission_order() -> None:
 
     received = [(await asyncio.wait_for(sink.get(), timeout=1.0)).value for _ in range(3)]
     assert received == ["first", "second", "third"]
+
+    await _cancel(task)
+
+
+async def test_subscribe_before_forwarder_task_closes_connection_start_race() -> None:
+    """Regression test for the connection-start race documented in
+    docs/adr/036-push-not-poll-ws-fanin.md: subscribing synchronously
+    *before* creating the forwarder task means an event emitted the instant
+    after task creation -- with no `await asyncio.sleep(0)` to let the task
+    actually start running first -- is still captured, because the queue it
+    lands in already exists and is already registered on the source."""
+    source = _FakeSource()
+    sink: asyncio.Queue[_Event] = asyncio.Queue()
+
+    queue = source.subscribe()  # synchronous, as ws_events now does it
+    task = asyncio.create_task(_forward(source, queue, sink))
+    source.emit(_Event(value="emitted-before-task-ran"))  # no yield in between
+
+    event = await asyncio.wait_for(sink.get(), timeout=1.0)
+    assert event == _Event(value="emitted-before-task-ran")
 
     await _cancel(task)
 

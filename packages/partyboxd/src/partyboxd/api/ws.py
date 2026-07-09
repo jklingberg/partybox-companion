@@ -33,9 +33,25 @@ class EventSource(Protocol):
     def unsubscribe(self, queue: asyncio.Queue[Any]) -> None: ...
 
 
-async def _forward(source: EventSource, sink: asyncio.Queue[Any]) -> None:
-    """Relay every event from *source* into *sink* until cancelled."""
-    queue = source.subscribe()
+async def _forward(
+    source: EventSource, queue: asyncio.Queue[Any], sink: asyncio.Queue[Any]
+) -> None:
+    """Relay events already arriving on *queue* into *sink* until cancelled.
+
+    *queue* must already be the result of ``source.subscribe()`` — obtained
+    by the caller *before* this task starts running (see ``ws_events``).
+    ``subscribe()`` is synchronous on every current implementation
+    (:class:`~partyboxd.device.manager.DeviceManager` and any
+    :class:`~partyboxd.eventbus.EventBus`-backed service), so calling it
+    up front, before any task is created, closes a real (if narrow and
+    self-healing) race: a source could otherwise emit an event in the gap
+    between this task being scheduled and it actually reaching
+    ``source.subscribe()`` — one event-loop tick after creation, since task
+    creation only schedules a task rather than running it immediately —
+    and that event would have nowhere to land. See
+    ``docs/adr/036-push-not-poll-ws-fanin.md``'s "Operational properties"
+    section.
+    """
     try:
         while True:
             sink.put_nowait(await queue.get())
@@ -95,7 +111,13 @@ def make_ws_router(
 
         merged: asyncio.Queue[Any] = asyncio.Queue()
         sources: list[EventSource] = [manager, *extra_sources]
-        forwarders = [asyncio.create_task(_forward(src, merged)) for src in sources]
+        # subscribe() up front, synchronously, before any forwarder task is
+        # created — see _forward's docstring for why this ordering matters.
+        queues = [src.subscribe() for src in sources]
+        forwarders = [
+            asyncio.create_task(_forward(src, q, merged))
+            for src, q in zip(sources, queues, strict=True)
+        ]
         try:
             while True:
                 try:
