@@ -530,8 +530,16 @@
         returning the appliance to its as-shipped state. You will need to
         pair the speaker again. This cannot be undone.
       </div>
-      <div class="btn-row" style="margin-top:0">
-        <button class="btn btn-danger" id="btn-factory-reset" data-action="factory-reset">Factory reset</button>
+      <div class="btn-row" id="factory-reset-row" style="margin-top:0">
+        <button class="btn btn-danger" id="btn-factory-reset" data-action="factory-reset-start">Factory reset</button>
+      </div>
+      <div class="field hidden" id="factory-reset-confirm" style="margin-top:0">
+        <label for="factory-reset-input">Type RESET to confirm</label>
+        <input id="factory-reset-input" type="text" autocomplete="off" placeholder="RESET" />
+        <div class="btn-row">
+          <button class="btn btn-danger" id="btn-factory-reset-confirm" data-action="factory-reset-confirm" disabled>Confirm factory reset</button>
+          <button class="btn btn-ghost" data-action="factory-reset-cancel">Cancel</button>
+        </div>
       </div>
     </div>
 
@@ -597,6 +605,7 @@ const Scene = Object.freeze({
 const S = {
   scene: Scene.BOOT,
   health: null, speaker: null, battery: null, spotify: null, audio: null,
+  healthDetails: null,
   wifi: null,
   config: { spotify_connect_name: 'PartyBox', spotify_bitrate: 320 },
   apiKey: localStorage.getItem('_pb_key') || null,
@@ -626,6 +635,11 @@ const MOCK_PROVISION = location.search.includes('provision');
 const MOCK_STATE = new URLSearchParams(location.search).get('state'); // off|standby|pair|on
 
 const MOCK_HEALTH  = { status: 'ok', version: '0.2.0-dev', ble_connected: true, audio_ready: true, speaker_state: 'on' };
+const MOCK_HEALTH_DETAILS = { tasks: [
+  { name: 'device-manager', state: 'running', last_exception: null, total_failures: 0 },
+  { name: 'audio-service', state: 'running', last_exception: null, total_failures: 0 },
+  { name: 'spotify-audio-gate', state: 'running', last_exception: null, total_failures: 0 },
+] };
 const MOCK_SPEAKER = { connected: true, address: 'AA:BB:CC:DD:EE:FF', firmware: '26.2.10', battery: 87 };
 const MOCK_BATTERY = { level: 87, power_source: 'battery', charging: false,
                         remaining_playtime_minutes: 612, state_of_health_percent: 99, cycle_count: 4 };
@@ -688,6 +702,7 @@ function bootMock() {
   S.audio   = MOCK_AUDIO;
   S.config  = MOCK_CONFIG;
   S.battery = MOCK_BATTERY;
+  S.healthDetails = MOCK_HEALTH_DETAILS;
 
   if (MOCK_STATE === 'off') { S.health = { ...MOCK_HEALTH, ble_connected: false, speaker_state: 'off' }; S.battery = null; }
   if (MOCK_STATE === 'standby') { S.health = { ...MOCK_HEALTH, speaker_state: 'standby' }; S.battery = null; }
@@ -697,6 +712,12 @@ function bootMock() {
     S.powerPending = 'off';
   }
   if (MOCK_STATE === 'pair') { S.audio = { connected: false, address: null, pairing_state: 'idle' }; }
+  if (MOCK_STATE === 'degraded') {
+    S.healthDetails = { tasks: [
+      ...MOCK_HEALTH_DETAILS.tasks.slice(0, -1),
+      { name: 'spotify-audio-gate', state: 'waiting', last_exception: 'RuntimeError: librespot exited with code 1', total_failures: 3 },
+    ] };
+  }
 
   S.scene = deriveScene();
   render();
@@ -708,17 +729,19 @@ function bootMock() {
 // ==========================================================================
 async function refresh() {
   try {
-    const [hRes, cRes, spRes, aRes] = await Promise.all([
+    const [hRes, cRes, spRes, aRes, hdRes] = await Promise.all([
       get('/api/v1/health'),
       get('/api/v1/config'),
       get('/api/v1/spotify'),
       get('/api/v1/audio'),
+      get('/api/v1/health/details', true),
     ]);
     S.fetchFailed = !hRes;
     if (hRes  && hRes.ok)  S.health  = await hRes.json();
     if (cRes  && cRes.ok)  S.config  = await cRes.json();
     if (spRes && spRes.ok) S.spotify = await spRes.json();
     if (aRes  && aRes.ok)  S.audio   = await aRes.json();
+    if (hdRes && hdRes.ok) S.healthDetails = await hdRes.json();
   } catch (_) {
     S.fetchFailed = true;
   }
@@ -1064,12 +1087,40 @@ function healthItems() {
       text: sp.active ? 'Playing' : 'Ready' });
   }
 
-  items.push({
-    name: 'Companion', icon: 'i-server', state: S.health ? 'ok' : 'err', shortIssue: 'offline',
-    text: S.health ? ('Running · v' + S.health.version) : 'Offline',
-  });
+  items.push(companionHealthItem());
 
   return items;
+}
+
+// Supervisor task names are kebab-case identifiers ("spotify-audio-gate");
+// render them as readable prose without hardcoding each one, so a task added
+// to __main__.py's supervisor.register() calls shows up sensibly for free.
+// ACRONYMS covers the one current exception (BLE) — if this list grows past
+// a couple of entries, that's the signal to move display names server-side
+// instead of guessing them client-side from an internal identifier.
+const TASK_NAME_ACRONYMS = { ble: 'BLE' };
+function humanizeTaskName(name) {
+  const words = name.split('-').map(w => TASK_NAME_ACRONYMS[w] || w);
+  return words[0][0].toUpperCase() + words[0].slice(1) + (words.length > 1 ? ' ' + words.slice(1).join(' ') : '');
+}
+
+function companionHealthItem() {
+  if (!S.health) {
+    return { name: 'Companion', icon: 'i-server', state: 'err', shortIssue: 'offline', text: 'Offline' };
+  }
+  const tasks = (S.healthDetails && S.healthDetails.tasks) || [];
+  // A task backed off after a crash (state 'waiting' with a recorded
+  // failure) is currently down and being retried by the Supervisor — that's
+  // the "unhealthy right now" signal, not total_failures alone, which never
+  // resets and would otherwise flag a task that failed once and recovered.
+  const down = tasks.find(t => t.state === 'waiting' && t.total_failures > 0);
+  if (down) {
+    return {
+      name: 'Companion', icon: 'i-server', state: 'err', shortIssue: 'task restarting',
+      text: `${humanizeTaskName(down.name)} is restarting (${down.total_failures} failure${down.total_failures === 1 ? '' : 's'})`,
+    };
+  }
+  return { name: 'Companion', icon: 'i-server', state: 'ok', shortIssue: '', text: 'Running · v' + S.health.version };
 }
 
 function renderHealthSheet(items) {
@@ -1107,7 +1158,9 @@ document.addEventListener('click', e => {
     'open-settings': openSettings,
     'close-settings': closeSettings,
     'save-settings': saveSettings,
-    'factory-reset': factoryReset,
+    'factory-reset-start': factoryResetStart,
+    'factory-reset-cancel': factoryResetCancel,
+    'factory-reset-confirm': factoryResetConfirm,
     'open-health': openHealth,
     'close-health': closeHealth,
     'open-pair': () => { closeHealth(); S.audio = S.audio || {}; S.audio.address = null; S.scene = Scene.PAIR; render(); },
@@ -1241,7 +1294,14 @@ function openSettings() {
     'partybox-companion' + (S.health ? ' · v' + S.health.version : '');
   document.getElementById('settings-overlay').classList.remove('hidden');
 }
-function closeSettings() { document.getElementById('settings-overlay').classList.add('hidden'); }
+function closeSettings() {
+  document.getElementById('settings-overlay').classList.add('hidden');
+  factoryResetCancel();
+}
+
+document.getElementById('factory-reset-input').addEventListener('input', e => {
+  document.getElementById('btn-factory-reset-confirm').disabled = e.target.value !== FACTORY_RESET_CONFIRM_WORD;
+});
 
 async function saveSettings() {
   const newSvcName = document.getElementById('set-spotify-name').value.trim() || 'PartyBox';
@@ -1263,34 +1323,48 @@ async function saveSettings() {
     S.config = await r.json();
   } catch (_) { toast('Could not save settings.'); return; }
 
-  if (spotifyChanged) {
-    const r2 = await get('/api/v1/spotify/restart', false, 'POST');
-    toast(r2 && r2.status === 204 ? 'Settings saved. Spotify is restarting…' : 'Settings saved.');
-  } else {
-    toast('Settings saved.');
-  }
+  // The Spotify-restart consequence is already flagged proactively by the
+  // field hint in the sheet (see the "Audio quality" field above) — so this
+  // toast never needs to surprise the user with it after the fact.
+  if (spotifyChanged) await get('/api/v1/spotify/restart', false, 'POST');
+  toast('Settings saved.');
 
   closeSettings();
   await refresh();
   render();
 }
 
-async function factoryReset() {
-  if (!confirm(
-    'Factory reset?\n\n' +
-    'This forgets the paired speaker and clears all settings. ' +
-    'You will need to pair the speaker again. This cannot be undone.'
-  )) return;
+// Factory reset is a two-step in-sheet flow (typed confirmation) rather than
+// a native browser confirmation dialog — the whole point of the Ember
+// redesign is that nothing breaks out into default browser chrome. See
+// docs/design/portal-redesign.md §12 item 6.
+const FACTORY_RESET_CONFIRM_WORD = 'RESET';
 
-  const btn = document.getElementById('btn-factory-reset');
+function factoryResetStart() {
+  document.getElementById('factory-reset-row').classList.add('hidden');
+  document.getElementById('factory-reset-confirm').classList.remove('hidden');
+  const input = document.getElementById('factory-reset-input');
+  input.value = '';
+  document.getElementById('btn-factory-reset-confirm').disabled = true;
+  input.focus();
+}
+
+function factoryResetCancel() {
+  document.getElementById('factory-reset-confirm').classList.add('hidden');
+  document.getElementById('factory-reset-row').classList.remove('hidden');
+}
+
+async function factoryResetConfirm() {
+  const btn = document.getElementById('btn-factory-reset-confirm');
   btn.disabled = true;
   btn.textContent = 'Resetting…';
   const r = await get('/api/v1/factory-reset', false, 'POST');
   btn.disabled = false;
-  btn.textContent = 'Factory reset';
+  btn.textContent = 'Confirm factory reset';
 
   if (r && r.status === 204) {
     toast('Appliance reset to factory defaults.');
+    factoryResetCancel();
     closeSettings();
     await refresh();
     render();

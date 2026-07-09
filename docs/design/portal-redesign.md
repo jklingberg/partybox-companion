@@ -1,9 +1,11 @@
 # Companion Portal Redesign — "Ember"
 
-Status: **in progress** — steps 1, 2, and 4 of §13 shipped (step 1: 2026-07-06,
+Status: **shipped** — all four steps of §13 complete (step 1: 2026-07-06,
 commit `2eb3342`; step 2: 2026-07-06, the `speaker_state` follow-up; step 4:
-2026-07-09, "push, don't poll" — see §12 item 2). Step 3 (health details
-endpoint) remains.
+2026-07-09, "push, don't poll" — see §12 item 2; step 3: 2026-07-09, the
+health details endpoint — see §12 item 3 and ADR-037). The two remaining §12
+polish items (settings-save copy, factory-reset restyle) shipped alongside
+step 3.
 Author: UX redesign pass, 2026-07-06
 
 A ground-up redesign of the Companion Portal. Goal: the Portal should feel
@@ -442,7 +444,12 @@ scenes — one concession to serviceability, visually near-invisible.
    over the WebSocket within seconds of a real power-on cycle. Full design
    record: `docs/adr/036-push-not-poll-ws-fanin.md`.
 3. **Expose `Supervisor.health()`** as `/api/v1/health/details` to power the
-   health sheet with real data instead of a synthesized view.
+   health sheet with real data instead of a synthesized view. **Shipped**
+   (2026-07-09) — see ADR-037. The endpoint requires the same API-key auth as
+   partyboxd's private routes (the rest of `services/router.py` stays
+   unauthenticated); the health sheet's "Companion" row now reports a real
+   backed-off task by name and failure count instead of the old "did the
+   last poll succeed" proxy.
 4. **Volume: do not ship a slider yet.** `POST /volume` currently updates
    in-memory state while the BLE opcode is unconfirmed (ADR-022) — a slider
    that doesn't move the speaker is exactly the "misleading information" this
@@ -450,9 +457,15 @@ scenes — one concession to serviceability, visually near-invisible.
    real.
 5. **Settings save**: keep explicit Save, but move the Spotify-restart
    consequence into the sheet ("Saving restarts Spotify (~5s)") instead of a
-   post-hoc toast surprise.
+   post-hoc toast surprise. **Shipped** (2026-07-09) — the field hint already
+   existed in the sheet from step 1; `saveSettings()` now always toasts a
+   plain "Settings saved." instead of conditionally revealing the restart as
+   a surprise after the fact.
 6. Factory reset keeps its confirm, restyled as a typed sheet action rather
-   than `window.confirm`.
+   than `window.confirm`. **Shipped** (2026-07-09) — clicking "Factory
+   reset" reveals an in-sheet step requiring the user to type `RESET` before
+   the (now-disabled-by-default) confirm button activates; cancel returns to
+   the initial state. No native dialog.
 
 ## 13. Implementation constraints
 
