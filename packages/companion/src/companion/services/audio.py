@@ -64,6 +64,14 @@ _FLAP_COOLDOWN = 120.0  # backoff applied once flapping is detected
 # _RETRY_MAX and then sits there retrying every 60s indefinitely, which is the
 # same "retry traffic adds to the traffic that provoked the errors" problem
 # the flap cooldown addresses, just on the other side of a successful connect.
+#
+# _FAILURE_LIMIT/_FAILURE_COOLDOWN are heuristic, not measured from the
+# incident. 5 is roughly "one full _RETRY_BASE..._RETRY_MAX ramp with zero
+# successes" (10+20+40+60+60s ≈ 3 min) — high enough that an ordinary
+# transient failure or two doesn't trip it. _FAILURE_COOLDOWN is set well
+# above _FLAP_COOLDOWN (120s) because a sustained outright-failure run is a
+# stronger signal of persistent controller trouble than a single flap
+# sequence. Revisit both if a future incident's timing says otherwise.
 _FAILURE_LIMIT = 5  # consecutive outright connect failures before a cooldown
 _FAILURE_COOLDOWN = 300.0  # backoff applied once sustained failure is detected
 
