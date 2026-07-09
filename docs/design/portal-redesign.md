@@ -1,7 +1,9 @@
 # Companion Portal Redesign — "Ember"
 
-Status: **in progress** — steps 1–2 of §13 shipped 2026-07-06 (commits
-`2eb3342`, and the `speaker_state` follow-up); steps 3–4 remain.
+Status: **in progress** — steps 1, 2, and 4 of §13 shipped (step 1: 2026-07-06,
+commit `2eb3342`; step 2: 2026-07-06, the `speaker_state` follow-up; step 4:
+2026-07-09, "push, don't poll" — see §12 item 2). Step 3 (health details
+endpoint) remains.
 Author: UX redesign pass, 2026-07-06
 
 A ground-up redesign of the Companion Portal. Goal: the Portal should feel
@@ -421,10 +423,24 @@ scenes — one concession to serviceability, visually near-invisible.
    reads `health.speaker_state` directly — this closed a real bug where the
    Portal defaulted to the ON scene (showing a "Turn off" button on an
    asleep speaker) if it loaded before ever observing a battery value.
-2. **Push, don't poll.** Add `audio_changed` / `spotify_changed` /
-   `pairing_progress` WS events; drop the 2s/15s/20s polling loops to a
-   single slow reconciliation poll (~30s safety net). Kills the staleness
-   windows and the pairing poll machinery.
+2. **Push, don't poll** — **shipped.** `AudioService`, `SpotifyService`, and
+   `PairingService` each gained an `EventBus` (a generic `EventBus[T]`,
+   extracted from `DeviceManager`'s bus and shared — see
+   `docs/adr/035-state-ownership-and-signal-pipeline.md`) and now emit
+   `audio_changed` / `spotify_changed` / `pairing_progress` events.
+   `partyboxd`'s WS endpoint fans all of them into the same
+   `/api/v1/events` stream alongside the existing `DeviceManager` events,
+   via a small `EventSource` protocol so partyboxd never needs to know what
+   companion's events mean. The frontend applies each event's payload
+   directly to `S.audio`/`S.spotify` instead of re-fetching, and the old 2s
+   pairing poll is gone — replaced by the same events plus a 180s watchdog
+   as a safety net (mirroring `S.powerPending`'s pattern, ADR-034) for the
+   case where the daemon never concludes the attempt. The remaining 15s
+   reconcile poll is slowed to 30s, since it is now a pure drift/missed-event
+   safety net rather than the primary update path. Validated live against
+   the appliance: an `audio_changed`/`spotify_changed` sequence was observed
+   over the WebSocket within seconds of a real power-on cycle. Full design
+   record: `docs/adr/036-push-not-poll-ws-fanin.md`.
 3. **Expose `Supervisor.health()`** as `/api/v1/health/details` to power the
    health sheet with real data instead of a synthesized view.
 4. **Volume: do not ship a slider yet.** `POST /volume` currently updates

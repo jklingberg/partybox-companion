@@ -617,6 +617,12 @@ const S = {
   //: disconnect, so deriveScene() shows Scene.POWERING instead of the
   //: "can't reach the speaker, plug it in" Scene.OFF copy.
   powerPending: null,
+  //: True for the duration of an in-progress startPairing() flow. Like
+  //: powerPending, this has no daemon source — it exists only to decide
+  //: whether an incoming audio_changed/pairing_progress WS event should
+  //: update the pairing flow's message (see docs/adr/035-state-ownership-
+  //: and-signal-pipeline.md's "local-only state" rule).
+  pairingActive: false,
 };
 
 let mountedScene = null;
@@ -907,7 +913,7 @@ function pairSceneHTML() {
 function patchPairScene() {
   // Reflects live audio.pairing_state on top of the static scene above,
   // without discarding in-progress button state set by startPairing().
-  if (timers.pairPoll) return; // an active pairing flow owns the messaging
+  if (S.pairingActive) return; // an active pairing flow owns the messaging
   const btn = document.getElementById('pair-start-btn');
   if (btn && S.audio && S.audio.pairing_state === 'failed') {
     setFlowMsg('pair-msg', 'err', S.audio.error || 'Pairing failed. Make sure the speaker is in pairing mode and try again.');
@@ -1200,6 +1206,26 @@ function onEvent(ev) {
     case 'power_changed':
       refresh().then(render);
       break;
+    case 'audio_changed':
+      // Updates S.audio directly from the event payload instead of
+      // re-fetching GET /api/v1/audio — the whole point of push over poll.
+      // pairing_state/error are left untouched here; pairing_progress owns
+      // those fields (see docs/adr/035-state-ownership-and-signal-pipeline.md).
+      S.audio = { ...(S.audio || {}), connected: ev.audio_ready, address: ev.address };
+      handlePairingProgress();
+      S.scene = deriveScene();
+      render();
+      break;
+    case 'spotify_changed':
+      S.spotify = { running: ev.running, active: ev.active, device_name: ev.device_name };
+      render();
+      break;
+    case 'pairing_progress':
+      S.audio = { ...(S.audio || {}), pairing_state: ev.state, error: ev.error };
+      handlePairingProgress();
+      S.scene = deriveScene();
+      render();
+      break;
     case 'ping':
       break;
   }
@@ -1207,11 +1233,11 @@ function onEvent(ev) {
 
 function startReconcilePoll() {
   if (timers.reconcile) return;
-  // Matches the daemon's own battery/health-check cadence (manager.py,
-  // _HEALTH_CHECK_INTERVAL = 15s) — polling faster would only re-fetch an
-  // unchanged value. WS events cover the snappier BLE connect/disconnect
-  // and power transitions in between.
-  timers.reconcile = setInterval(() => refresh().then(render), 15000);
+  // Safety-net poll only — audio_changed/spotify_changed/pairing_progress/
+  // speaker_state_changed WS events (see docs/adr/035-state-ownership-and-
+  // signal-pipeline.md) now cover the snappy transitions. 30s just catches
+  // drift or a missed event, it does not carry any UI-visible latency.
+  timers.reconcile = setInterval(() => refresh().then(render), 30000);
 }
 
 // ==========================================================================
@@ -1326,50 +1352,44 @@ async function startPairing() {
     return;
   }
 
-  startPairPoll();
+  // Progress from here on comes from pairing_progress/audio_changed WS
+  // events (handlePairingProgress, called from onEvent) rather than polling
+  // /api/v1/audio every 2s. This timer is only a safety net in case the
+  // daemon never concludes the attempt (matches the old 90 x 2s poll cap).
+  S.pairingActive = true;
+  clearTimeout(timers.pairingTimeout);
+  timers.pairingTimeout = setTimeout(() => {
+    if (!S.pairingActive) return;
+    S.pairingActive = false;
+    setFlowMsg('pair-msg', 'err', 'Timed out waiting for audio connection. Try playing music to reconnect.');
+    const b = document.getElementById('pair-start-btn');
+    if (b) { b.disabled = false; b.textContent = 'Done'; }
+  }, 180000);
 }
 
-function startPairPoll() {
-  stopPairPoll();
-  let attempts = 0;
-  timers.pairPoll = setInterval(async () => {
-    attempts++;
-    try {
-      const r = await fetch('/api/v1/audio');
-      if (!r.ok) return;
-      const data = await r.json();
-      S.audio = data;
+function handlePairingProgress() {
+  if (!S.pairingActive) return;
+  const a = S.audio;
+  if (!a) return;
 
-      if (data.pairing_state === 'idle' && data.address) {
-        if (data.connected) {
-          stopPairPoll();
-          setFlowMsg('pair-msg', 'ok', 'Paired and connected! You can now play music.');
-          toast('Speaker connected.');
-          setTimeout(() => refresh().then(render), 800);
-          return;
-        }
-        setFlowMsg('pair-msg', 'ok', 'Paired! Establishing audio connection — almost there…');
-        return;
-      }
-      if (data.pairing_state === 'failed') {
-        stopPairPoll();
-        setFlowMsg('pair-msg', 'err', data.error || 'Pairing failed. Make sure the speaker is in pairing mode and try again.');
-        const btn = document.getElementById('pair-start-btn');
-        if (btn) { btn.disabled = false; btn.textContent = 'Try Again'; }
-        return;
-      }
-    } catch (_) {}
-
-    if (attempts > 90) {
-      stopPairPoll();
-      setFlowMsg('pair-msg', 'err', 'Timed out waiting for audio connection. Try playing music to reconnect.');
-      const btn = document.getElementById('pair-start-btn');
-      if (btn) { btn.disabled = false; btn.textContent = 'Done'; }
+  if (a.pairing_state === 'idle' && a.address) {
+    if (a.connected) {
+      S.pairingActive = false;
+      clearTimeout(timers.pairingTimeout);
+      setFlowMsg('pair-msg', 'ok', 'Paired and connected! You can now play music.');
+      toast('Speaker connected.');
+      return;
     }
-  }, 2000);
-}
-function stopPairPoll() {
-  if (timers.pairPoll) { clearInterval(timers.pairPoll); timers.pairPoll = null; }
+    setFlowMsg('pair-msg', 'ok', 'Paired! Establishing audio connection — almost there…');
+    return;
+  }
+  if (a.pairing_state === 'failed') {
+    S.pairingActive = false;
+    clearTimeout(timers.pairingTimeout);
+    setFlowMsg('pair-msg', 'err', a.error || 'Pairing failed. Make sure the speaker is in pairing mode and try again.');
+    const btn = document.getElementById('pair-start-btn');
+    if (btn) { btn.disabled = false; btn.textContent = 'Try Again'; }
+  }
 }
 
 // ==========================================================================

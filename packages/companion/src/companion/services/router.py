@@ -36,6 +36,7 @@ class AudioStatusResponse(BaseModel):
     connected: bool
     address: str | None
     pairing_state: str
+    error: str | None = None
 
 
 class SpotifyStatusResponse(BaseModel):
@@ -166,6 +167,7 @@ def make_services_router(
             connected=a_status.connected if a_status else False,
             address=a_status.address if a_status else None,
             pairing_state=(p_status.state if p_status else PairingState.IDLE),
+            error=p_status.error if p_status else None,
         )
 
     # ------------------------------------------------------------------

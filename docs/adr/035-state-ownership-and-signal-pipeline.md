@@ -56,9 +56,12 @@ This ADR is that map, plus the two ownership rules implicit in the code as it st
         WS PUSH (event-driven,      REST POLL (GET /api/v1/health,
         near-instant, itemized):    /speaker, /battery, /audio,
         connected, disconnected,    /spotify, /config, /wifi/status —
-        speaker_state_changed,      15s reconcile safety net, matching
-        power_changed,              the daemon's own 15s health-check
-        volume_changed, ping        cadence, ADR-028's reasoning)
+        speaker_state_changed,      30s reconcile safety net only; WS
+        power_changed,              now covers every fast-moving signal
+        volume_changed,             below (ADR-036), so this poll's
+        audio_changed,              interval affects only how fast a
+        spotify_changed,            missed event or a dropped-then-
+        pairing_progress, ping      reconnected WS session catches up)
                     │                        │
                     └───────────┬────────────┘
                                 ▼
@@ -73,8 +76,8 @@ This ADR is that map, plus the two ownership rules implicit in the code as it st
 │       copy of a fact the daemon already owned)                       │
 │ • S.fetchFailed  — derived locally: did the last refresh() reach     │
 │     Companion at all (portal-reachability, not device state)         │
-│ • S.powerPending — the ONE fact with no daemon source at all (see    │
-│     "Local-only state" below)                                        │
+│ • S.powerPending, S.pairingActive — the only facts with no daemon    │
+│     source at all (see "Local-only state" below)                     │
 └──────────────────────────────┬────────────────────────────────────┘
                                 │  deriveScene() — fixed precedence,
                                 │  see below
@@ -113,9 +116,11 @@ A REST endpoint that performs a mutating command reports **only** whether that c
 
 This is why `power_off()` (ADR-034) returns as soon as its write succeeds and does **not** wait for the BLE reconnect its own command triggers: that reconnect is a fact about layer 2 (`speaker_state`, pushed via `speaker_state_changed`), not a fact about whether the power-off command executed. A proposed "fix" during the ADR-034 review — making `power_off()` block on and report the subsequent reconnect — was rejected specifically because it would violate this rule: a speaker that successfully powered off would report as an API failure merely because the daemon's own connection bookkeeping hadn't caught up yet. `power_on()`'s wait (`_get_connected_device()`) does *not* violate this rule, because there the wait is a precondition to the one operation (nothing has executed yet when it starts waiting) — not a second, separately-outcomed operation being folded into the first.
 
-### Local-only state: `powerPending` is the one deliberate exception
+### Local-only state: `powerPending` and `pairingActive` are the deliberate exceptions
 
-Every other fact in layer 3 has a daemon source. `S.powerPending` does not — it exists purely because `speaker_state: "off"` is genuinely ambiguous between "the speaker is unplugged" and "a power command we just sent is mid-reconnect" (ADR-034), and no daemon signal currently distinguishes the two from the Portal's vantage point. It is bridged, not owned: cleared by the real signal (`speaker_state` moving off `"off"`, via the existing WS event) whenever that arrives, with a 22s timer purely as a dead-man's switch for the case where reconnect never happens at all — not as the mechanism that decides "is it done." Any future signal added to the Portal should default to layer-2-sourced; a new local-only flag should be treated as exceptional and justified the same way this one is.
+Every other fact in layer 3 has a daemon source. `S.powerPending` does not — it exists purely because `speaker_state: "off"` is genuinely ambiguous between "the speaker is unplugged" and "a power command we just sent is mid-reconnect" (ADR-034), and no daemon signal currently distinguishes the two from the Portal's vantage point. It is bridged, not owned: cleared by the real signal (`speaker_state` moving off `"off"`, via the existing WS event) whenever that arrives, with a 22s timer purely as a dead-man's switch for the case where reconnect never happens at all — not as the mechanism that decides "is it done."
+
+`S.pairingActive` (ADR-036) is the same pattern applied a second time: it decides whether an incoming `pairing_progress`/`audio_changed` event should update the pairing flow's message, bridged the same way (cleared by the real transition when it arrives, a 180s timer only as the dead-man's switch). Two instances of the same justified exception, not a proliferation of ad hoc client state — any future local-only flag should still be treated as exceptional and justified the same way these are, with a preference for a real layer-2 signal first.
 
 ## Consequences
 
@@ -130,4 +135,4 @@ Every other fact in layer 3 has a daemon source. `S.powerPending` does not — i
 
 - **A runtime-introspectable state graph/schema in code**, instead of a written document — rejected as premature machinery. This is worth doing if a second daemon or a second frontend client ever needs to agree on this contract programmatically; with exactly one daemon process and one Portal, a document that a human keeps in sync is proportionate.
 
-Related: [ADR-006](006-capability-model.md), [ADR-026](026-bluetooth-audio-pairing.md), [ADR-028](028-audio-readiness-model.md), [ADR-033](033-speaker-standby-detection.md), [ADR-034](034-power-command-reconnect-wait.md) (Rule 2 is this ADR's generalization of that ADR's `power_off()`/`power_on()` discussion).
+Related: [ADR-006](006-capability-model.md), [ADR-026](026-bluetooth-audio-pairing.md), [ADR-028](028-audio-readiness-model.md), [ADR-033](033-speaker-standby-detection.md), [ADR-034](034-power-command-reconnect-wait.md) (Rule 2 is this ADR's generalization of that ADR's `power_off()`/`power_on()` discussion), [ADR-036](036-push-not-poll-ws-fanin.md) (the concrete push-based architecture this ADR's pipeline diagram now reflects, replacing what was still poll-only for audio/spotify/pairing when this ADR was first written).

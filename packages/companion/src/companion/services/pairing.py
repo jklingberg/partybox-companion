@@ -26,6 +26,9 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Literal
+
+from partyboxd.eventbus import EventBus
 
 from companion.config_store import ConfigStore
 from companion.services.audio import AudioService
@@ -59,6 +62,23 @@ class PairingStatus:
     error: str | None = None
 
 
+@dataclass(frozen=True)
+class PairingProgressEvent:
+    """Emitted whenever pairing state transitions.
+
+    Lets WS subscribers (the Portal, via the merged event stream — see
+    docs/adr/035-state-ownership-and-signal-pipeline.md) track a pairing
+    attempt without polling ``GET /api/v1/audio`` every couple of seconds.
+    """
+
+    state: PairingState
+    error: str | None
+    type: Literal["pairing_progress"] = "pairing_progress"
+
+
+type PairingEvent = PairingProgressEvent
+
+
 class PairingService:
     """On-demand Bluetooth Classic pairing for the A2DP audio sink.
 
@@ -66,6 +86,9 @@ class PairingService:
     invoked by the ``POST /api/v1/audio/pair`` endpoint.  Internally it
     manages a single asyncio Task so callers do not block waiting for the
     discovery/pairing window.
+
+    Subscribers receive :class:`PairingProgressEvent` on every state
+    transition; see :meth:`subscribe`.
     """
 
     def __init__(self, config: ConfigStore, audio: AudioService) -> None:
@@ -74,10 +97,44 @@ class PairingService:
         self._state = PairingState.IDLE
         self._error: str | None = None
         self._task: asyncio.Task[None] | None = None
+        self._bus: EventBus[PairingEvent] = EventBus()
 
     @property
     def status(self) -> PairingStatus:
         return PairingStatus(state=self._state, error=self._error)
+
+    def subscribe(self) -> asyncio.Queue[PairingEvent]:
+        """Subscribe to pairing progress.
+
+        Returns a queue pre-populated with the **current state** as its
+        first event, followed by :class:`PairingProgressEvent` for all
+        future transitions.
+
+        Call :meth:`unsubscribe` with the returned queue when done.
+        """
+        q = self._bus.subscribe()
+        q.put_nowait(PairingProgressEvent(state=self._state, error=self._error))
+        return q
+
+    def unsubscribe(self, queue: asyncio.Queue[PairingEvent]) -> None:
+        """Stop delivering events to *queue*."""
+        self._bus.unsubscribe(queue)
+
+    def _set_state(self, state: PairingState, error: str | None = None) -> None:
+        """Update pairing state/error and emit PairingProgressEvent, if changed.
+
+        No-op if *state* and *error* both match the current values — matches
+        the guard `AudioService._set_audio_ready()`/`SpotifyService._set_status()`
+        already have. Not currently reachable from `_do_pair()`'s own call
+        sites (each transitions to a genuinely new state), but guarding here
+        too keeps that an enforced invariant rather than one only true by
+        inspection of today's call sites.
+        """
+        if state == self._state and error == self._error:
+            return
+        self._state = state
+        self._error = error
+        self._bus.emit(PairingProgressEvent(state=state, error=error))
 
     async def start(self) -> bool:
         """Begin a pairing attempt in the background.
@@ -108,7 +165,7 @@ class PairingService:
     # ------------------------------------------------------------------
 
     async def _do_pair(self) -> None:
-        self._state = PairingState.SCANNING
+        self._set_state(PairingState.SCANNING)
         try:
             async with BluezClient() as bluez, bluez.pairing_agent():
                 # Bondable mode is scoped to this single attempt (ADR-027
@@ -120,9 +177,9 @@ class PairingService:
                     log.info("Pairing: discovering speaker (%.0fs window)", _DISCOVERY_TIMEOUT)
                     mac = await bluez.discover_bredr_address(timeout=_DISCOVERY_TIMEOUT)
                     if mac is None:
-                        self._state = PairingState.FAILED
-                        self._error = (
-                            "Speaker not found. Put the speaker in pairing mode and try again."
+                        self._set_state(
+                            PairingState.FAILED,
+                            "Speaker not found. Put the speaker in pairing mode and try again.",
                         )
                         log.warning("Pairing: no JBL device found")
                         return
@@ -134,12 +191,12 @@ class PairingService:
                     # BR/EDR inquiry — which it does only in pairing mode.
                     visible = await bluez.wait_for_device(mac, timeout=_BREDR_DISCOVERY_TIMEOUT)
                     if not visible:
-                        self._state = PairingState.FAILED
-                        self._error = (
+                        self._set_state(
+                            PairingState.FAILED,
                             "Speaker found, but it is not accepting pairing. "
                             "Put the speaker in pairing mode "
                             "(press the Bluetooth button once until the LEDs flash) "
-                            "and try again."
+                            "and try again.",
                         )
                         log.warning(
                             "Pairing: %s did not answer BR/EDR inquiry — "
@@ -149,16 +206,16 @@ class PairingService:
                         return
 
                     log.info("Pairing: %s visible on BR/EDR — pairing immediately", mac)
-                    self._state = PairingState.PAIRING
+                    self._set_state(PairingState.PAIRING)
 
                     try:
                         await bluez.pair(mac)
                     except PairingFailedError as exc:
-                        self._state = PairingState.FAILED
-                        self._error = (
+                        self._set_state(
+                            PairingState.FAILED,
                             "Pairing failed. Put the speaker in pairing mode "
                             "(press the Bluetooth button once until the LEDs flash) "
-                            "and try again."
+                            "and try again.",
                         )
                         log.warning("Pairing: %s", exc)
                         return
@@ -174,14 +231,13 @@ class PairingService:
                     # Wake AudioService immediately without a process restart.
                     self._audio.update_address(mac)
 
-                    self._state = PairingState.IDLE
+                    self._set_state(PairingState.IDLE)
                     log.info("Pairing: complete")
                 finally:
                     await bluez.set_pairable(False)
         except asyncio.CancelledError:
-            self._state = PairingState.IDLE
+            self._set_state(PairingState.IDLE)
             raise
         except Exception as exc:
-            self._state = PairingState.FAILED
-            self._error = f"Unexpected error: {exc}"
+            self._set_state(PairingState.FAILED, f"Unexpected error: {exc}")
             log.error("Pairing: unexpected error: %s", exc, exc_info=True)

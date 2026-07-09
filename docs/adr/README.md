@@ -45,3 +45,4 @@ New ADRs should be added when a significant design decision is made. Superseded 
 | [033](033-speaker-standby-detection.md) | Speaker Power State — Standby Detection via Control-Plane Liveness Probing | Accepted |
 | [034](034-power-command-reconnect-wait.md) | Wait for Reconnect Across a Power Command's Own BLE Drop | Accepted |
 | [035](035-state-ownership-and-signal-pipeline.md) | State Ownership and the Signal → Scene Pipeline | Accepted |
+| [036](036-push-not-poll-ws-fanin.md) | Push, Don't Poll — a Merged WebSocket Stream Across partyboxd and companion | Accepted |

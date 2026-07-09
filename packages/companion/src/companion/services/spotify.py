@@ -20,6 +20,9 @@ import re
 import shutil
 import signal
 from dataclasses import dataclass
+from typing import Literal
+
+from partyboxd.eventbus import EventBus
 
 from companion.config import SpotifySettings
 from companion.volume import VolumeState
@@ -62,6 +65,24 @@ class SpotifyStatus:
     device_name: str
 
 
+@dataclass(frozen=True)
+class SpotifyStatusChanged:
+    """Emitted when running or active transitions.
+
+    Lets WS subscribers (the Portal, via the merged event stream — see
+    docs/adr/035-state-ownership-and-signal-pipeline.md) update their view
+    of ``GET /api/v1/spotify`` without polling for it.
+    """
+
+    running: bool
+    active: bool
+    device_name: str
+    type: Literal["spotify_changed"] = "spotify_changed"
+
+
+type SpotifyEvent = SpotifyStatusChanged
+
+
 class SpotifyService:
     """Manages the librespot subprocess for Spotify Connect.
 
@@ -74,6 +95,8 @@ class SpotifyService:
         await task
 
     While :meth:`run` is active, :attr:`status` reflects the current state.
+    Subscribers receive :class:`SpotifyStatusChanged` events on every
+    running/active transition; see :meth:`subscribe`.
     """
 
     def __init__(
@@ -86,11 +109,34 @@ class SpotifyService:
         self._running = False
         self._active = False
         self._proc: asyncio.subprocess.Process | None = None
+        self._bus: EventBus[SpotifyEvent] = EventBus()
 
     @property
     def settings(self) -> SpotifySettings:
         """Current effective settings — may change after update_settings()."""
         return self._settings
+
+    def subscribe(self) -> asyncio.Queue[SpotifyEvent]:
+        """Subscribe to running/active changes.
+
+        Returns a queue pre-populated with the **current state** as its
+        first event, followed by :class:`SpotifyStatusChanged` events for
+        all future transitions — callers never need to read :attr:`status`
+        separately.
+
+        Call :meth:`unsubscribe` with the returned queue when done.
+        """
+        q = self._bus.subscribe()
+        q.put_nowait(
+            SpotifyStatusChanged(
+                running=self._running, active=self._active, device_name=self._settings.connect_name
+            )
+        )
+        return q
+
+    def unsubscribe(self, queue: asyncio.Queue[SpotifyEvent]) -> None:
+        """Stop delivering events to *queue*."""
+        self._bus.unsubscribe(queue)
 
     @property
     def status(self) -> SpotifyStatus:
@@ -141,8 +187,7 @@ class SpotifyService:
                 "librespot not found — install it to enable Spotify Connect (retrying in %.0fs)",
                 _NOT_FOUND_RETRY,
             )
-            self._running = False
-            self._active = False
+            self._set_status(running=False, active=False)
             await asyncio.sleep(_NOT_FOUND_RETRY)
             return
 
@@ -160,8 +205,7 @@ class SpotifyService:
             return
 
         self._proc = proc
-        self._running = True
-        self._active = False
+        self._set_status(running=True, active=False)
         log.info(
             "Spotify service started (pid=%d, device=%r)",
             proc.pid,
@@ -172,8 +216,7 @@ class SpotifyService:
 
         rc = proc.returncode
         self._proc = None
-        self._running = False
-        self._active = False
+        self._set_status(running=False, active=False)
 
         if rc == 0:
             log.info("librespot exited cleanly")
@@ -217,11 +260,11 @@ class SpotifyService:
         lower = line.lower()
         if any(p in lower for p in _ACTIVE_PATTERNS):
             if not self._active:
-                self._active = True
+                self._set_status(running=self._running, active=True)
                 log.info("Spotify playback became active")
         elif any(p in lower for p in _INACTIVE_PATTERNS):
             if self._active:
-                self._active = False
+                self._set_status(running=self._running, active=False)
                 log.info("Spotify playback stopped")
 
     async def _terminate(self) -> None:
@@ -238,8 +281,19 @@ class SpotifyService:
                 pass
         finally:
             self._proc = None
-            self._running = False
-            self._active = False
+            self._set_status(running=False, active=False)
+
+    def _set_status(self, *, running: bool, active: bool) -> None:
+        """Update running/active and emit SpotifyStatusChanged if either changed."""
+        if running == self._running and active == self._active:
+            return
+        self._running = running
+        self._active = active
+        self._bus.emit(
+            SpotifyStatusChanged(
+                running=running, active=active, device_name=self._settings.connect_name
+            )
+        )
 
     @staticmethod
     def _preexec() -> None:

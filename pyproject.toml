@@ -34,6 +34,17 @@ python_version = "3.14"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
+# Lets mypy resolve cross-package imports (e.g. companion importing
+# partyboxd.eventbus) via source even when the workspace packages aren't
+# pip-installed in the invoking environment -- notably pre-commit's mypy
+# hook, which runs in an isolated venv built only from additional_dependencies
+# and has none of packages/*/src installed. Without this, a commit touching
+# only companion/ files (no partyboxd/ file to anchor resolution through)
+# silently degrades any partyboxd-typed value to Any under
+# --ignore-missing-imports, which warn_return_any then flags as a bogus
+# "Returning Any" error on a function that mypy --strict, run normally via
+# `uv run` (where the packages *are* installed), passes cleanly.
+mypy_path = ["packages/partybox/src", "packages/partyboxd/src", "packages/companion/src"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
