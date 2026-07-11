@@ -1316,6 +1316,10 @@ async function saveSettings() {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        // PUT replaces the whole config, so fields not in this form (e.g.
+        // audio_sink_address, set by the pairing flow) must be carried
+        // forward from the last-known config rather than dropped.
+        ...S.config,
         spotify_connect_name: newSvcName,
         spotify_bitrate: newBitrate,
       }),

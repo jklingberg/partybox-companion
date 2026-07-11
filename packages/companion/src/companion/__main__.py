@@ -19,6 +19,8 @@ import asyncio
 import logging
 import logging.config
 import os
+import time
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 
 import uvicorn
@@ -30,6 +32,7 @@ from partyboxd.device.events import SpeakerStateChangedEvent, VolumeChangedEvent
 
 from companion.config import AudioSettings, CompanionSettings, SpotifySettings
 from companion.config_store import ConfigStore
+from companion.services import login1_dbus
 from companion.services.audio import AudioService
 from companion.services.pairing import PairingService
 from companion.services.provisioning import ProvisioningService
@@ -176,6 +179,102 @@ async def _recheck_audio_on_standby(manager: DeviceManager, audio: AudioService)
         manager.unsubscribe(queue)
 
 
+_IDLE_SHUTDOWN_CHECK_INTERVAL = 15.0  # matches ADR-033's health-check cadence
+
+#: Fixed thresholds, not Portal-configurable (ADR-038). Real-world timing is
+#: dominated by however long the PartyBox's own undocumented on -> standby
+#: -> off progression takes, which Companion doesn't control — a
+#: user-tunable number here mostly wasn't doing useful work, only adding UI
+#: surface for a value nobody had a principled way to choose. Always on;
+#: there is no disable switch.
+#:
+#: "standby" is recoverable without touching the speaker (resuming playback
+#: wakes the amp back up on its own, per observed PartyBox behaviour), so it
+#: gets a generous allowance — long enough that an ordinary pause between
+#: songs, or a quiet moment at a party, doesn't take the whole appliance
+#: down. 30 min is the upper end of the "15-30 minutes" range the product
+#: goal was originally framed in (ADR-038) — picked as the single fixed
+#: value on the more conservative/generous side once the threshold stopped
+#: being Portal-configurable, rather than re-derived from anything
+#: measured. No hardware signal ties it to 30 specifically; it is a product
+#: choice, not an engineering one.
+_STANDBY_GRACE_SECONDS = 30 * 60
+
+#: "off" means the BLE radio itself has gone dark — nothing remote can
+#: recover that regardless of whether the Pi keeps running, so it only needs
+#: enough of a debounce to rule out a transient reconnect blip (observed
+#: clearing on its own within under a minute on real hardware), not a full
+#: "maybe they're just pausing" grace period.
+_OFF_STATE_GRACE_SECONDS = 90.0
+
+
+async def _idle_battery_shutdown(
+    manager: DeviceManager,
+    power_off: Callable[[], Awaitable[None]] = login1_dbus.power_off,
+) -> None:
+    """Power off the Pi after sustained idle-on-battery time (ADR-038).
+
+    Polls rather than reacts to events: ``SpeakerStateChangedEvent`` only
+    fires on off/standby/on transitions, not on charging-status changes
+    (e.g. the user plugs in mains while the speaker stays in standby), so a
+    periodic re-check of the full snapshot is needed to notice that too.
+
+    Counts idle time in both ``"standby"`` (BLE connected, speaker asleep)
+    and ``"off"`` (BLE disconnected), but judges them against *different*
+    fixed thresholds — they are not equivalent, see
+    ``_STANDBY_GRACE_SECONDS``/``_OFF_STATE_GRACE_SECONDS`` above.
+
+    The idle clock itself is a single continuous counter that survives the
+    standby <-> off transition — only the threshold it's compared against
+    changes with the current state. A speaker idle a long time in standby
+    that then drops to "off" fires almost immediately, since the total idle
+    time already dwarfs the short off-state threshold; there is no reason to
+    make it wait out an *additional* grace period on top of idle time it has
+    already accrued.
+
+    "off" also means the current power source can no longer be
+    reconfirmed, so both branches rely on ``last_known_on_battery``: the
+    most recent confirmed ``charging_status`` reading, frozen at whatever it
+    was when last seen. This is a deliberate accepted trade-off, not an
+    oversight (ADR-038's hardware-validation follow-up): a speaker that goes
+    out of range or gets moved to mains *during* an idle spell is still
+    judged by the stale reading until it reconnects. Real activity
+    (``"on"``) or a confirmed mains reading always resets the idle clock.
+    Runs until cancelled.
+    """
+    idle_since: float | None = None
+    triggered = False
+    last_known_on_battery: bool | None = None
+    while True:
+        await asyncio.sleep(_IDLE_SHUTDOWN_CHECK_INTERVAL)
+        if triggered:
+            continue
+        snap = manager.snapshot
+        charging_status = snap.battery_status.charging_status if snap.battery_status else None
+        if charging_status is not None:
+            last_known_on_battery = not charging_status.on_mains
+
+        threshold: float | None = None
+        if snap.speaker_state == "standby":
+            threshold = _STANDBY_GRACE_SECONDS
+        elif snap.speaker_state == "off":
+            threshold = _OFF_STATE_GRACE_SECONDS
+
+        if threshold is not None and last_known_on_battery:
+            if idle_since is None:
+                idle_since = time.monotonic()
+            elif time.monotonic() - idle_since >= threshold:
+                log.warning(
+                    "idle battery shutdown: no activity for %.0fs on (confirmed or "
+                    "last-known) battery power — powering off",
+                    time.monotonic() - idle_since,
+                )
+                triggered = True
+                await power_off()
+        else:
+            idle_since = None
+
+
 def main() -> None:
     level = os.environ.get("COMPANION_LOG_LEVEL", "INFO").upper()
     logging.config.dictConfig(_make_log_config(level))
@@ -261,6 +360,11 @@ async def _run(
     supervisor.register(
         "audio-standby-recheck",
         lambda: _recheck_audio_on_standby(manager, audio),
+        policy=RestartPolicy(initial_delay=1.0, max_delay=30.0),
+    )
+    supervisor.register(
+        "idle-battery-shutdown",
+        lambda: _idle_battery_shutdown(manager),
         policy=RestartPolicy(initial_delay=1.0, max_delay=30.0),
     )
 
