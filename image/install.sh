@@ -316,6 +316,39 @@ POLKIT_EOF
 chmod 0644 /etc/polkit-1/rules.d/51-companion-nm.rules
 
 # ──────────────────────────────────────────────────────────────────────────────
+# 9c. polkit rule — companion user → systemd-logind PowerOff
+#
+# The idle-battery-shutdown watcher (ADR-038) powers off the Pi after
+# sustained inactivity while the speaker runs on battery, to stop draining
+# it. companion.service runs with NoNewPrivileges=true, which rules out a
+# sudo-based approach outright (sudo needs the setuid escalation that flag
+# blocks) — see ADR-028's "privileged broker" note for the same wall hit by
+# an earlier recovery feature. Going through logind over D-Bus sidesteps it:
+# no Linux capability or setuid path is involved.
+#
+# Unlike the NetworkManager rule above, logind's poweroff action IDs are
+# small and stable, so a narrow allowlist (not a namespace-wide grant) is
+# the correct scope here.
+# ──────────────────────────────────────────────────────────────────────────────
+log "Installing polkit rule for companion → logind PowerOff"
+cat > /etc/polkit-1/rules.d/52-companion-logind.rules << 'POLKIT_EOF'
+// Grant the companion system user permission to power off the appliance via
+// systemd-logind. Used by the idle-battery-shutdown watcher (ADR-038) to
+// stop draining the PartyBox's battery when it has been idle and unplugged
+// from mains past a Portal-configured threshold. Scoped to exactly the two
+// poweroff action IDs — logind's action ID surface for this operation is
+// small and stable, unlike NetworkManager's above.
+polkit.addRule(function(action, subject) {
+    if ((action.id == "org.freedesktop.login1.power-off"
+            || action.id == "org.freedesktop.login1.power-off-multiple-sessions")
+            && subject.user === "companion") {
+        return polkit.Result.YES;
+    }
+});
+POLKIT_EOF
+chmod 0644 /etc/polkit-1/rules.d/52-companion-logind.rules
+
+# ──────────────────────────────────────────────────────────────────────────────
 # 10. Hostname
 #
 # "partybox" is the fixed, permanent appliance hostname — it determines the
