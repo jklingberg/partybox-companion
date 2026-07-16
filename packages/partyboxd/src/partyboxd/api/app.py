@@ -18,6 +18,7 @@ def create_app(
     manager: DeviceManager,
     settings: Settings,
     audio_ready_fn: Callable[[], bool] | None = None,
+    audio_focus_fn: Callable[[], str] | None = None,
     extra_event_sources: Sequence[EventSource] = (),
 ) -> FastAPI:
     """Create and return the FastAPI application.
@@ -44,6 +45,8 @@ def create_app(
     )
 
     auth = make_auth_dependency(settings)
-    app.include_router(make_router(manager, auth, audio_ready_fn=audio_ready_fn))
+    app.include_router(
+        make_router(manager, auth, audio_ready_fn=audio_ready_fn, audio_focus_fn=audio_focus_fn)
+    )
     app.include_router(make_ws_router(manager, settings, extra_sources=extra_event_sources))
     return app

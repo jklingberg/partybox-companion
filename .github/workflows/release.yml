@@ -109,13 +109,22 @@ jobs:
 
             1. Download `${{ steps.meta.outputs.artifact }}`
             2. Open [Raspberry Pi Imager](https://www.raspberrypi.com/software/)
-            3. **Operating System** → Use Custom → select the downloaded file
-            4. **Storage** → select your SD card
-            5. Click the settings icon (gear) to configure:
-               - Set your WiFi network and password
-               - (Optional) enable SSH for initial debugging
-            6. Write the image, insert the card, and power on your Raspberry Pi
-            7. Open **http://partybox.local** in a browser on the same network
+            3. **Device** → Select your device version
+            4. **OS** → Use Custom → select the downloaded file
+            5. **Storage** → select your SD card
+            6. Write the image, insert the card, and power on your Raspberry Pi —
+               the first boot takes 30–60 seconds
+            7. Open your device's WiFi network list, join **PartyBox Companion Setup**,
+               and wait for the captive portal to show up
+            8. Select your WiFi SSID from the list and provide the password — the
+               setup network disappears while the Pi joins your WiFi. If it reappears
+               after a minute, the join failed (usually a mistyped password):
+               reconnect and retry
+            9. Open **http://partybox.local** in a browser on that WiFi network
+               (if the name doesn't resolve, use the Pi's IP address from your
+               router's device list — it registers with hostname `partybox`)
+            10. Pair your speaker from the Portal (see **Pair your speaker** below) —
+                Spotify Connect and AirPlay appear only after pairing succeeds
 
             ### Requirements
 
@@ -124,12 +133,24 @@ jobs:
             - JBL PartyBox speaker
             - 2.4 GHz or 5 GHz WiFi network
 
-            ### First boot
+            ### Pair your speaker
 
-            The first boot takes 30–60 seconds. The Portal is served on port 80.
-            Open `http://partybox.local` (or the Pi's IP address) in a browser.
-            On first boot without WiFi configured, the Pi broadcasts a setup AP
-            (`PartyBox Companion Setup`) — connect to it and follow the captive portal.
+            A fresh install has never paired with your speaker — pairing is stored
+            on the SD card, so redo this after every reflash:
+
+            1. Open the Portal; it shows a **Pair your speaker** screen until pairing is done
+            2. Hold the Bluetooth button on the PartyBox until its LEDs flash (pairing mode)
+            3. Tap **Start Pairing** right away — JBL's pairing window is short;
+               the scan can take up to 60 seconds
+
+            The appliance appears in Spotify Connect and AirPlay device lists **only
+            after pairing succeeds** — it hides itself until it can actually play audio.
+            "No Spotify device" almost always means this step hasn't completed.
+
+            **No sound, but everything shows connected?** Disconnect other Bluetooth
+            devices from the speaker — especially your phone, which often auto-reconnects
+            from earlier use and silently holds the speaker's audio channel. Turn off
+            Bluetooth on the phone (or unpair the speaker there) and play again.
 
             ---
 

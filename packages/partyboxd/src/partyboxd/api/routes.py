@@ -26,6 +26,10 @@ class HealthResponse(BaseModel):
     ble_connected: bool
     audio_ready: bool | None = None
     speaker_state: Literal["off", "standby", "on"]
+    #: "exclusive" | "contested" | "unknown" — whether another Bluetooth
+    #: source is connected to the speaker (see companion's AudioFocusService).
+    #: ``None`` when running as standalone partyboxd without Companion.
+    audio_focus: str | None = None
 
 
 class SpeakerResponse(BaseModel):
@@ -105,6 +109,7 @@ def make_router(
     manager: DeviceManager,
     auth: Callable[..., Awaitable[None]],
     audio_ready_fn: Callable[[], bool] | None = None,
+    audio_focus_fn: Callable[[], str] | None = None,
 ) -> APIRouter:
     """Return an APIRouter with all partyboxd routes bound to *manager*.
 
@@ -135,7 +140,11 @@ def make_router(
         the connection and battery signal: ``"off"`` (BLE disconnected —
         speaker unplugged or unreachable), ``"standby"`` (BLE connected but
         the speaker is asleep — only detectable on battery-capable models),
-        or ``"on"``.
+        or ``"on"``. ``audio_focus`` reports whether another Bluetooth source
+        (typically a phone) is also connected to the speaker — ``"exclusive"``,
+        ``"contested"``, or ``"unknown"``; ``null`` without Companion. A
+        ``"contested"`` value explains the "everything connected but silent"
+        failure mode: the speaker may render the other source instead.
 
         No authentication required — safe to poll from monitoring tools.
 
@@ -151,6 +160,7 @@ def make_router(
             ble_connected=manager.snapshot.connected,
             audio_ready=audio_ready_fn() if audio_ready_fn is not None else None,
             speaker_state=manager.snapshot.speaker_state,
+            audio_focus=audio_focus_fn() if audio_focus_fn is not None else None,
         )
 
     # ------------------------------------------------------------------
