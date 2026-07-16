@@ -48,6 +48,7 @@ after its first use) are quoted instead.
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from types import TracebackType
 from typing import Any, cast
 
@@ -78,6 +79,24 @@ HARMAN_FDDF_UUID = "0000fddf-0000-1000-8000-00805f9b34fb"
 _FDDF_ADDRESS_OFFSET = 11
 _FDDF_ADDRESS_LENGTH = 6
 
+# Beyond the BR/EDR address, the FDDF payload carries live device state.
+# Offsets observed on a PartyBox 520 by toggling a phone connection while
+# capturing with btmon (2026-07-16) — see docs/reverse-engineering/protocol.md
+# § "FDDF Advertisement" for the raw captures and confidence levels:
+#
+#   byte 4   battery percent in bits 0-6 (tracked the API's battery reading
+#            as it drained); bit 7 observed set only in the ADR-027
+#            pairing-mode capture where the low bits read 100% — likely a
+#            charging/mains flag, so it is masked off
+#   byte 8   connected-source indicator — 0x04 in pairing mode with nothing
+#            connected, 0x05 with only the companion connected, incremented
+#            while a phone was also connected
+#   byte 18  connection bitmask — 0x01 with only the companion connected,
+#            bit 0x08 set while a phone was also connected
+_FDDF_BATTERY_OFFSET = 4
+_FDDF_SOURCE_COUNT_OFFSET = 8
+_FDDF_CONNECTION_BITS_OFFSET = 18
+
 _PAIR_TIMEOUT = 60.0
 _TRUST_TIMEOUT = 5.0
 _CONNECT_TIMEOUT = 30.0
@@ -94,6 +113,42 @@ def extract_bredr_address(service_data: bytes) -> str | None:
         return None
     addr_bytes = service_data[_FDDF_ADDRESS_OFFSET:end]
     return ":".join(f"{b:02X}" for b in addr_bytes)
+
+
+@dataclass(frozen=True)
+class FddfPayload:
+    """Decoded live-state fields of a Harman FDDF advertisement payload.
+
+    Field semantics come from hardware observation on a single PartyBox 520
+    (see the ``_FDDF_*_OFFSET`` constants above) — treat them as
+    model-observed, not specified. The parser is mechanical; policy (what a
+    given ``source_count`` *means*) belongs to callers such as
+    :class:`~companion.services.audio_focus.AudioFocusService`.
+    """
+
+    battery_percent: int
+    source_count: int
+    connection_bits: int
+    bredr_address: str
+
+
+def parse_fddf_payload(service_data: bytes) -> FddfPayload | None:
+    """Decode the live-state fields of an FDDF payload.
+
+    Returns ``None`` when the payload is too short to contain all known
+    fields — an unrelated or truncated advertisement.
+    """
+    if len(service_data) <= _FDDF_CONNECTION_BITS_OFFSET:
+        return None
+    address = extract_bredr_address(service_data)
+    if address is None:
+        return None
+    return FddfPayload(
+        battery_percent=service_data[_FDDF_BATTERY_OFFSET] & 0x7F,
+        source_count=service_data[_FDDF_SOURCE_COUNT_OFFSET],
+        connection_bits=service_data[_FDDF_CONNECTION_BITS_OFFSET],
+        bredr_address=address,
+    )
 
 
 class PairingFailedError(Exception):

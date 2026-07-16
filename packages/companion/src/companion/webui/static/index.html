@@ -635,7 +635,7 @@ const MOCK = location.search.includes('mock');
 const MOCK_PROVISION = location.search.includes('provision');
 const MOCK_STATE = new URLSearchParams(location.search).get('state'); // off|standby|pair|on
 
-const MOCK_HEALTH  = { status: 'ok', version: '0.2.0-dev', ble_connected: true, audio_ready: true, speaker_state: 'on' };
+const MOCK_HEALTH  = { status: 'ok', version: '0.2.0-dev', ble_connected: true, audio_ready: true, speaker_state: 'on', audio_focus: 'exclusive' };
 const MOCK_HEALTH_DETAILS = { tasks: [
   { name: 'device-manager', state: 'running', last_exception: null, total_failures: 0 },
   { name: 'audio-service', state: 'running', last_exception: null, total_failures: 0 },
@@ -1073,7 +1073,16 @@ function healthItems() {
     items.push({ name: 'Bluetooth Audio', icon: 'i-bluetooth', state: 'err', shortIssue: 'pairing failed',
       text: 'Pairing failed', action: { label: 'Try again', fn: 'open-pair' } });
   } else if (au.connected) {
-    items.push({ name: 'Bluetooth Audio', icon: 'i-bluetooth', state: 'ok', shortIssue: '', text: 'Ready' });
+    // audio_focus comes from the FDDF-advert watcher (AudioFocusService):
+    // "contested" means another Bluetooth source — usually a phone — is also
+    // connected to the speaker, which can silently swallow our audio while
+    // every connection signal still reads healthy.
+    if (S.health && S.health.audio_focus === 'contested') {
+      items.push({ name: 'Bluetooth Audio', icon: 'i-bluetooth', state: 'warn', shortIssue: 'another device connected',
+        text: 'Another device (often a phone) is connected to the speaker and may be blocking audio — turn off Bluetooth on it' });
+    } else {
+      items.push({ name: 'Bluetooth Audio', icon: 'i-bluetooth', state: 'ok', shortIssue: '', text: 'Ready' });
+    }
   } else {
     items.push({ name: 'Bluetooth Audio', icon: 'i-bluetooth', state: 'pending', shortIssue: 'connecting',
       text: 'Connecting…' });
@@ -1262,6 +1271,11 @@ function onEvent(ev) {
     case 'spotify_changed':
       S.spotify = { running: ev.running, active: ev.active, device_name: ev.device_name };
       render();
+      break;
+    case 'audio_focus_changed':
+      // Only the focus field changes; the rest of S.health stays owned by
+      // the /health poll (docs/adr/035-state-ownership-and-signal-pipeline.md).
+      if (S.health) { S.health.audio_focus = ev.focus; render(); }
       break;
     case 'pairing_progress':
       S.audio = { ...(S.audio || {}), pairing_state: ev.state, error: ev.error };

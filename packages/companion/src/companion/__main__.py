@@ -34,7 +34,8 @@ from companion.config import AudioSettings, CompanionSettings, SpotifySettings
 from companion.config_store import ConfigStore
 from companion.services import login1_dbus
 from companion.services.audio import AudioService
-from companion.services.pairing import PairingService
+from companion.services.audio_focus import AudioFocusService
+from companion.services.pairing import PairingService, PairingState
 from companion.services.provisioning import ProvisioningService
 from companion.services.router import make_services_router
 from companion.services.spotify import SpotifyService
@@ -307,6 +308,12 @@ async def _run(
     audio_sink = portal_cfg.audio_sink_address or companion_settings.audio.sink_address
     audio = AudioService(AudioSettings(sink_address=audio_sink))
     pairing = PairingService(config_store, audio)
+    audio_focus = AudioFocusService(
+        address_fn=lambda: audio.status.address,
+        pairing_active_fn=lambda: (
+            pairing.status.state in (PairingState.SCANNING, PairingState.PAIRING)
+        ),
+    )
 
     manager = DeviceManager(daemon_settings.speaker)
 
@@ -322,7 +329,8 @@ async def _run(
         manager,
         daemon_settings,
         audio_ready_fn=lambda: audio.audio_ready,
-        extra_event_sources=[audio, spotify, pairing],
+        audio_focus_fn=lambda: audio_focus.focus.value,
+        extra_event_sources=[audio, spotify, pairing, audio_focus],
     )
     app.include_router(make_portal_router(companion_settings, config_store))
     app.include_router(
@@ -357,6 +365,11 @@ async def _run(
         policy=RestartPolicy(initial_delay=1.0, max_delay=30.0),
     )
     supervisor.register("provisioning", provisioning.run)
+    supervisor.register(
+        "audio-focus",
+        audio_focus.run,
+        policy=RestartPolicy(initial_delay=1.0, max_delay=30.0),
+    )
     supervisor.register(
         "audio-standby-recheck",
         lambda: _recheck_audio_on_standby(manager, audio),

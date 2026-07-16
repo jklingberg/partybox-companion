@@ -103,6 +103,25 @@ async def test_health_audio_ready_false_when_fn_returns_false() -> None:
     assert r.json()["audio_ready"] is False
 
 
+async def test_health_audio_focus_none_without_companion() -> None:
+    """audio_focus is null when partyboxd runs standalone (no audio_focus_fn)."""
+    async with _make_client(_CONNECTED) as client:
+        r = await client.get("/api/v1/health")
+    assert r.status_code == 200
+    assert r.json()["audio_focus"] is None
+
+
+async def test_health_audio_focus_reflects_fn() -> None:
+    """audio_focus reflects the audio_focus_fn result."""
+    manager = MagicMock()
+    type(manager).snapshot = PropertyMock(return_value=_CONNECTED)
+    app = create_app(manager, _make_settings(), audio_focus_fn=lambda: "contested")
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.get("/api/v1/health")
+    assert r.status_code == 200
+    assert r.json()["audio_focus"] == "contested"
+
+
 async def test_health_requires_no_api_key() -> None:
     settings = _make_settings(api_key="secret")
     async with _make_client(_CONNECTED, settings) as client:

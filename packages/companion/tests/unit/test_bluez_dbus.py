@@ -12,7 +12,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from companion.services.bluez_dbus import BluezClient, _PairingAgent, extract_bredr_address
+from companion.services.bluez_dbus import (
+    BluezClient,
+    _PairingAgent,
+    extract_bredr_address,
+    parse_fddf_payload,
+)
 
 # Confirmed from hardware: LE advertisement Service Data AD structure
 # (AD type 0x16) under Harman's vendor UUID 0xfddf, captured from a
@@ -153,3 +158,51 @@ async def test_wait_for_device_times_out_and_cleans_up() -> None:
     assert adapter.started is True
     assert adapter.stopped is True
     assert objmgr.callbacks == []
+
+
+# ---------------------------------------------------------------------------
+# parse_fddf_payload() — live-state fields
+# ---------------------------------------------------------------------------
+#
+# Real btmon captures from a PartyBox 520 (2026-07-16), taken while toggling a
+# phone's Bluetooth connection — the same session documented in
+# docs/reverse-engineering/protocol.md § "FDDF Advertisement".
+
+# Phone also connected to the speaker (idle or playing — payload identical):
+FDDF_PHONE_CONNECTED = bytes.fromhex("202101d453e2c70c06586b501b6a14fd1d00090000000000")
+# Phone disconnected — companion is the only source:
+FDDF_COMPANION_ONLY = bytes.fromhex("202101d453e2c70c05586b501b6a14fd1d00010000000000")
+
+
+def test_parse_fddf_payload_phone_connected() -> None:
+    payload = parse_fddf_payload(FDDF_PHONE_CONNECTED)
+    assert payload is not None
+    assert payload.bredr_address == FDDF_KNOWN_ADDRESS
+    assert payload.battery_percent == 0x53  # 83%, matched the API reading
+    assert payload.source_count == 0x06
+    assert payload.connection_bits == 0x09
+
+
+def test_parse_fddf_payload_companion_only() -> None:
+    payload = parse_fddf_payload(FDDF_COMPANION_ONLY)
+    assert payload is not None
+    assert payload.bredr_address == FDDF_KNOWN_ADDRESS
+    assert payload.source_count == 0x05
+    assert payload.connection_bits == 0x01
+
+
+def test_parse_fddf_payload_pairing_mode_capture() -> None:
+    """The ADR-027 pairing-mode capture: byte 4 has bit 7 set with the low
+    bits reading 100% (likely a charging flag — masked off), and the source
+    count is 0x04 with nothing connected."""
+    payload = parse_fddf_payload(FDDF_SERVICE_DATA)
+    assert payload is not None
+    assert payload.bredr_address == FDDF_KNOWN_ADDRESS
+    assert payload.battery_percent == 0x64  # 0xe4 & 0x7f
+    assert payload.source_count == 0x04
+    assert payload.connection_bits == 0x01
+
+
+def test_parse_fddf_payload_returns_none_when_too_short() -> None:
+    assert parse_fddf_payload(FDDF_PHONE_CONNECTED[:18]) is None
+    assert parse_fddf_payload(b"") is None
