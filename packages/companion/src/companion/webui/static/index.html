@@ -556,6 +556,13 @@
       <button class="icon-btn" data-action="close-health" aria-label="Close"><svg class="icon"><use href="#i-x"/></svg></button>
     </div>
     <div id="health-rows"></div>
+    <!-- The Bluetooth link checks (A2DP health, competing-source scan) run on
+         a 60-second cycle by design — see AudioService._CHECK_INTERVAL and
+         AudioFocusService. Set expectations so a just-changed state that has
+         not been picked up yet doesn't read as a bug. -->
+    <div style="font-size:12.5px;color:var(--faint);margin:4px 2px 14px">
+      Bluetooth checks run once a minute, so a status here can lag reality by up to 60 seconds.
+    </div>
     <div class="btn-row">
       <a class="btn btn-ghost" style="flex:1;text-decoration:none" href="/api/v1/debug/bundle" download>
         <svg class="icon"><use href="#i-download"/></svg> Download debug bundle
