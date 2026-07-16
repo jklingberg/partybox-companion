@@ -37,7 +37,8 @@ The table above lists *requirements*. This table tracks known Pi + controller + 
 
 | Raspberry Pi | BT controller | Speaker | Status | Notes |
 |---|---|---|---|---|
-| Pi 3 B+ | Broadcom (on-board) | JBL PartyBox 520 | ✅ Working | Only combination validated on hardware to date |
+| Pi 3 B+ | Broadcom (on-board) | JBL PartyBox 520 | ✅ Working | Full appliance validation suite run (RC13) |
+| Pi 5 | Broadcom (on-board) | JBL PartyBox 520 | ✅ Working | Provisioning, pairing, and Spotify Connect streaming verified end-to-end (RC14); full validation suite not yet run |
 
 Legend: ✅ Verified working (run end-to-end on our hardware) · ❌ Verified not working (tested, fails on our hardware)
 
@@ -75,12 +76,17 @@ See [docs/architecture.md](docs/architecture.md) for full design.
 
 ## Quick Start
 
-> Full installation guide coming in v1.0. The steps below reflect the target experience.
-
 1. Flash the appliance image to an SD card and boot the Raspberry Pi.
-2. Join its WiFi setup network and enter your home WiFi credentials (captive portal).
-3. Open the Companion Portal at `http://partybox.local`.
-4. Pair the speaker over Bluetooth from the Portal, then start streaming with Spotify Connect.
+2. Join the **`PartyBox Companion Setup`** WiFi network from your phone or laptop and pick your home WiFi in the captive portal. The setup network disappears while the Pi joins your WiFi — success and failure look the same from your device. If the setup network **reappears** after a minute, the join failed (usually a mistyped password): reconnect to it and the portal shows the reason so you can retry.
+3. Open the Companion Portal at `http://partybox.local` from a device on your home network. If the name doesn't resolve, use `http://partybox` or the Pi's IP address from your router's device list (it registers with hostname `partybox`).
+4. **Pair the speaker.** The Portal shows a *Pair your speaker* screen until this is done: hold the Bluetooth button on the PartyBox until its LEDs flash (pairing mode), then tap **Start Pairing**. The scan can take up to 60 seconds. JBL's pairing window is short — put the speaker in pairing mode right before tapping the button.
+5. Done — the appliance now appears as **PartyBox Companion** in Spotify Connect and AirPlay device lists.
+
+Three things that trip up new installs:
+
+- **Spotify Connect appears only after pairing succeeds.** The appliance deliberately hides itself from Spotify and AirPlay clients until it can actually play audio, so "no Spotify device" almost always means step 4 hasn't completed. (BLE control — power, battery — connects automatically without pairing; only the audio link needs it.)
+- **Pairing is stored on the SD card, not in the image** (`/var/lib/companion/config.json`). After reflashing, or when moving to a new Pi or a new card, redo step 4 even if the same speaker worked before.
+- **No sound, but everything shows connected?** Disconnect other Bluetooth devices from the speaker — especially your phone, which often auto-reconnects from earlier use. When another device holds the speaker's audio channel, the speaker silently discards the appliance's stream while every status still reads connected and playing. Turn off Bluetooth on the phone (or unpair the speaker there) and play again.
 
 To run the appliance directly from a source checkout:
 
