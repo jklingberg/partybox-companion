@@ -5,13 +5,19 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from partybox import ConnectionFailedError
 from partybox.bluetooth.mock import MockTransport
 from partybox.device.partybox import PartyBoxDevice
 from partybox.protocol.codec import encode
 from partybox.protocol.messages import BatteryStatusRequest, FirmwareVersionRequest
 from partyboxd.config import SpeakerSettings
 from partyboxd.device.events import ConnectedEvent, DisconnectedEvent, PowerChangedEvent
-from partyboxd.device.manager import _RECONNECT_MAX, DeviceManager, DeviceNotConnectedError
+from partyboxd.device.manager import (
+    _RECONNECT_MAX,
+    _WEDGE_WINDOW,
+    DeviceManager,
+    DeviceNotConnectedError,
+)
 
 FIRMWARE_REQUEST = encode(FirmwareVersionRequest())
 # Real hardware capture: firmware 26.2.10
@@ -444,6 +450,86 @@ async def test_retry_delay_resets_after_successful_connect(
 
     assert manager._retry_delay == 1.0
 
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+# ---------------------------------------------------------------------------
+# wedged-controller self-heal (ADR-039)
+# ---------------------------------------------------------------------------
+
+
+async def test_dense_connect_failures_trigger_adapter_recovery() -> None:
+    """Three dense scan-found-it-but-connect-failed cycles invoke the injected
+    recovery exactly once, then the counter starts over."""
+    calls: list[bool] = []
+
+    async def recover() -> bool:
+        calls.append(True)
+        return True
+
+    manager = DeviceManager(_settings(), adapter_recover_fn=recover)
+    await manager._note_connect_failure()
+    await manager._note_connect_failure()
+    assert calls == []
+    await manager._note_connect_failure()
+    assert calls == [True]
+    # Counter was reset — a single further failure must not re-trigger.
+    await manager._note_connect_failure()
+    assert calls == [True]
+
+
+async def test_stale_connect_failures_do_not_accumulate() -> None:
+    """Failures further apart than _WEDGE_WINDOW restart the count, so
+    isolated one-offs spread over days never add up to a recovery."""
+    calls: list[bool] = []
+
+    async def recover() -> bool:
+        calls.append(True)
+        return True
+
+    manager = DeviceManager(_settings(), adapter_recover_fn=recover)
+    await manager._note_connect_failure()
+    await manager._note_connect_failure()
+    # Age the run beyond the window; the next failure starts a fresh count.
+    manager._last_connect_failure -= _WEDGE_WINDOW + 1
+    await manager._note_connect_failure()
+    await manager._note_connect_failure()
+    assert calls == []
+    await manager._note_connect_failure()
+    assert calls == [True]
+
+
+async def test_connect_failures_without_recover_fn_are_harmless() -> None:
+    """Standalone partyboxd (no adapter_recover_fn) just keeps retrying."""
+    manager = _make_manager()
+    for _ in range(10):
+        await manager._note_connect_failure()  # must not raise
+
+
+async def test_connect_failure_loop_invokes_recovery(monkeypatch: pytest.MonkeyPatch) -> None:
+    """End-to-end through run(): scan finds the speaker, connect keeps
+    failing, recovery fires after the third cycle."""
+
+    class _FailingDevice:
+        async def connect(self) -> None:
+            raise ConnectionFailedError("wedged")
+
+    async def _find(*_: object, **__: object) -> _FailingDevice:
+        return _FailingDevice()
+
+    monkeypatch.setattr("partyboxd.device.manager.Scanner.find", _find)
+
+    recovered = asyncio.Event()
+
+    async def recover() -> bool:
+        recovered.set()
+        return True
+
+    manager = DeviceManager(_settings(), adapter_recover_fn=recover)
+    task = asyncio.create_task(manager.run())
+    await asyncio.wait_for(recovered.wait(), timeout=2.0)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task

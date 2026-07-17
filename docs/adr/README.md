@@ -48,3 +48,4 @@ New ADRs should be added when a significant design decision is made. Superseded 
 | [036](036-push-not-poll-ws-fanin.md) | Push, Don't Poll — a Merged WebSocket Stream Across partyboxd and companion | Accepted |
 | [037](037-health-details-endpoint.md) | `GET /api/v1/health/details` — Exposing Supervisor Health | Accepted |
 | [038](038-idle-battery-shutdown.md) | Idle Battery Shutdown | Accepted |
+| [039](039-ble-controller-wedge-self-heal.md) | Runtime Self-Heal of a Wedged Bluetooth Controller | Accepted |

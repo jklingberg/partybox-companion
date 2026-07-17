@@ -33,6 +33,7 @@ from partyboxd.device.events import SpeakerStateChangedEvent, VolumeChangedEvent
 from companion.config import AudioSettings, CompanionSettings, SpotifySettings
 from companion.config_store import ConfigStore
 from companion.services import login1_dbus
+from companion.services.adapter_recovery import reset_adapter
 from companion.services.audio import AudioService
 from companion.services.pairing import PairingService
 from companion.services.provisioning import ProvisioningService
@@ -308,7 +309,9 @@ async def _run(
     audio = AudioService(AudioSettings(sink_address=audio_sink))
     pairing = PairingService(config_store, audio)
 
-    manager = DeviceManager(daemon_settings.speaker)
+    # adapter_recover_fn lets the manager clear a wedged controller
+    # (scanning works, connects fail — ADR-039) by power-cycling hci0.
+    manager = DeviceManager(daemon_settings.speaker, adapter_recover_fn=reset_adapter)
 
     provisioning = ProvisioningService(companion_settings.wifi.interface)
 
