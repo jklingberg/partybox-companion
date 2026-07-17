@@ -43,6 +43,15 @@ DEFAULT_CONNECT_TIMEOUT = 20.0
 # layer can also raise these. Treat them all as connection trouble.
 _TRANSPORT_ERRORS = (BleakError, OSError, TimeoutError, EOFError)
 
+# Ceiling on a single GATT operation (write/read/subscribe). BlueZ answers a
+# write-with-response within a couple of seconds on a live link; a call that
+# outlives this has lost its D-Bus reply — observed when the connection dies
+# while the call is in flight and the device object vanishes: bluetoothd never
+# replies and dbus-fast's MessageBus.call waits forever, freezing the caller
+# on a connection that no longer exists. Bounding the call turns that hang
+# into ConnectionLostError so callers can reconnect.
+_GATT_IO_TIMEOUT = 10.0
+
 
 class BleakTransport(ControlTransport):
     """BLE GATT control transport over ``bleak``.
@@ -130,7 +139,12 @@ class BleakTransport(ControlTransport):
         )
         try:
             await client.connect()
-            await client.start_notify(self._rx_uuid, self._on_notify)
+            # start_notify is a GATT operation (CCCD write) — same lost-reply
+            # hang risk as write/read, so it gets the same ceiling.
+            await asyncio.wait_for(
+                client.start_notify(self._rx_uuid, self._on_notify),
+                timeout=_GATT_IO_TIMEOUT,
+            )
         except _TRANSPORT_ERRORS as exc:
             with _suppress_transport_errors():
                 await client.disconnect()
@@ -162,14 +176,19 @@ class BleakTransport(ControlTransport):
     async def write(self, data: bytes) -> None:
         client = self._require_connected()
         try:
-            await client.write_gatt_char(self._tx_uuid, data, response=True)
+            await asyncio.wait_for(
+                client.write_gatt_char(self._tx_uuid, data, response=True),
+                timeout=_GATT_IO_TIMEOUT,
+            )
         except _TRANSPORT_ERRORS as exc:
             raise ConnectionLostError(f"write to {self._address} failed: {exc}") from exc
 
     async def read(self, uuid: str) -> bytes:
         client = self._require_connected()
         try:
-            return bytes(await client.read_gatt_char(uuid))
+            return bytes(
+                await asyncio.wait_for(client.read_gatt_char(uuid), timeout=_GATT_IO_TIMEOUT)
+            )
         except _TRANSPORT_ERRORS as exc:
             raise ConnectionLostError(f"read from {self._address} failed: {exc}") from exc
 

@@ -6,6 +6,8 @@ callbacks directly). Real connection behaviour is covered by the
 hardware-marked tests in ``tests/integration/test_hardware.py``.
 """
 
+import asyncio
+
 import pytest
 from partybox.bluetooth import (
     CONTROL_SERVICE_UUID,
@@ -16,6 +18,7 @@ from partybox.bluetooth import (
     ControlTransport,
     NotConnectedError,
 )
+from partybox.bluetooth import bleak_transport as bleak_transport_module
 
 
 def test_is_a_bluetooth_backend() -> None:
@@ -70,3 +73,35 @@ async def test_unexpected_disconnect_callback_raises_connection_lost() -> None:
     assert not backend.is_connected
     with pytest.raises(ConnectionLostError):
         await backend.receive()
+
+
+class _HungClient:
+    """Client whose GATT calls never complete.
+
+    Models a connection dying with a D-Bus call in flight: bluetoothd never
+    sends the method reply, so the awaitable never resolves (the wedge behind
+    the frozen device manager observed on hardware 2026-07-16).
+    """
+
+    async def write_gatt_char(self, *args: object, **kwargs: object) -> None:
+        await asyncio.Event().wait()
+
+    async def read_gatt_char(self, *args: object, **kwargs: object) -> bytes:
+        await asyncio.Event().wait()
+        return b""
+
+
+async def test_hung_write_raises_connection_lost(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(bleak_transport_module, "_GATT_IO_TIMEOUT", 0.05)
+    backend = BleakTransport("AA:BB:CC:DD:EE:FF")
+    backend._client = _HungClient()  # type: ignore[assignment]
+    with pytest.raises(ConnectionLostError):
+        await backend.write(b"\xaa\x03\x01")
+
+
+async def test_hung_read_raises_connection_lost(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(bleak_transport_module, "_GATT_IO_TIMEOUT", 0.05)
+    backend = BleakTransport("AA:BB:CC:DD:EE:FF")
+    backend._client = _HungClient()  # type: ignore[assignment]
+    with pytest.raises(ConnectionLostError):
+        await backend.read("65786365-6c70-6f69-6e74-2e636f6d0001")
