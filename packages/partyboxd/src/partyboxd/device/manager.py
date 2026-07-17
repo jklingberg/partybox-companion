@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from typing import Literal
 
@@ -72,6 +73,42 @@ _RECONNECT_WAIT_TIMEOUT = 20.0
 # audio.py `_RETRY_MAX`) so neither loop hammers the shared radio faster than
 # the other once both have backed off.
 _RECONNECT_MAX = 60.0
+
+# Consecutive scan→connect cycles where scanning FOUND the speaker but the
+# connection failed, before the manager requests an adapter recovery.
+# "Scanning works but connections fail" is the wedged-controller signature
+# (ADR-023, ADR-039 — observed 2026-07-17: 22 straight failures over 25
+# minutes until an adapter reset). Cycles where the scan comes up empty say
+# nothing about the controller (the speaker is usually just off) and leave
+# the counter untouched.
+_WEDGE_CONNECT_FAILURES = 3
+
+# Connect failures further apart than this don't accumulate toward the wedge
+# threshold. An isolated failure is normal (the speaker resets its BLE stack
+# after power commands, rotating private addresses go stale mid-connect); a
+# wedge produces a dense run of them.
+_WEDGE_WINDOW = 600.0
+
+# Consecutive scan *errors* (Scanner.find raising — distinct from a clean
+# empty scan, which just means the speaker is off) before requesting adapter
+# recovery. Scanning itself failing means the adapter is unusable, e.g.
+# powered off after a half-completed recovery — a state the connect-failure
+# counter can never see because no connect is ever attempted. Higher
+# threshold than _WEDGE_CONNECT_FAILURES: transient scan errors also occur
+# while bluetoothd re-initializes right after a recovery power-cycle.
+_WEDGE_SCAN_ERRORS = 5
+
+# Connect failures within this window after a power command are not counted:
+# the speaker resets its own BLE stack for ~15-17 s after every power on/off
+# (ADR-034), during which dense "could not connect" failures are expected and
+# say nothing about the controller.
+_POWER_COMMAND_GRACE = 60.0
+
+# Minimum time between adapter recoveries. A recovery power-cycle drops every
+# connection on the adapter, including a possibly healthy A2DP stream — if
+# one didn't clear the failure mode, repeating it every few minutes turns a
+# broken control plane into broken audio as well.
+_RECOVERY_COOLDOWN = 900.0
 
 
 class DeviceNotConnectedError(Exception):
@@ -146,7 +183,20 @@ class DeviceManager:
     Callers may :meth:`subscribe` to receive device events as they occur.
     """
 
-    def __init__(self, settings: SpeakerSettings) -> None:
+    def __init__(
+        self,
+        settings: SpeakerSettings,
+        *,
+        adapter_recover_fn: Callable[[], Awaitable[bool]] | None = None,
+    ) -> None:
+        """*adapter_recover_fn*, when provided, is called after
+        ``_WEDGE_CONNECT_FAILURES`` dense connect failures (see
+        :meth:`_note_connect_failure`) to recover a wedged controller —
+        typically a Bluetooth adapter power-cycle. It returns True if the
+        recovery action completed. ``None`` (the default, and standalone
+        partyboxd's configuration) disables self-healing; the manager then
+        just keeps retrying with backoff as before.
+        """
         self._settings = settings
         self._snapshot: StatusSnapshot = _DISCONNECTED
         self._device: PartyBoxDevice | None = None
@@ -159,6 +209,16 @@ class DeviceManager:
         #: Current scan/connect retry delay; doubles on failure up to
         #: `_RECONNECT_MAX`, resets to `settings.reconnect_delay` on success.
         self._retry_delay = settings.reconnect_delay
+        self._adapter_recover_fn = adapter_recover_fn
+        #: Dense connect failures since the last success (see _WEDGE_WINDOW).
+        self._connect_failures = 0
+        self._last_connect_failure = 0.0
+        #: Consecutive Scanner.find exceptions (reset by any completed scan).
+        self._scan_errors = 0
+        #: loop.time() of the last power command sent (ADR-034 grace window).
+        self._last_power_command: float | None = None
+        #: loop.time() of the last adapter recovery (cool-down gate).
+        self._last_recovery: float | None = None
 
     @property
     def snapshot(self) -> StatusSnapshot:
@@ -226,6 +286,10 @@ class DeviceManager:
             await device.power.turn_on()
         except (ConnectionLostError, NotConnectedError) as exc:
             raise DeviceNotConnectedError() from exc
+        # Opens the ADR-034 grace window: the speaker now resets its BLE
+        # stack, and the connect failures that produces must not count as
+        # wedge evidence (see _note_connect_failure).
+        self._last_power_command = asyncio.get_running_loop().time()
         self._bus.emit(PowerChangedEvent(state="on"))
 
     async def get_volume(self) -> int | None:
@@ -278,6 +342,8 @@ class DeviceManager:
             await device.power.turn_off()
         except (ConnectionLostError, NotConnectedError) as exc:
             raise DeviceNotConnectedError() from exc
+        # Same ADR-034 grace window as power_on (see _note_connect_failure).
+        self._last_power_command = asyncio.get_running_loop().time()
         self._bus.emit(PowerChangedEvent(state="off"))
 
     async def run(self) -> None:
@@ -314,10 +380,12 @@ class DeviceManager:
             await device.connect()
         except ConnectionFailedError as exc:
             log.warning("connection failed (attempt %d): %s", attempt, exc)
+            await self._note_connect_failure()
             await self._sleep_and_backoff()
             return
 
         self._retry_delay = self._settings.reconnect_delay
+        self._connect_failures = 0
         self._device = device
         self._connected_event.set()
         log.info("connected to %s (attempt %d)", device.address, attempt)
@@ -343,6 +411,15 @@ class DeviceManager:
         finally:
             self._device = None
             self._connected_event.clear()
+            # A false-positive I/O timeout can end this cycle while BlueZ
+            # still holds a live connection (the speaker accepts only one);
+            # dropping the client without disconnecting would orphan that
+            # connection and block every future reconnect. Bounded inside the
+            # transport (_GATT_IO_TIMEOUT); a no-op when already disconnected.
+            try:
+                await device.disconnect()
+            except Exception as exc:
+                log.debug("cleanup disconnect failed: %s", exc)
             self._set_snapshot(_DISCONNECTED)
             self._bus.emit(DisconnectedEvent())
 
@@ -459,6 +536,82 @@ class DeviceManager:
         if new_snapshot is not prev:
             self._set_snapshot(new_snapshot)
 
+    async def _note_connect_failure(self) -> None:
+        """Track a scan-found-it-but-connect-failed cycle; self-heal on a dense run.
+
+        The counter only moves on this specific failure shape: the scan saw
+        the speaker (so the radio receives fine and the speaker is on) but the
+        connection could not be established. A dense run of those is the
+        wedged-controller signature (ADR-039); once it reaches
+        ``_WEDGE_CONNECT_FAILURES``, recovery is requested via
+        :meth:`_maybe_recover`. Failures further apart than ``_WEDGE_WINDOW``
+        restart the count, so occasional one-offs spread over days never add
+        up to a spurious recovery, and failures inside the ADR-034 window
+        after a power command are not counted at all — the speaker resets its
+        own BLE stack then, and dense failures are the *expected* shape.
+        """
+        now = asyncio.get_running_loop().time()
+        if (
+            self._last_power_command is not None
+            and now - self._last_power_command < _POWER_COMMAND_GRACE
+        ):
+            log.debug("connect failure inside post-power-command grace window; not counted")
+            return
+        if now - self._last_connect_failure > _WEDGE_WINDOW:
+            self._connect_failures = 0
+        self._last_connect_failure = now
+        self._connect_failures += 1
+        if self._connect_failures >= _WEDGE_CONNECT_FAILURES:
+            await self._maybe_recover(
+                f"{self._connect_failures} dense connect failures while scanning still works"
+                " (suspected controller wedge)"
+            )
+
+    async def _note_scan_error(self) -> None:
+        """Track a scan that *errored* (as opposed to finding nothing).
+
+        Scanner.find raising means the adapter itself is unusable — most
+        importantly the powered-off state left behind by a half-completed
+        recovery, which the connect-failure counter can never observe because
+        no connect is ever attempted. Requesting recovery here closes that
+        loop: the power-cycle's Powered=true write brings the adapter back.
+        """
+        self._scan_errors += 1
+        if self._scan_errors >= _WEDGE_SCAN_ERRORS:
+            await self._maybe_recover(
+                f"{self._scan_errors} consecutive scan errors (Bluetooth adapter unusable)"
+            )
+
+    async def _maybe_recover(self, reason: str) -> None:
+        """Run the injected adapter recovery, rate-limited by _RECOVERY_COOLDOWN.
+
+        The cool-down is the storm brake: a recovery power-cycle drops every
+        connection on the adapter (including healthy A2DP audio), so a failure
+        mode that recovery does not fix — a speaker-side LE fault, say — must
+        not translate into an adapter cycle every few minutes forever. While
+        suppressed, the failure counters keep their value, so the next failure
+        after the cool-down expires re-triggers immediately.
+        """
+        if self._adapter_recover_fn is None:
+            return
+        now = asyncio.get_running_loop().time()
+        if self._last_recovery is not None and now - self._last_recovery < _RECOVERY_COOLDOWN:
+            log.debug("adapter recovery suppressed by cool-down (%s)", reason)
+            return
+        self._last_recovery = now
+        self._connect_failures = 0
+        self._scan_errors = 0
+        log.warning("requesting Bluetooth adapter recovery: %s (ADR-039)", reason)
+        try:
+            recovered = await self._adapter_recover_fn()
+        except Exception as exc:
+            log.warning("adapter recovery raised: %s", exc)
+            return
+        if recovered:
+            log.info("adapter recovery completed; resuming connect attempts")
+        else:
+            log.warning("adapter recovery reported failure; resuming connect attempts anyway")
+
     async def _sleep_and_backoff(self) -> None:
         """Sleep the current scan/connect retry delay, then grow it for next time.
 
@@ -472,10 +625,13 @@ class DeviceManager:
     async def _scan(self) -> PartyBoxDevice | None:
         log.info("scanning for speaker")
         try:
-            return await Scanner.find(timeout=self._settings.scan_timeout)
+            device = await Scanner.find(timeout=self._settings.scan_timeout)
         except Exception as exc:
             log.warning("scan failed: %s", exc)
+            await self._note_scan_error()
             return None
+        self._scan_errors = 0
+        return device
 
     async def _refresh(self, device: PartyBoxDevice) -> None:
         """Query initial device state and update the snapshot."""

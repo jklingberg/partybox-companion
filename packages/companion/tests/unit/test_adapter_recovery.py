@@ -1,0 +1,77 @@
+"""Tests for the adapter-recovery wrapper (ADR-039).
+
+The real power-cycle needs BlueZ on a system D-Bus, which CI does not have —
+these tests cover the wrapper's contract: it never raises, and every failure
+shape collapses to False so the DeviceManager's retry loop is never harmed by
+a broken recovery path.
+"""
+
+from __future__ import annotations
+
+import pytest
+from companion.services import adapter_recovery
+from companion.services.adapter_recovery import reset_adapter
+
+
+async def test_reset_adapter_returns_false_without_bluez() -> None:
+    """In an environment with no system bus/BlueZ the helper subprocess
+    prints an err: line; the wrapper must swallow it and report False."""
+    assert await reset_adapter() is False
+
+
+async def test_reset_adapter_times_out_to_false(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A stuck helper subprocess is killed and reported as False."""
+    import asyncio
+
+    monkeypatch.setattr(adapter_recovery, "_RESET_TIMEOUT", 0.05)
+
+    real_exec = asyncio.create_subprocess_exec
+
+    async def sleepy_exec(*_args: object, **kwargs: object) -> asyncio.subprocess.Process:
+        return await real_exec(
+            adapter_recovery.sys.executable,
+            "-c",
+            "import time; time.sleep(60)",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+    monkeypatch.setattr(adapter_recovery.asyncio, "create_subprocess_exec", sleepy_exec)
+    assert await reset_adapter() is False
+
+
+async def test_cancelled_reset_adapter_leaves_helper_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancellation must NOT kill the helper: it may be mid-power-cycle, and
+    killing it between Powered=false and Powered=true would strand the
+    adapter off. The orphan finishes the cycle on its own."""
+    import asyncio
+
+    real_exec = asyncio.create_subprocess_exec
+    spawned: list[asyncio.subprocess.Process] = []
+
+    async def capturing_exec(*_args: object, **kwargs: object) -> asyncio.subprocess.Process:
+        proc = await real_exec(
+            adapter_recovery.sys.executable,
+            "-c",
+            "import time; time.sleep(60)",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        spawned.append(proc)
+        return proc
+
+    monkeypatch.setattr(adapter_recovery.asyncio, "create_subprocess_exec", capturing_exec)
+
+    task = asyncio.create_task(reset_adapter())
+    while not spawned:
+        await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    proc = spawned[0]
+    assert proc.returncode is None, "helper was killed by cancellation"
+    proc.kill()
+    await proc.wait()
