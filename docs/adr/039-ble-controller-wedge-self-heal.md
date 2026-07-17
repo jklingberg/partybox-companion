@@ -50,6 +50,25 @@ Two pieces, split along the existing layer boundary:
    Standalone partyboxd passes `None` and behaves exactly as before —
    partyboxd gains no BlueZ/D-Bus knowledge.
 
+   Three guards keep the trigger honest:
+
+   - **ADR-034 grace:** connect failures within `_POWER_COMMAND_GRACE`
+     (60 s) of a power command are not counted — the speaker resets its own
+     BLE stack for ~15-17 s after every power on/off, and dense failures are
+     the *expected* shape there, not wedge evidence.
+   - **Cool-down:** recoveries are rate-limited by `_RECOVERY_COOLDOWN`
+     (900 s). A power-cycle drops every connection on the adapter, including
+     possibly healthy A2DP audio; a failure mode recovery does not fix must
+     not become an adapter cycle every few minutes. Counters keep their
+     value while suppressed, so the first failure after the cool-down
+     re-triggers immediately.
+   - **Scan-error trigger:** `Scanner.find` *raising* (as opposed to a clean
+     empty scan) means the adapter itself is unusable — most importantly the
+     powered-off state a half-completed recovery could leave behind, which
+     the connect-failure counter can never observe because no connect is
+     ever attempted. `_WEDGE_SCAN_ERRORS` (5) consecutive scan errors also
+     request recovery, whose `Powered=true` brings the adapter back.
+
 2. **Recovery in companion: D-Bus adapter power-cycle, subprocess-isolated.**
    `companion.services.adapter_recovery.reset_adapter()` runs
    `companion.services._adapter_reset` in a subprocess (the established
@@ -57,6 +76,17 @@ Two pieces, split along the existing layer boundary:
    helpers): `Powered=false`, 1 s settle, `Powered=true`. The wrapper never
    raises; spawn failure, helper `err:` output, and timeout (20 s, killed)
    all collapse to `False`.
+
+   The helper treats *exiting with the adapter powered off* as the worst
+   possible outcome and defends against it three ways: the power-on runs in
+   a `finally` with one retry (covers errors and cancellation after the
+   power-off); SIGTERM cancels the task instead of killing the process, so
+   that `finally` also runs when systemd stops the service mid-recovery;
+   and each `Powered` write is individually bounded (5 s) so a lost D-Bus
+   reply surfaces as an error while the parent is still listening rather
+   than stranding the adapter via the parent's kill-timeout. For the same
+   reason, the wrapper deliberately does **not** kill the helper when
+   cancelled — an orphaned helper finishes the power-cycle on its own.
 
 The power-cycle intentionally drops every active connection on the adapter
 (BLE control + A2DP). By the time recovery fires, the control plane has
@@ -90,9 +120,13 @@ restart bluetooth` did not clear it; the adapter power-cycle did).
   worst case added latency is three failed connect cycles plus ~3 s of
   power-cycle before attempts resume against a healthy controller.
 - A speaker that is genuinely on but repeatedly refusing connections for
-  reasons other than a wedge will trigger a (harmless, idempotent)
-  power-cycle every third dense failure. The backoff cap (`_RECONNECT_MAX`,
-  60 s) bounds how often that can recur.
+  reasons other than a wedge triggers at most one power-cycle per
+  `_RECOVERY_COOLDOWN` (15 min) — the cost of a false positive is bounded
+  to one brief A2DP interruption per cool-down period.
+- Because the maintain loop now also disconnects its device on every exit
+  (a false-positive I/O timeout could otherwise orphan BlueZ's single live
+  connection to the speaker), recovery and reconnect always start from a
+  released connection.
 - The recovery path is untestable in CI beyond its failure contract (no
   system bus); its success path is hardware-verified (2026-07-17, run as
   the `companion` user on the appliance).

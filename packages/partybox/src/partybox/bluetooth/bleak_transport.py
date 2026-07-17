@@ -147,7 +147,12 @@ class BleakTransport(ControlTransport):
             )
         except _TRANSPORT_ERRORS as exc:
             with _suppress_transport_errors():
-                await client.disconnect()
+                # bleak's Disconnect D-Bus call is itself unbounded (only the
+                # post-call event wait has an internal timeout), so an unbounded
+                # await here could re-freeze the caller on the very failure this
+                # cleanup handles. The wait_for TimeoutError lands in
+                # _suppress_transport_errors.
+                await asyncio.wait_for(client.disconnect(), timeout=_GATT_IO_TIMEOUT)
             raise ConnectionFailedError(f"could not connect to {self._address}: {exc}") from exc
 
         self._client = client
@@ -166,7 +171,11 @@ class BleakTransport(ControlTransport):
         try:
             if client is not None:
                 with _suppress_transport_errors():
-                    await client.disconnect()
+                    # Bounded for the same reason as in connect()'s cleanup:
+                    # bleak's Disconnect D-Bus call can hang on a lost reply,
+                    # and this path runs during daemon shutdown — an unbounded
+                    # await here would stall shutdown until systemd's SIGKILL.
+                    await asyncio.wait_for(client.disconnect(), timeout=_GATT_IO_TIMEOUT)
         finally:
             self._closing = False
             self._lost = False

@@ -33,6 +33,11 @@ async def reset_adapter() -> bool:
     :class:`partyboxd.device.manager.DeviceManager`. Never raises: every
     failure shape (spawn error, helper error line, timeout) is logged and
     collapses to False — the manager resumes its retry loop either way.
+
+    Cancellation deliberately does NOT kill the helper subprocess: it may be
+    mid-power-cycle, and killing it between Powered=false and Powered=true
+    would strand the adapter off. Orphaned, it finishes the cycle on its own
+    within a few seconds (and handles SIGTERM itself for the shutdown case).
     """
     try:
         proc = await asyncio.create_subprocess_exec(

@@ -533,3 +533,122 @@ async def test_connect_failure_loop_invokes_recovery(monkeypatch: pytest.MonkeyP
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+async def test_maintain_exit_disconnects_transport(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Leaving the maintain loop must release the old connection: a
+    false-positive I/O timeout can exit the cycle while BlueZ still holds the
+    speaker's single live connection, which would block every reconnect."""
+    transport = MockTransport(address="BB:CC:DD:EE:FF:AA")
+    transport.stub(FIRMWARE_REQUEST, FIRMWARE_RESPONSE)
+
+    connected_event = asyncio.Event()
+    disconnect_calls: list[bool] = []
+    real_disconnect = transport.disconnect
+
+    async def tracking_disconnect() -> None:
+        disconnect_calls.append(True)
+        await real_disconnect()
+
+    monkeypatch.setattr(transport, "disconnect", tracking_disconnect)
+
+    async def _fake_find(*_: object, **__: object) -> PartyBoxDevice:
+        await transport.connect()
+        device = PartyBoxDevice._from_transport(transport)
+        connected_event.set()
+        return device
+
+    monkeypatch.setattr("partyboxd.device.manager.Scanner.find", _fake_find)
+
+    manager = _make_manager()
+    task = asyncio.create_task(manager.run())
+    await asyncio.wait_for(connected_event.wait(), timeout=2.0)
+    await asyncio.sleep(0.05)  # let _refresh complete and drain start
+
+    transport.drop()  # unexpected connection loss ends the maintain cycle
+    for _ in range(50):
+        if disconnect_calls:
+            break
+        await asyncio.sleep(0.01)
+    assert disconnect_calls, "maintain-loop exit did not disconnect the transport"
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+async def test_connect_failures_in_power_command_grace_are_not_counted() -> None:
+    """ADR-034: the speaker resets its BLE stack after every power command;
+    the connect failures that produces must not look like a wedge."""
+    calls: list[bool] = []
+
+    async def recover() -> bool:
+        calls.append(True)
+        return True
+
+    manager = DeviceManager(_settings(), adapter_recover_fn=recover)
+    manager._last_power_command = asyncio.get_running_loop().time()
+    for _ in range(5):
+        await manager._note_connect_failure()
+    assert calls == []
+    assert manager._connect_failures == 0
+
+
+async def test_recovery_cooldown_suppresses_repeat_recovery() -> None:
+    """A recovery that does not fix the failure mode must not repeat every
+    few minutes (each one drops healthy A2DP audio); after the cool-down the
+    next failure re-triggers immediately."""
+    from partyboxd.device.manager import _RECOVERY_COOLDOWN
+
+    calls: list[bool] = []
+
+    async def recover() -> bool:
+        calls.append(True)
+        return True
+
+    manager = DeviceManager(_settings(), adapter_recover_fn=recover)
+    for _ in range(3):
+        await manager._note_connect_failure()
+    assert calls == [True]
+    # Failure mode persists — further dense failures are suppressed.
+    for _ in range(6):
+        await manager._note_connect_failure()
+    assert calls == [True]
+    # Cool-down expires; the very next failure re-triggers.
+    assert manager._last_recovery is not None
+    manager._last_recovery -= _RECOVERY_COOLDOWN + 1
+    await manager._note_connect_failure()
+    assert calls == [True, True]
+
+
+async def test_scan_errors_trigger_recovery(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Scanner.find raising (adapter unusable — e.g. left powered off by a
+    half-completed recovery) must also reach the recovery path, since no
+    connect attempt will ever happen in that state."""
+    from partyboxd.device.manager import _WEDGE_SCAN_ERRORS
+
+    calls: list[bool] = []
+
+    async def recover() -> bool:
+        calls.append(True)
+        return True
+
+    async def _broken_scan(*_: object, **__: object) -> None:
+        raise RuntimeError("org.bluez.Error.NotReady")
+
+    monkeypatch.setattr("partyboxd.device.manager.Scanner.find", _broken_scan)
+    manager = DeviceManager(_settings(), adapter_recover_fn=recover)
+    for _ in range(_WEDGE_SCAN_ERRORS):
+        assert await manager._scan() is None
+    assert calls == [True]
+
+
+async def test_completed_scan_resets_scan_error_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _empty_scan(*_: object, **__: object) -> None:
+        return None
+
+    manager = _make_manager()
+    manager._scan_errors = 4
+    monkeypatch.setattr("partyboxd.device.manager.Scanner.find", _empty_scan)
+    assert await manager._scan() is None
+    assert manager._scan_errors == 0
