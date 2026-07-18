@@ -193,6 +193,83 @@ an on-wire HCI capture taken while pressing the physical pairing button would
 confirm no accompanying BLE frame (procedure in [guide.md](guide.md)). **No
 implementation is proposed**, since no such command was demonstrated on the wire.
 
+### Advertisement carries an explicit standby flag and a dedicated "wake" command class exist — opcodes not recovered (static analysis, 2026-07-18)
+
+Investigated to understand how the JBL app always manages to wake a speaker
+that our own BR/EDR pages cannot reach in standby (see [standby gate](028-audio-readiness-model.md)
+and the open question in [open-questions.md](open-questions.md#connection)).
+Decompiled `com.jbl.partybox` v3.14.1 (versionCode `260511127`, `research/apk/base.apk`)
+with JADX 1.5.1.
+
+Confirmed by exact match against this project's own live-capture findings —
+`com.harman.sdk.setting.AppConfig`'s default config carries the identical
+control-channel UUIDs already documented above (`rxUUID`/`txUUID` =
+`...2e636f6d0001`/`...0002`), plus previously-undocumented defaults:
+`bleScanWindow=15`, `bleScanInterval=2`, `maxReconnectCount=3`,
+`maxDiscoverCount=10`, `deviceDuration=30000` (ms — likely how long a
+scanned device stays valid in the app's cache), `mtuBrEdr=512`. Also confirms
+this project's `PARTYBOX520_PID_STRING` product-ID guess: `"2120"`
+(`com.harman.jbl.cd_biz_comm.utils.DeviceUtils`), alongside the PID strings
+for the rest of the PartyBox/PartyLight lineup.
+
+Two findings bear directly on the wake question, though neither reaches an
+opcode:
+
+- **`com.harman.sdk.utils.Constants.ManufacturerData`** declares named fields
+  for a parsed advertisement payload: `Vendor_ID`, `Product_ID`, `Model_ID`,
+  `Role`, `Crc`/`Second_Crc`, `Device_Name`, `Connectable`, `Device_Battery`,
+  `BatteryCharging`, `Volume`, `PartyConnect_Mode`, `Mute`, and — the
+  interesting two — **`BT_Connection_Info`** and **`Ble_Standby_Info`**.
+  `com.harman.jbl.cd_biz_comm.utils.DeviceUtils` repeats the same field set
+  under a `KEY_*` naming convention. This confirms the app's own advertising
+  parser treats "is the speaker in BLE standby" and "what's currently
+  connected to it" as fields extracted directly from a broadcast, not
+  something it has to open a connection to ask — architecturally the same
+  idea as this project's `beacon_seen`/FDDF-presence signal, just apparently
+  richer. Which AD structure carries them (FDDF service data, a
+  manufacturer-specific `0xFF` structure under company ID `0x0ecb` also seen
+  in `Constants.partyBoxVendorId`, or both) and their byte offsets were not
+  recovered — the concrete parser (`ParseProcessorKt` module tag:
+  `partylightLib_release`) exists only as a stripped log-tag constant in
+  this build; its class body did not survive R8 optimization.
+- **`com.harman.jbl.cd_biz_comm.wireless_tech.blecommander.ReqCommandProtocol`**,
+  the base interface every BLE command implements, declares
+  `isDefibrillation(): Boolean` (default `false`). The name is a strong signal
+  that a specific command exists whose purpose is reviving/waking the
+  speaker, distinct from the ~70 ordinary commands documented in the
+  2026-07-04 investigation above — but no class overriding it, and therefore
+  no opcode, survived in this build either.
+
+**This build is far more R8-optimized than whatever build the 2026-07-04
+investigation used.** That investigation found ~70 concrete command classes
+under `com.harman.sdk.command` and a concrete `BleDiscoveryImpl`; neither
+exists anywhere in this decompile (`grep`/`find` for both come up empty).
+Every class this pass *did* recover intact is one R8 has a structural reason
+to preserve — Kotlin `data class`es (`equals`/`hashCode`/`copy` generation),
+interfaces, and reflection-visible constants (`@SerializedName` Gson fields,
+top-level `const val`s). Ordinary imperative business logic — the actual
+byte-level parser and the command implementations, including whichever one
+sets `isDefibrillation = true` — is inlined/renamed beyond text-based
+recovery in this specific build. It is unclear whether this reflects an app
+update that tightened R8 rules since 2026-07-04, or a difference in method
+(that investigation may have used JADX-GUI's interactive bytecode-level
+"Find Usages", which resolves through obfuscated names via the call graph —
+something a flat-text `grep` over a CLI export cannot do).
+
+**Conclusion:** static analysis narrows the wake question — there is likely a
+dedicated wake/"defibrillation" command, and the beacon is designed to expose
+standby + connection state directly — but does not answer it. **No
+implementation is proposed.** The decisive next step is the same one already
+open in [open-questions.md](open-questions.md#connection): an on-wire HCI
+capture of the JBL app performing a wake-from-standby, now with concrete
+things to look for (a command payload distinct from the ordinary command
+set; a `BT_Connection_Info`/`Ble_Standby_Info`-carrying advertisement
+structure this project's SDK doesn't currently parse). A live scan dump on
+the appliance itself — checking whether a manufacturer-specific AD
+structure (company ID `0x0ecb`) accompanies the FDDF service data this
+project already reads — is a cheaper, phone-free first step toward the same
+answer.
+
 ---
 
 ## Speculative

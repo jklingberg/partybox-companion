@@ -104,6 +104,49 @@ Focus arbitration itself appears unreliable: with a phone actively playing, one
 companion stream was silently discarded while an identical retry a minute later
 stole focus (phone playback stopped and did not resume).
 
+### Offsets 0–2, and a manufacturer-specific-AD hypothesis closed (2026-07-18)
+
+Cross-referenced against the JADX static-analysis findings in
+[discoveries.md](discoveries.md#likely) (the JBL app's own `AppConfig` and
+`Constants.ManufacturerData` field-name schema) using a fresh 10-minute
+passive capture on a PartyBox 520 (Pi 5, RC14, `bleak`, companion-only
+connected, `audio_focus: exclusive` throughout):
+
+| Offset | Observed value | Interpretation |
+|---|---|---|
+| 0–1 | `20 21` (little-endian `0x2120`) | **Product_ID.** Constant across every capture in this table (both 2026-07-16 and 2026-07-18 sessions) and matches the JBL app's own `PARTYBOX520_PID_STRING = "2120"` exactly (`com.harman.jbl.cd_biz_comm.utils.DeviceUtils`). |
+| 2 | `01` | Constant across every capture so far — single value observed, not yet disambiguated. Candidate: the app's field schema names a `Role` byte. |
+| 8 | `05` | Matches this project's own `AudioFocusService._EXCLUSIVE_SOURCE_COUNT = 0x05` sentinel — confirms the existing parser reads the right offset. |
+| 18 | `01` | Matches `_EXCLUSIVE_CONNECTION_BITS = 0x01` — same confirmation. |
+
+**Manufacturer-specific AD (type `0xFF`) confirmed absent.** The JADX
+investigation found `com.harman.sdk.utils.Constants.ManufacturerData`, an
+interface naming fields including `Ble_Standby_Info` and `BT_Connection_Info`
+that aren't otherwise accounted for in this table, raising the question of
+whether they live in a separate manufacturer-specific advertisement
+structure (Android AD type `0xFF`, company ID `0x0ecb` per
+`Constants.partyBoxVendorId`). A dedicated passive `bleak` scan (252 unique
+de-duplicated advertisement observations over 10 minutes, all four addresses
+the speaker/adjacent devices used during the window) found **zero** with
+non-empty `manufacturer_data`. Conclusion: JBL's own "ManufacturerData"
+naming is their internal term for fields packed into *this* FDDF service-data
+payload — not a separate over-the-air structure — despite not matching
+Android/BLE's own AD-type taxonomy (Service Data `0x16` vs Manufacturer
+Specific `0xFF`). The still-unexplained, always-zero-so-far offsets in the
+table above (9–10 in the absence of a second source, 17, 19–23) remain the
+open candidates for `Ble_Standby_Info` and the rest of that field list — this
+capture happened to run entirely during a `speaker_state: "unreachable"`
+window (see [open-questions.md](open-questions.md#connection)), so no
+`"standby"`/`"on"` comparison sample was obtained to diff against.
+
+**Aside, not yet investigated:** during the same capture, a second LE
+identity address also advertised the name `"JBL PartyBox 520"` but with
+completely different service data — UUID `0000fe2c` (2 zero bytes) plus an
+empty `00001853` (Bluetooth SIG "Public Broadcast Announcement", i.e.
+LE Audio/Auracast) — distinct from the FDDF-carrying address documented
+above. Possibly a second, Auracast-related advertising set from the same
+physical speaker. Flagged in open-questions.md; not pursued further here.
+
 ## Capture Method
 
 Traffic was captured using **nRF Connect for Android** (HCI snoop log export) and explored interactively using **bleak** on macOS. See [guide.md](guide.md) for the full workflow.
