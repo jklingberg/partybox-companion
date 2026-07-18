@@ -93,7 +93,7 @@ def make_ws_router(
         |----------|--------|------|
         | ``connected`` | ``address``, ``firmware``, ``battery`` | Speaker connected |
         | ``disconnected`` | — | Speaker disconnected |
-        | ``speaker_state_changed`` | ``state`` (off/standby/on) | Power state changed |
+        | ``speaker_state_changed`` | ``state`` (off/unreachable/standby/on) | Power state changed |
         | ``power_changed`` | ``state`` (``"on"`` or ``"off"``) | Power command accepted |
         | ``audio_changed`` | ``audio_ready``, ``address`` | A2DP link connected/dropped |
         | ``audio_focus_changed`` | ``focus`` | Competing BT source appeared/left |

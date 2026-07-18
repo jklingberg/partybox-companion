@@ -5,18 +5,24 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from partybox import ConnectionFailedError
+from partybox import ConnectionFailedError, ScanResult
 from partybox.bluetooth.mock import MockTransport
 from partybox.device.partybox import PartyBoxDevice
 from partybox.protocol.codec import encode
 from partybox.protocol.messages import BatteryStatusRequest, FirmwareVersionRequest
 from partyboxd.config import SpeakerSettings
-from partyboxd.device.events import ConnectedEvent, DisconnectedEvent, PowerChangedEvent
+from partyboxd.device.events import (
+    ConnectedEvent,
+    DisconnectedEvent,
+    PowerChangedEvent,
+    SpeakerStateChangedEvent,
+)
 from partyboxd.device.manager import (
     _RECONNECT_MAX,
     _WEDGE_WINDOW,
     DeviceManager,
     DeviceNotConnectedError,
+    StatusSnapshot,
 )
 
 FIRMWARE_REQUEST = encode(FirmwareVersionRequest())
@@ -190,10 +196,10 @@ async def test_snapshot_clears_after_connection_lost() -> None:
 async def test_run_cancels_cleanly(monkeypatch: pytest.MonkeyPatch) -> None:
     """run() exits cleanly when cancelled before finding a speaker."""
 
-    async def _no_speaker(*_: object, **__: object) -> None:
-        return None
+    async def _no_speaker(*_: object, **__: object) -> ScanResult:
+        return ScanResult(device=None, beacon_seen=False)
 
-    monkeypatch.setattr("partyboxd.device.manager.Scanner.find", _no_speaker)
+    monkeypatch.setattr("partyboxd.device.manager.Scanner.find_with_presence", _no_speaker)
 
     manager = _make_manager()
     task = asyncio.create_task(manager.run())
@@ -210,13 +216,13 @@ async def test_run_connects_and_snapshot_is_live(monkeypatch: pytest.MonkeyPatch
 
     connected_event = asyncio.Event()
 
-    async def _fake_find(*_: object, **__: object) -> PartyBoxDevice:
+    async def _fake_find(*_: object, **__: object) -> ScanResult:
         await transport.connect()
         device = PartyBoxDevice._from_transport(transport)
         connected_event.set()
-        return device
+        return ScanResult(device=device, beacon_seen=True)
 
-    monkeypatch.setattr("partyboxd.device.manager.Scanner.find", _fake_find)
+    monkeypatch.setattr("partyboxd.device.manager.Scanner.find_with_presence", _fake_find)
 
     manager = _make_manager()
     task = asyncio.create_task(manager.run())
@@ -330,13 +336,13 @@ async def test_connected_event_emitted_after_refresh(monkeypatch: pytest.MonkeyP
 
     connected_event = asyncio.Event()
 
-    async def _fake_find(*_: object, **__: object) -> PartyBoxDevice:
+    async def _fake_find(*_: object, **__: object) -> ScanResult:
         await transport.connect()
         device = PartyBoxDevice._from_transport(transport)
         connected_event.set()
-        return device
+        return ScanResult(device=device, beacon_seen=True)
 
-    monkeypatch.setattr("partyboxd.device.manager.Scanner.find", _fake_find)
+    monkeypatch.setattr("partyboxd.device.manager.Scanner.find_with_presence", _fake_find)
 
     manager = _make_manager()
     queue = manager.subscribe()
@@ -345,11 +351,12 @@ async def test_connected_event_emitted_after_refresh(monkeypatch: pytest.MonkeyP
     await asyncio.wait_for(connected_event.wait(), timeout=2.0)
     await asyncio.sleep(0.05)
 
-    # _refresh() sets the initial snapshot (emitting SpeakerStateChangedEvent
-    # for the off->on transition) before _connect_and_maintain emits
-    # ConnectedEvent explicitly — find it regardless of exact ordering.
+    # _scan() (off->unreachable, once the beacon is seen) and _refresh()
+    # (->on) each emit a SpeakerStateChangedEvent before
+    # _connect_and_maintain emits ConnectedEvent explicitly — drain past
+    # however many precede it rather than assuming an exact count.
     event = await asyncio.wait_for(queue.get(), timeout=1.0)
-    if not isinstance(event, ConnectedEvent):
+    while not isinstance(event, ConnectedEvent):
         event = await asyncio.wait_for(queue.get(), timeout=1.0)
     assert isinstance(event, ConnectedEvent)
     assert event.address == "BB:CC:DD:EE:FF:AA"
@@ -379,10 +386,10 @@ async def test_scan_failure_backs_off_exponentially(monkeypatch: pytest.MonkeyPa
     a wedged controller (ADR-028) get hammered with a scan roughly every 13s
     for the whole length of an outage."""
 
-    async def _no_speaker(*_: object, **__: object) -> None:
-        return None
+    async def _no_speaker(*_: object, **__: object) -> ScanResult:
+        return ScanResult(device=None, beacon_seen=False)
 
-    monkeypatch.setattr("partyboxd.device.manager.Scanner.find", _no_speaker)
+    monkeypatch.setattr("partyboxd.device.manager.Scanner.find_with_presence", _no_speaker)
 
     manager = _make_manager(_settings(reconnect_delay=1.0))
 
@@ -405,10 +412,10 @@ async def test_scan_failure_backs_off_exponentially(monkeypatch: pytest.MonkeyPa
 async def test_scan_backoff_caps_at_reconnect_max(monkeypatch: pytest.MonkeyPatch) -> None:
     """The backoff stops doubling once it reaches _RECONNECT_MAX."""
 
-    async def _no_speaker(*_: object, **__: object) -> None:
-        return None
+    async def _no_speaker(*_: object, **__: object) -> ScanResult:
+        return ScanResult(device=None, beacon_seen=False)
 
-    monkeypatch.setattr("partyboxd.device.manager.Scanner.find", _no_speaker)
+    monkeypatch.setattr("partyboxd.device.manager.Scanner.find_with_presence", _no_speaker)
 
     manager = _make_manager(_settings(reconnect_delay=_RECONNECT_MAX))
 
@@ -436,11 +443,11 @@ async def test_retry_delay_resets_after_successful_connect(
     transport = MockTransport(address="BB:CC:DD:EE:FF:AA")
     transport.stub(FIRMWARE_REQUEST, FIRMWARE_RESPONSE)
 
-    async def _fake_find(*_: object, **__: object) -> PartyBoxDevice:
+    async def _fake_find(*_: object, **__: object) -> ScanResult:
         await transport.connect()
-        return PartyBoxDevice._from_transport(transport)
+        return ScanResult(device=PartyBoxDevice._from_transport(transport), beacon_seen=True)
 
-    monkeypatch.setattr("partyboxd.device.manager.Scanner.find", _fake_find)
+    monkeypatch.setattr("partyboxd.device.manager.Scanner.find_with_presence", _fake_find)
 
     manager = _make_manager(_settings(reconnect_delay=1.0))
     manager._retry_delay = 32.0  # simulate prior backoff growth
@@ -516,10 +523,10 @@ async def test_connect_failure_loop_invokes_recovery(monkeypatch: pytest.MonkeyP
         async def connect(self) -> None:
             raise ConnectionFailedError("wedged")
 
-    async def _find(*_: object, **__: object) -> _FailingDevice:
-        return _FailingDevice()
+    async def _find(*_: object, **__: object) -> ScanResult:
+        return ScanResult(device=_FailingDevice(), beacon_seen=True)  # type: ignore[arg-type]
 
-    monkeypatch.setattr("partyboxd.device.manager.Scanner.find", _find)
+    monkeypatch.setattr("partyboxd.device.manager.Scanner.find_with_presence", _find)
 
     recovered = asyncio.Event()
 
@@ -552,13 +559,13 @@ async def test_maintain_exit_disconnects_transport(monkeypatch: pytest.MonkeyPat
 
     monkeypatch.setattr(transport, "disconnect", tracking_disconnect)
 
-    async def _fake_find(*_: object, **__: object) -> PartyBoxDevice:
+    async def _fake_find(*_: object, **__: object) -> ScanResult:
         await transport.connect()
         device = PartyBoxDevice._from_transport(transport)
         connected_event.set()
-        return device
+        return ScanResult(device=device, beacon_seen=True)
 
-    monkeypatch.setattr("partyboxd.device.manager.Scanner.find", _fake_find)
+    monkeypatch.setattr("partyboxd.device.manager.Scanner.find_with_presence", _fake_find)
 
     manager = _make_manager()
     task = asyncio.create_task(manager.run())
@@ -636,7 +643,7 @@ async def test_scan_errors_trigger_recovery(monkeypatch: pytest.MonkeyPatch) -> 
     async def _broken_scan(*_: object, **__: object) -> None:
         raise RuntimeError("org.bluez.Error.NotReady")
 
-    monkeypatch.setattr("partyboxd.device.manager.Scanner.find", _broken_scan)
+    monkeypatch.setattr("partyboxd.device.manager.Scanner.find_with_presence", _broken_scan)
     manager = DeviceManager(_settings(), adapter_recover_fn=recover)
     for _ in range(_WEDGE_SCAN_ERRORS):
         assert await manager._scan() is None
@@ -644,12 +651,12 @@ async def test_scan_errors_trigger_recovery(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 async def test_completed_scan_resets_scan_error_count(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def _empty_scan(*_: object, **__: object) -> None:
-        return None
+    async def _empty_scan(*_: object, **__: object) -> ScanResult:
+        return ScanResult(device=None, beacon_seen=False)
 
     manager = _make_manager()
     manager._scan_errors = 4
-    monkeypatch.setattr("partyboxd.device.manager.Scanner.find", _empty_scan)
+    monkeypatch.setattr("partyboxd.device.manager.Scanner.find_with_presence", _empty_scan)
     assert await manager._scan() is None
     assert manager._scan_errors == 0
 
@@ -668,10 +675,10 @@ async def test_empty_scans_trigger_stale_reclaim(monkeypatch: pytest.MonkeyPatch
         calls.append(True)
         return False
 
-    async def _empty_scan(*_: object, **__: object) -> None:
-        return None
+    async def _empty_scan(*_: object, **__: object) -> ScanResult:
+        return ScanResult(device=None, beacon_seen=False)
 
-    monkeypatch.setattr("partyboxd.device.manager.Scanner.find", _empty_scan)
+    monkeypatch.setattr("partyboxd.device.manager.Scanner.find_with_presence", _empty_scan)
     manager = DeviceManager(_settings(), stale_reclaim_fn=reclaim)
     await manager._scan()
     await manager._scan()
@@ -690,10 +697,10 @@ async def test_successful_reclaim_resets_backoff(monkeypatch: pytest.MonkeyPatch
     async def reclaim() -> bool:
         return True
 
-    async def _empty_scan(*_: object, **__: object) -> None:
-        return None
+    async def _empty_scan(*_: object, **__: object) -> ScanResult:
+        return ScanResult(device=None, beacon_seen=False)
 
-    monkeypatch.setattr("partyboxd.device.manager.Scanner.find", _empty_scan)
+    monkeypatch.setattr("partyboxd.device.manager.Scanner.find_with_presence", _empty_scan)
     manager = DeviceManager(_settings(reconnect_delay=1.0), stale_reclaim_fn=reclaim)
     manager._retry_delay = 32.0  # simulate prior backoff growth
     for _ in range(3):
@@ -713,10 +720,11 @@ async def test_found_speaker_resets_empty_scan_count(monkeypatch: pytest.MonkeyP
     manager = DeviceManager(_settings(), stale_reclaim_fn=reclaim)
     results: list[object | None] = [None, None, object(), None, None]
 
-    async def _scan_script(*_: object, **__: object) -> object | None:
-        return results.pop(0)
+    async def _scan_script(*_: object, **__: object) -> ScanResult:
+        item = results.pop(0)
+        return ScanResult(device=item, beacon_seen=item is not None)  # type: ignore[arg-type]
 
-    monkeypatch.setattr("partyboxd.device.manager.Scanner.find", _scan_script)
+    monkeypatch.setattr("partyboxd.device.manager.Scanner.find_with_presence", _scan_script)
     for _ in range(5):
         await manager._scan()
     assert calls == []
@@ -726,10 +734,10 @@ async def test_reclaim_exception_is_swallowed(monkeypatch: pytest.MonkeyPatch) -
     async def reclaim() -> bool:
         raise RuntimeError("dbus exploded")
 
-    async def _empty_scan(*_: object, **__: object) -> None:
-        return None
+    async def _empty_scan(*_: object, **__: object) -> ScanResult:
+        return ScanResult(device=None, beacon_seen=False)
 
-    monkeypatch.setattr("partyboxd.device.manager.Scanner.find", _empty_scan)
+    monkeypatch.setattr("partyboxd.device.manager.Scanner.find_with_presence", _empty_scan)
     manager = DeviceManager(_settings(), stale_reclaim_fn=reclaim)
     for _ in range(3):
         assert await manager._scan() is None  # must not raise
@@ -740,10 +748,10 @@ async def test_empty_scans_without_reclaim_fn_are_harmless(
 ) -> None:
     """Standalone partyboxd (no stale_reclaim_fn) just keeps scanning."""
 
-    async def _empty_scan(*_: object, **__: object) -> None:
-        return None
+    async def _empty_scan(*_: object, **__: object) -> ScanResult:
+        return ScanResult(device=None, beacon_seen=False)
 
-    monkeypatch.setattr("partyboxd.device.manager.Scanner.find", _empty_scan)
+    monkeypatch.setattr("partyboxd.device.manager.Scanner.find_with_presence", _empty_scan)
     manager = _make_manager()
     for _ in range(10):
         assert await manager._scan() is None  # must not raise
@@ -762,7 +770,7 @@ async def test_scan_error_does_not_count_as_empty_scan(
     async def _broken_scan(*_: object, **__: object) -> None:
         raise RuntimeError("org.bluez.Error.NotReady")
 
-    monkeypatch.setattr("partyboxd.device.manager.Scanner.find", _broken_scan)
+    monkeypatch.setattr("partyboxd.device.manager.Scanner.find_with_presence", _broken_scan)
     manager = DeviceManager(_settings(), stale_reclaim_fn=reclaim)
     for _ in range(4):
         await manager._scan()
@@ -831,10 +839,11 @@ async def test_reclaim_recovery_path_end_to_end(monkeypatch: pytest.MonkeyPatch)
     found = object()
     results: list[object | None] = [None, None, None, found, None, None]
 
-    async def _scan_script(*_: object, **__: object) -> object | None:
-        return results.pop(0)
+    async def _scan_script(*_: object, **__: object) -> ScanResult:
+        item = results.pop(0)
+        return ScanResult(device=item, beacon_seen=item is not None)  # type: ignore[arg-type]
 
-    monkeypatch.setattr("partyboxd.device.manager.Scanner.find", _scan_script)
+    monkeypatch.setattr("partyboxd.device.manager.Scanner.find_with_presence", _scan_script)
     manager = DeviceManager(_settings(reconnect_delay=1.0), stale_reclaim_fn=reclaim)
     manager._retry_delay = 32.0  # simulate prior backoff growth
 
@@ -873,3 +882,103 @@ async def test_unsuccessful_reclaim_is_rate_limited(monkeypatch: pytest.MonkeyPa
     manager._last_failed_reclaim -= _RECLAIM_COOLDOWN + 1
     assert await manager._reclaim_stale_link() is False
     assert reclaims == [True, True]
+
+
+# ---------------------------------------------------------------------------
+# "unreachable" state — FDDF beacon proves the speaker is on despite no
+# control connection (2026-07-18: live incident, Portal wrongly said "off"
+# while the speaker was confirmed on and merely uncontrollable)
+# ---------------------------------------------------------------------------
+
+
+def _snap(**overrides: object) -> StatusSnapshot:
+    base: dict[str, object] = {
+        "connected": False,
+        "address": None,
+        "firmware": None,
+        "battery": None,
+        "battery_status": None,
+        "has_battery": False,
+        "speaker_awake": True,
+        "beacon_seen": False,
+    }
+    base.update(overrides)
+    return StatusSnapshot(**base)  # type: ignore[arg-type]
+
+
+def test_speaker_state_off_when_disconnected_and_no_beacon() -> None:
+    assert _snap(connected=False, beacon_seen=False).speaker_state == "off"
+
+
+def test_speaker_state_unreachable_when_disconnected_but_beacon_seen() -> None:
+    assert _snap(connected=False, beacon_seen=True).speaker_state == "unreachable"
+
+
+def test_speaker_state_ignores_beacon_seen_while_connected() -> None:
+    """beacon_seen must not influence standby/on classification — it is
+    only consulted while disconnected."""
+    assert _snap(connected=True, speaker_awake=True, beacon_seen=False).speaker_state == "on"
+    assert _snap(connected=True, speaker_awake=False, beacon_seen=False).speaker_state == "standby"
+
+
+async def test_scan_updates_beacon_seen_with_no_candidate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The core new capability: a scan that finds no connectable candidate
+    but does see the beacon must move speaker_state from 'off' to
+    'unreachable', not leave it at 'off'."""
+
+    async def _beacon_only(*_: object, **__: object) -> ScanResult:
+        return ScanResult(device=None, beacon_seen=True)
+
+    monkeypatch.setattr("partyboxd.device.manager.Scanner.find_with_presence", _beacon_only)
+    manager = _make_manager()
+    assert manager.snapshot.speaker_state == "off"
+    assert await manager._scan() is None
+    assert manager.snapshot.speaker_state == "unreachable"
+
+
+async def test_scan_reverts_to_off_when_beacon_no_longer_seen(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    results = [
+        ScanResult(device=None, beacon_seen=True),
+        ScanResult(device=None, beacon_seen=False),
+    ]
+
+    async def _scripted(*_: object, **__: object) -> ScanResult:
+        return results.pop(0)
+
+    monkeypatch.setattr("partyboxd.device.manager.Scanner.find_with_presence", _scripted)
+    manager = _make_manager()
+    await manager._scan()
+    assert manager.snapshot.speaker_state == "unreachable"
+    await manager._scan()
+    assert manager.snapshot.speaker_state == "off"
+
+
+async def test_unreachable_transition_emits_speaker_state_changed_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _beacon_only(*_: object, **__: object) -> ScanResult:
+        return ScanResult(device=None, beacon_seen=True)
+
+    monkeypatch.setattr("partyboxd.device.manager.Scanner.find_with_presence", _beacon_only)
+    manager = _make_manager()
+    queue = manager.subscribe()
+    await manager._scan()
+    event = await asyncio.wait_for(queue.get(), timeout=1.0)
+    assert isinstance(event, SpeakerStateChangedEvent)
+    assert event.state == "unreachable"
+
+
+async def test_scan_error_does_not_touch_beacon_seen(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A scan that outright fails (adapter unusable) says nothing about
+    presence — unlike a clean empty scan, it must not report beacon_seen at
+    all, so the snapshot's prior value is left alone."""
+
+    async def _broken(*_: object, **__: object) -> ScanResult:
+        raise RuntimeError("org.bluez.Error.NotReady")
+
+    manager = _make_manager()
+    monkeypatch.setattr("partyboxd.device.manager.Scanner.find_with_presence", _broken)
+    assert await manager._scan() is None
+    assert manager.snapshot.beacon_seen is False  # unchanged from initial default

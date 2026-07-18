@@ -25,7 +25,7 @@ class HealthResponse(BaseModel):
     version: str
     ble_connected: bool
     audio_ready: bool | None = None
-    speaker_state: Literal["off", "standby", "on"]
+    speaker_state: Literal["off", "unreachable", "standby", "on"]
     #: "exclusive" | "contested" | "unknown" — whether another Bluetooth
     #: source is connected to the speaker (see companion's AudioFocusService).
     #: ``None`` when running as standalone partyboxd without Companion.

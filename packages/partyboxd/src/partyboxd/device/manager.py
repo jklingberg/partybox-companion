@@ -165,12 +165,33 @@ class StatusSnapshot:
     #: (all known PartyBox models answer it), so it still proves liveness
     #: even before — or without ever — confirming battery capability.
     speaker_awake: bool = True
+    #: Whether the most recent scan saw the speaker's FDDF beacon — see
+    #: ``partybox.bluetooth.scanner.HARMAN_FDDF_UUID``. The speaker
+    #: broadcasts this continuously while powered, independently of whether
+    #: its connectable control advert is currently present, so it is the
+    #: only signal available to tell "genuinely off/out of range" apart
+    #: from "on, but its control channel is unreachable right now" (a
+    #: wedged local controller, radio interference, its control slot held
+    #: elsewhere) while ``connected`` is False. Meaningless while
+    #: ``connected`` is True — ``speaker_state`` never consults it then.
+    #: Investigated and added 2026-07-18: a live incident showed the
+    #: Portal reporting "powered off" while the speaker was audibly on and
+    #: only its BLE control link was unreachable — see
+    #: docs/adr/033-speaker-standby-detection.md and the "off" case
+    #: documented as ambiguous in docs/adr/038-idle-battery-shutdown.md.
+    beacon_seen: bool = False
 
     @property
-    def speaker_state(self) -> Literal["off", "standby", "on"]:
-        """Coarse power state, derived — never stored redundantly."""
+    def speaker_state(self) -> Literal["off", "unreachable", "standby", "on"]:
+        """Coarse power state, derived — never stored redundantly.
+
+        ``"unreachable"`` sits between ``"off"`` and ``"standby"``: the
+        control link is down (same as ``"off"``), but the speaker's FDDF
+        beacon proves it is still powered — the control channel itself is
+        the problem, not the speaker. See ``beacon_seen``.
+        """
         if not self.connected:
-            return "off"
+            return "unreachable" if self.beacon_seen else "off"
         if not self.speaker_awake:
             return "standby"
         return "on"
@@ -184,6 +205,7 @@ _DISCONNECTED = StatusSnapshot(
     battery_status=None,
     has_battery=False,
     speaker_awake=True,
+    beacon_seen=False,
 )
 
 
@@ -739,17 +761,21 @@ class DeviceManager:
     async def _scan(self) -> PartyBoxDevice | None:
         log.info("scanning for speaker")
         try:
-            device = await Scanner.find(timeout=self._settings.scan_timeout)
+            result = await Scanner.find_with_presence(timeout=self._settings.scan_timeout)
         except Exception as exc:
             log.warning("scan failed: %s", exc)
             await self._note_scan_error()
             return None
         self._scan_errors = 0
-        if device is None:
+        # Only meaningful while disconnected (speaker_state ignores it
+        # otherwise); updating unconditionally here is harmless since _scan
+        # only ever runs during the disconnected reconnect loop.
+        self._set_snapshot(replace(self._snapshot, beacon_seen=result.beacon_seen))
+        if result.device is None:
             await self._note_empty_scan()
         else:
             self._empty_scans = 0
-        return device
+        return result.device
 
     async def _refresh(self, device: PartyBoxDevice) -> None:
         """Query initial device state and update the snapshot."""
@@ -792,6 +818,10 @@ class DeviceManager:
                 battery_status=battery_status,
                 has_battery=has_battery,
                 speaker_awake=speaker_awake,
+                # We just connected, so presence is proven directly —
+                # irrelevant while connected (speaker_state ignores it
+                # then), set for consistency in case it's read otherwise.
+                beacon_seen=True,
             )
         )
 

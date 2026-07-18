@@ -15,6 +15,7 @@ this module — callers see only ``PartyBoxCandidate`` and ``ControlTransport``.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 
 from bleak import BleakScanner
 from bleak.backends.device import BLEDevice
@@ -31,6 +32,24 @@ DEFAULT_SCAN_TIMEOUT = 8.0
 _PARTYBOX_NAME = "PartyBox"
 
 _TRANSPORT_ERRORS = (BleakError, OSError)
+
+# Harman's proprietary connection-state service-data UUID. Unregistered,
+# belongs to Harman's internal advertising format — see
+# docs/reverse-engineering/protocol.md § "FDDF Advertisement". The PartyBox
+# broadcasts it continuously while powered, independently of whether its
+# named, connectable control advert (what candidates are built from below)
+# is currently present — a controller/radio issue on the scanning side, or
+# the speaker's control slot being held elsewhere, can silence the latter
+# while the former keeps broadcasting. Duplicated here rather than imported
+# from companion's fuller FDDF payload parser (battery/source-count/
+# connection-bits decoding — a consumer-side warning feature, not a
+# hardware capability) because the SDK must not depend on companion or
+# partyboxd (one-way dependency, see CLAUDE.md). This constant is the
+# minimum needed to answer one question — "is *a* PartyBox-family device
+# nearby and powered, regardless of whether we can currently talk to its
+# control channel" — at zero extra radio cost, since it comes from the same
+# BleakScanner.discover() call already made below.
+HARMAN_FDDF_UUID = "0000fddf-0000-1000-8000-00805f9b34fb"
 
 
 def _is_classic_device(device: BLEDevice) -> bool:
@@ -63,6 +82,24 @@ def _is_classic_device(device: BLEDevice) -> bool:
 
 class DiscoveryError(BluetoothError):
     """Raised when a BLE scan cannot be performed."""
+
+
+@dataclass(frozen=True)
+class ScanResult:
+    """Result of a single BLE discovery pass — candidates plus beacon presence.
+
+    *beacon_seen* is True when any nearby advertisement carried Harman's
+    FDDF service-data key, even if *candidates* is empty. It does not
+    verify the beacon belongs to *this* paired speaker specifically (that
+    would require decoding the embedded BR/EDR address — a heavier check
+    this presence-only signal deliberately skips); in practice a false
+    positive from an unrelated Harman/JBL device is harmless; the only
+    consequence is reporting "present but unreachable" instead of "off",
+    which is still not a false "it's genuinely gone" claim.
+    """
+
+    candidates: list[PartyBoxCandidate]
+    beacon_seen: bool
 
 
 class PartyBoxCandidate:
@@ -111,13 +148,33 @@ class Scanner:
             DiscoveryError: if the scan could not be performed (no adapter,
                 insufficient privileges, etc.).
         """
+        return (await Scanner.discover_with_presence(timeout=timeout)).candidates
+
+    @staticmethod
+    async def discover_with_presence(*, timeout: float = DEFAULT_SCAN_TIMEOUT) -> ScanResult:
+        """Like :meth:`discover`, but also reports FDDF beacon presence.
+
+        One :func:`BleakScanner.discover` call answers both questions — no
+        extra radio time versus calling :meth:`discover` alone. See
+        :class:`ScanResult` and ``HARMAN_FDDF_UUID`` for why this matters:
+        distinguishing "genuinely off" from "on, but its control channel
+        isn't reachable right now" needs a signal independent of whether a
+        connectable candidate was found.
+
+        Raises:
+            DiscoveryError: if the scan could not be performed (no adapter,
+                insufficient privileges, etc.).
+        """
         try:
             found = await BleakScanner.discover(timeout=timeout, return_adv=True)
         except _TRANSPORT_ERRORS as exc:
             raise DiscoveryError(f"BLE scan failed: {exc}") from exc
 
         candidates: list[PartyBoxCandidate] = []
+        beacon_seen = False
         for device, adv in found.values():
+            if HARMAN_FDDF_UUID in (adv.service_data or {}):
+                beacon_seen = True
             name = adv.local_name or device.name
             if not name or _PARTYBOX_NAME not in name:
                 continue
@@ -128,7 +185,7 @@ class Scanner:
                 PartyBoxCandidate(name=name, address=device.address, rssi=adv.rssi, device=device)
             )
         candidates.sort(key=lambda c: (c.rssi is None, -(c.rssi or 0)))
-        return candidates
+        return ScanResult(candidates=candidates, beacon_seen=beacon_seen)
 
     @staticmethod
     async def find(*, timeout: float = DEFAULT_SCAN_TIMEOUT) -> PartyBoxCandidate | None:

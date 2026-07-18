@@ -17,7 +17,7 @@ from .bleak_transport import (
     BleakTransport,
 )
 from .mock import MockTransport
-from .scanner import DiscoveryError, PartyBoxCandidate, Scanner
+from .scanner import DiscoveryError, PartyBoxCandidate, Scanner, ScanResult
 from .transport import (
     BluetoothError,
     ConnectionFailedError,
@@ -39,5 +39,6 @@ __all__ = [
     "MockTransport",
     "NotConnectedError",
     "PartyBoxCandidate",
+    "ScanResult",
     "Scanner",
 ]
