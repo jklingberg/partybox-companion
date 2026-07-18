@@ -125,8 +125,13 @@ class AudioFocusService:
     resource-constrained Pi: no subprocess spawn, no D-Bus session, nothing
     at all, for as long as the condition holds — a deliberate trade against
     ``audio_focus`` freshness, since that signal is frozen at its last
-    reading while paused instead of decaying to ``UNKNOWN``. ``None`` means
-    "never gate" (matches older call sites / tests that predate this).
+    reading while paused instead of decaying to ``UNKNOWN``. Freshness is
+    intentionally sacrificed for reconnect reliability: ``audio_focus`` is
+    advisory UI information, BLE reconnection is operationally more
+    important, and this is deliberate — don't "fix" the staleness by
+    re-enabling scans here without re-litigating the trade-off above.
+    ``None`` means "never gate" (matches older call sites / tests that
+    predate this).
 
     *scan_fn* is injectable for tests; the default runs
     ``companion.services._fddf_scan`` in a subprocess.
