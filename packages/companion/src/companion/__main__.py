@@ -235,10 +235,17 @@ async def _idle_battery_shutdown(
     (e.g. the user plugs in mains while the speaker stays in standby), so a
     periodic re-check of the full snapshot is needed to notice that too.
 
-    Counts idle time in both ``"standby"`` (BLE connected, speaker asleep)
-    and ``"off"`` (BLE disconnected), but judges them against *different*
-    fixed thresholds — they are not equivalent, see
+    Counts idle time in ``"standby"`` (BLE connected, speaker asleep),
+    ``"unreachable"`` (BLE disconnected, but the speaker's FDDF beacon
+    proves it's still powered — see ``StatusSnapshot.beacon_seen``), and
+    ``"off"`` (BLE disconnected, nothing seen at all), judged against
+    *different* fixed thresholds — they are not equivalent, see
     ``_STANDBY_GRACE_SECONDS``/``_OFF_STATE_GRACE_SECONDS`` above.
+    ``"unreachable"`` uses the same generous threshold as ``"standby"``:
+    the beacon is exactly the confirmation that would otherwise be missing
+    — the speaker is still drawing power, only its control channel is
+    unreachable, so there is no reason to judge it more urgently than a
+    speaker we know is merely asleep.
 
     The idle clock itself is a single continuous counter that survives the
     standby <-> off transition — only the threshold it's compared against
@@ -271,7 +278,7 @@ async def _idle_battery_shutdown(
             last_known_on_battery = not charging_status.on_mains
 
         threshold: float | None = None
-        if snap.speaker_state == "standby":
+        if snap.speaker_state in ("standby", "unreachable"):
             threshold = _STANDBY_GRACE_SECONDS
         elif snap.speaker_state == "off":
             threshold = _OFF_STATE_GRACE_SECONDS
