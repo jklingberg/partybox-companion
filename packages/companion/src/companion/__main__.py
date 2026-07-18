@@ -329,6 +329,10 @@ async def _run(
             pairing.status.state in (PairingState.SCANNING, PairingState.PAIRING)
         ),
         streaming_fn=audio.transport_active,
+        # `manager` is assigned below — safe: this closure is only called
+        # from audio_focus.run(), well after _run() finishes constructing
+        # everything and hands off to the supervisor.
+        ble_connected_fn=lambda: manager.snapshot.connected,
     )
 
     # adapter_recover_fn lets the manager clear a wedged controller

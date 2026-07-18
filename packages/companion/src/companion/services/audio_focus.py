@@ -65,6 +65,7 @@ _STREAMING_SCAN_INTERVAL = 120.0  # relaxed cadence while A2DP audio is flowing
 _SCAN_WINDOW = 3.0
 _SCAN_SUBPROCESS_TIMEOUT = _SCAN_WINDOW + 10.0
 _PAIRING_BACKOFF = 10.0  # re-check cadence while a pairing attempt owns discovery
+_BLE_DOWN_RECHECK = 10.0  # re-check cadence while DeviceManager holds no connection
 _MISS_LIMIT = 3  # consecutive scans without a fresh advert before UNKNOWN
 
 # Idle baseline observed with only the companion connected (PartyBox 520).
@@ -108,6 +109,25 @@ class AudioFocusService:
     streaming" (scan at *interval* always). The callable must not raise —
     collapse failures to False.
 
+    *ble_connected_fn*, when provided, gates scanning on DeviceManager
+    holding its control connection: scans are skipped entirely while it does
+    not (``False``). This is not a cadence adjustment like *streaming_fn* —
+    the scan is skipped outright, not just spaced out — because the case
+    being avoided is scanning while DeviceManager is itself mid scan/connect
+    on the same adapter. Investigation on 2026-07-18 correlated this
+    service's scan windows with DeviceManager connect failures, including a
+    live ADR-039 wedge (adapter power-cycle) triggered moments after one.
+    The two scans are architecturally independent processes with no
+    coordination otherwise, and a live-caught wedge is a stronger signal
+    than any assumption about what BlueZ *should* handle gracefully.
+    Skipping outright (vs. e.g. a scan/connect mutex keyed to
+    DeviceManager's connect window) is the cheapest option for a
+    resource-constrained Pi: no subprocess spawn, no D-Bus session, nothing
+    at all, for as long as the condition holds — a deliberate trade against
+    ``audio_focus`` freshness, since that signal is frozen at its last
+    reading while paused instead of decaying to ``UNKNOWN``. ``None`` means
+    "never gate" (matches older call sites / tests that predate this).
+
     *scan_fn* is injectable for tests; the default runs
     ``companion.services._fddf_scan`` in a subprocess.
     """
@@ -121,6 +141,7 @@ class AudioFocusService:
         interval: float = _SCAN_INTERVAL,
         streaming_fn: StreamingFn | None = None,
         streaming_interval: float = _STREAMING_SCAN_INTERVAL,
+        ble_connected_fn: Callable[[], bool] | None = None,
     ) -> None:
         self._address_fn = address_fn
         self._pairing_active_fn = pairing_active_fn
@@ -128,6 +149,7 @@ class AudioFocusService:
         self._interval = interval
         self._streaming_fn = streaming_fn
         self._streaming_interval = streaming_interval
+        self._ble_connected_fn = ble_connected_fn
         self._focus = AudioFocus.UNKNOWN
         self._misses = 0
         self._bus: EventBus[AudioFocusEvent] = EventBus()
@@ -162,6 +184,12 @@ class AudioFocusService:
                 continue
             if self._pairing_active_fn():
                 await asyncio.sleep(_PAIRING_BACKOFF)
+                continue
+            if self._ble_connected_fn is not None and not self._ble_connected_fn():
+                # Skip the scan outright — see ble_connected_fn in the class
+                # docstring. focus is deliberately left untouched (frozen at
+                # its last reading) rather than decayed toward UNKNOWN.
+                await asyncio.sleep(_BLE_DOWN_RECHECK)
                 continue
 
             raw = await self._scan_fn(address)
