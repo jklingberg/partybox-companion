@@ -72,7 +72,7 @@ class Scanner:
     async def find_with_presence(*, timeout: float = DEFAULT_SCAN_TIMEOUT) -> ScanResult:
         """Like :meth:`find`, but also reports whether a PartyBox-family
         device's beacon was seen even when no connectable candidate was —
-        see :class:`partybox.bluetooth.scanner.ScanResult`. Lets a caller
+        see :class:`partybox.bluetooth.scanner.DiscoveryResult`. Lets a caller
         distinguish "genuinely off/out of range" from "on, but its control
         channel isn't reachable right now" without any extra scan.
 

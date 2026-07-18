@@ -85,7 +85,7 @@ class DiscoveryError(BluetoothError):
 
 
 @dataclass(frozen=True)
-class ScanResult:
+class DiscoveryResult:
     """Result of a single BLE discovery pass — candidates plus beacon presence.
 
     *beacon_seen* is True when any nearby advertisement carried Harman's
@@ -151,12 +151,12 @@ class Scanner:
         return (await Scanner.discover_with_presence(timeout=timeout)).candidates
 
     @staticmethod
-    async def discover_with_presence(*, timeout: float = DEFAULT_SCAN_TIMEOUT) -> ScanResult:
+    async def discover_with_presence(*, timeout: float = DEFAULT_SCAN_TIMEOUT) -> DiscoveryResult:
         """Like :meth:`discover`, but also reports FDDF beacon presence.
 
         One :func:`BleakScanner.discover` call answers both questions — no
         extra radio time versus calling :meth:`discover` alone. See
-        :class:`ScanResult` and ``HARMAN_FDDF_UUID`` for why this matters:
+        :class:`DiscoveryResult` and ``HARMAN_FDDF_UUID`` for why this matters:
         distinguishing "genuinely off" from "on, but its control channel
         isn't reachable right now" needs a signal independent of whether a
         connectable candidate was found.
@@ -185,7 +185,7 @@ class Scanner:
                 PartyBoxCandidate(name=name, address=device.address, rssi=adv.rssi, device=device)
             )
         candidates.sort(key=lambda c: (c.rssi is None, -(c.rssi or 0)))
-        return ScanResult(candidates=candidates, beacon_seen=beacon_seen)
+        return DiscoveryResult(candidates=candidates, beacon_seen=beacon_seen)
 
     @staticmethod
     async def find(*, timeout: float = DEFAULT_SCAN_TIMEOUT) -> PartyBoxCandidate | None:
