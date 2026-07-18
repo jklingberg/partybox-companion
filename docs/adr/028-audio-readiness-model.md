@@ -324,6 +324,24 @@ A second, distinct flapping failure mode was observed on RC12 (Pi 3B+, PartyBox 
 - End-to-end: `POST /api/v1/power/on` → A2DP connects → `audio_ready: true` → Spotify Connect device appears (`GET /api/v1/spotify` → `{"running": true, "device_name": "PartyBox Companion"}`).
 - The ported `monitor.bluez.rules` take effect on the live connected node, not just parse without error — confirmed via `pw-cli info` against the running appliance: node 76 (`bluez_output.50_1B_6A_14_FD_1D.1`) shows `node.pause-on-idle = "false"` and `node.volume = "1.0"`; device 75 (`bluez_card.50_1B_6A_14_FD_1D`) shows `bluez5.hw-volume = "[]"`.
 
+### Volume floor from mixin.stateless (2026-07-18)
+
+`mixin.stateless` (inherited by `main-embedded`) disables `hooks.device.routes.state`, meaning WirePlumber never saves or restores per-device route volumes. On every A2DP connect, WirePlumber's `apply-routes.lua` sets `channelVolumes` to `Settings.get_float("device.routes.default-sink-volume")` — WirePlumber 0.5.x's compiled-in default is **0.064 (linear)**, which displays as **0.40** in `wpctl`'s cubic-perceptual scale (`0.064^(1/3) = 0.40`). This happened on every boot, capping software volume at 40% regardless of the `node.volume = 1.0` hint in `monitor.bluez.rules`.
+
+The `node.volume` property set by the rule is applied at node creation, but `apply-routes.lua` runs after node creation and wins. The original RC13 validation checked `pw-cli info` for `node.volume = "1.0"` — which was correctly set — but did not verify the actual channel volume via `wpctl get-volume`, so the 40% floor was not caught at that time.
+
+**Fix:** `image/config/wireplumber-appliance.conf` (deployed to `/etc/wireplumber/wireplumber.conf.d/51-appliance.conf`) now includes a `wireplumber.settings` block alongside the existing `monitor.bluez.rules`:
+
+```
+wireplumber.settings = {
+  device.routes.default-sink-volume = 1.0
+}
+```
+
+`1.0` linear = 100% perceived volume (wpctl shows `1.00`), the maximum without soft-amplification boost. The override is applied globally (not scoped per-device), which is correct for this single-output appliance.
+
+**Validated (Pi 5, WirePlumber 0.5.8):** `wpctl get-volume @DEFAULT_AUDIO_SINK@` returns `Volume: 1.00` immediately after A2DP connect on a clean boot, with no manual `wpctl` intervention. Confirmed stable across two reboots.
+
 **Resolved (not a new bug):** with the flap fixed, live testing initially surfaced `br-connection-unknown` from `ConnectProfile` after a service-level restart. A full `sudo reboot` was tried next (the tmpfiles.d WirePlumber-state clear from `install.sh` step 10c(5) only fires on an actual reboot, not `systemctl restart`) and `br-connection-unknown` persisted — but the speaker was also physically powered off at that point. `POST /api/v1/power/on` immediately resolved it: A2DP connected on the next retry, `audio_ready` reached `true`, and the Spotify gate started `librespot`. `br-connection-unknown` in this instance was BlueZ correctly reporting "no BR/EDR link" because there was no speaker to link to — not a WirePlumber or endpoint-registration issue.
 
 ### Deferred: runtime self-healing needs a privileged broker, not a runtime sudo grant
