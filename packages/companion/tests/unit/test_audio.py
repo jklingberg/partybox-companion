@@ -958,3 +958,22 @@ async def test_simultaneous_repair_and_recheck_reports_repair() -> None:
     svc.update_address("AA:BB:CC:DD:EE:FF")
 
     assert await asyncio.wait_for(wait_task, timeout=1.0) is True
+
+
+async def test_retry_now_interrupts_failure_backoff_as_strong_signal() -> None:
+    """retry_now() (speaker woke up / re-pair) must cut a failure back-off or
+    cool-down short and report True so the caller resets retry state — the
+    counterpart to recheck_now(), which must never do this."""
+    svc = _service()
+
+    async def wake() -> None:
+        await asyncio.sleep(0.01)
+        svc.retry_now("speaker woke up")
+
+    task = asyncio.create_task(wake())
+    started = asyncio.get_running_loop().time()
+    woken_by_retry = await svc._wait_retry(5.0)
+    elapsed = asyncio.get_running_loop().time() - started
+    await task
+    assert woken_by_retry is True
+    assert elapsed < 1.0

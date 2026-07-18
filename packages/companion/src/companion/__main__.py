@@ -162,22 +162,34 @@ async def _forward_ble_volume(manager: DeviceManager, volume_state: VolumeState)
 
 
 async def _recheck_audio_on_standby(manager: DeviceManager, audio: AudioService) -> None:
-    """Nudge AudioService to re-check A2DP as soon as the speaker leaves "on".
+    """Keep AudioService in step with the speaker's power state.
 
     The BLE control link and the A2DP audio link are separate Bluetooth
     subsystems (see ``AudioService``'s module docstring), but in practice
-    they tend to drop together — the speaker going into standby is a strong
-    signal the audio link just went with it. Without this, the Portal's
-    "Bluetooth Audio" status can show a stale "connected" for up to
-    AudioService's 60s idle check interval after the speaker visibly went
-    idle. Runs until cancelled.
+    they track the same speaker, so its power transitions matter in both
+    directions:
+
+    - Leaving "on": the audio link almost certainly just dropped too, so
+      nudge a re-check (``recheck_now``) instead of letting the Portal show
+      a stale "connected" for up to AudioService's 60s idle interval.
+    - Entering "on": the speaker just woke up, so an A2DP connect is now
+      likely to succeed — fire ``retry_now`` to break out of any failure
+      back-off or cool-down accumulated while it was asleep. Without this,
+      powering the speaker on from the Portal right after a failure run
+      left it silent for up to the full 300s cool-down (observed
+      2026-07-18).
+
+    Runs until cancelled.
     """
     queue = manager.subscribe()
     try:
         while True:
             event = await queue.get()
-            if isinstance(event, SpeakerStateChangedEvent) and event.state != "on":
-                audio.recheck_now()
+            if isinstance(event, SpeakerStateChangedEvent):
+                if event.state == "on":
+                    audio.retry_now("speaker woke up")
+                else:
+                    audio.recheck_now()
     finally:
         manager.unsubscribe(queue)
 

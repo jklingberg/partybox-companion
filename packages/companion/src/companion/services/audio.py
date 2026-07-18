@@ -153,6 +153,9 @@ class AudioService:
         self._address_ready = asyncio.Event()
         self._bus: EventBus[AudioServiceEvent] = EventBus()
         self._reconnect_now = asyncio.Event()
+        #: Human-readable cause of the pending _reconnect_now wake; logged by
+        #: the run loop when the early retry fires (see retry_now()).
+        self._retry_reason = "retry requested"
         #: Woken by recheck_now(); only ever interrupts the connected-idle
         #: wait, never a failure backoff — see _wait_retry.
         self._recheck_now = asyncio.Event()
@@ -236,6 +239,26 @@ class AudioService:
         """
         self._recheck_now.set()
 
+    def retry_now(self, reason: str) -> None:
+        """Interrupt any wait — back-offs and cool-downs included — and retry now.
+
+        The strong wake signal, shared by every trigger that makes an
+        immediate A2DP retry *likely to succeed*: a fresh pairing
+        (:meth:`update_address`) or the speaker waking from standby (the
+        BLE control link answering probes again — see
+        ``_recheck_audio_on_standby`` in ``companion.__main__``). Callers
+        must have a positive reason to believe the world changed; that is
+        what distinguishes this from :meth:`recheck_now`, which merely cuts
+        the connected-idle wait short and never touches retry state.
+        Without a wake path into the cool-downs, a speaker powered on right
+        after a failure run sat silent for up to the full 300s cool-down
+        even though a connect would now succeed (observed 2026-07-18).
+
+        *reason* is logged when the retry fires.
+        """
+        self._retry_reason = reason
+        self._reconnect_now.set()
+
     def update_address(self, address: str) -> None:
         """Set or update the A2DP sink address and interrupt any backoff sleep.
 
@@ -245,7 +268,7 @@ class AudioService:
         """
         self._address = address
         self._address_ready.set()
-        self._reconnect_now.set()
+        self.retry_now("re-pair detected")
 
     def forget(self) -> None:
         """Clear the sink address and quiesce the connection loop (factory reset).
@@ -300,7 +323,7 @@ class AudioService:
                         )
                         self._flap_count = 0
                         if await self._wait_retry(_FLAP_COOLDOWN):
-                            log.info("A2DP: re-pair detected, retrying immediately")
+                            log.info("A2DP: %s — retrying immediately", self._retry_reason)
                         retry_delay = _RETRY_BASE
                         continue
                     log.info(
@@ -337,11 +360,11 @@ class AudioService:
                         )
                         self._consecutive_failures = 0
                         if await self._wait_retry(_FAILURE_COOLDOWN):
-                            log.info("A2DP: re-pair detected, retrying immediately")
+                            log.info("A2DP: %s — retrying immediately", self._retry_reason)
                         retry_delay = _RETRY_BASE
                         continue
                     if await self._wait_retry(retry_delay):
-                        log.info("A2DP: re-pair detected, retrying immediately")
+                        log.info("A2DP: %s — retrying immediately", self._retry_reason)
                         retry_delay = _RETRY_BASE
                     else:
                         retry_delay = min(retry_delay * 2, _RETRY_MAX)

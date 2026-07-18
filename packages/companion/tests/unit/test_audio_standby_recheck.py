@@ -32,6 +32,7 @@ async def test_recheck_now_called_on_transition_to_standby() -> None:
     await asyncio.sleep(0)
 
     audio.recheck_now.assert_called_once()
+    audio.retry_now.assert_not_called()
 
     task.cancel()
     with suppress(asyncio.CancelledError):
@@ -54,7 +55,11 @@ async def test_recheck_now_called_on_transition_to_off() -> None:
         await task
 
 
-async def test_recheck_now_not_called_on_transition_to_on() -> None:
+async def test_transition_to_on_fires_retry_not_recheck() -> None:
+    """Waking up is the strong signal: it must break A2DP out of any
+    failure back-off/cool-down (retry_now), not merely poke the idle wait
+    (recheck_now) — a speaker powered on from the Portal right after a
+    failure run otherwise sat silent for up to the full 300s cool-down."""
     q: asyncio.Queue[DeviceEvent] = asyncio.Queue()
     q.put_nowait(SpeakerStateChangedEvent(state="on"))
     audio = MagicMock(spec=AudioService)
@@ -64,6 +69,7 @@ async def test_recheck_now_not_called_on_transition_to_on() -> None:
     await asyncio.sleep(0)
 
     audio.recheck_now.assert_not_called()
+    audio.retry_now.assert_called_once_with("speaker woke up")
 
     task.cancel()
     with suppress(asyncio.CancelledError):
