@@ -14,6 +14,8 @@ this module — callers see only ``PartyBoxCandidate`` and ``ControlTransport``.
 
 from __future__ import annotations
 
+import logging
+
 from bleak import BleakScanner
 from bleak.backends.device import BLEDevice
 from bleak.exc import BleakError
@@ -21,12 +23,42 @@ from bleak.exc import BleakError
 from .bleak_transport import BleakTransport
 from .transport import BluetoothError, ControlTransport
 
+log = logging.getLogger(__name__)
+
 DEFAULT_SCAN_TIMEOUT = 8.0
 
 # Advertised name substring shared by every PartyBox model (520, 310, …).
 _PARTYBOX_NAME = "PartyBox"
 
 _TRANSPORT_ERRORS = (BleakError, OSError)
+
+
+def _is_classic_device(device: BLEDevice) -> bool:
+    """True when *device* is BlueZ's BR/EDR (Classic) object for the speaker.
+
+    The PartyBox is dual-mode: A2DP audio runs over Bluetooth Classic while
+    control runs over LE GATT from a rotating private address (ADR-015). When
+    the Classic side is bonded and connected, BlueZ surfaces that device
+    object in discovery results too — same "JBL PartyBox" name, but a
+    ``public`` address and no control GATT service. Connecting to it burns a
+    ~10 s attempt that ends in "characteristic not found" and, worse, counts
+    toward the daemon's wedged-controller heuristic (ADR-039), which can
+    escalate to an adapter power-cycle that drops live audio. The control
+    advertisement always comes from a ``random`` address, so a ``public``
+    BlueZ address type safely marks the Classic object.
+
+    This filter deliberately reaches into bleak's BlueZ backend details
+    (``device.details["props"]["AddressType"]``) and is therefore only
+    active on the BlueZ backend; other backends intentionally fall back to
+    the previous name-only behaviour.
+    """
+    details = getattr(device, "details", None)
+    if not isinstance(details, dict):
+        return False
+    props = details.get("props")
+    if not isinstance(props, dict):
+        return False
+    return props.get("AddressType") == "public"
 
 
 class DiscoveryError(BluetoothError):
@@ -88,6 +120,9 @@ class Scanner:
         for device, adv in found.values():
             name = adv.local_name or device.name
             if not name or _PARTYBOX_NAME not in name:
+                continue
+            if _is_classic_device(device):
+                log.debug("skipping BR/EDR device object %s (%s)", device.address, name)
                 continue
             candidates.append(
                 PartyBoxCandidate(name=name, address=device.address, rssi=adv.rssi, device=device)

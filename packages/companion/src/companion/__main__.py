@@ -36,6 +36,7 @@ from companion.services import login1_dbus
 from companion.services.adapter_recovery import reset_adapter
 from companion.services.audio import AudioService
 from companion.services.audio_focus import AudioFocusService
+from companion.services.le_reclaim import disconnect_stale_speaker_links
 from companion.services.pairing import PairingService, PairingState
 from companion.services.provisioning import ProvisioningService
 from companion.services.router import make_services_router
@@ -314,11 +315,19 @@ async def _run(
         pairing_active_fn=lambda: (
             pairing.status.state in (PairingState.SCANNING, PairingState.PAIRING)
         ),
+        streaming_fn=audio.transport_active,
     )
 
     # adapter_recover_fn lets the manager clear a wedged controller
     # (scanning works, connects fail — ADR-039) by power-cycling hci0.
-    manager = DeviceManager(daemon_settings.speaker, adapter_recover_fn=reset_adapter)
+    # stale_reclaim_fn frees an orphaned LE control link a dead process left
+    # in bluetoothd (speaker stops advertising while held → endless empty
+    # scans → Portal wrongly shows "off").
+    manager = DeviceManager(
+        daemon_settings.speaker,
+        adapter_recover_fn=reset_adapter,
+        stale_reclaim_fn=disconnect_stale_speaker_links,
+    )
 
     provisioning = ProvisioningService(companion_settings.wifi.interface)
 

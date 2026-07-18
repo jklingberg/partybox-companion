@@ -394,6 +394,48 @@ async def test_is_connected_handles_timeout() -> None:
 
 
 # ---------------------------------------------------------------------------
+# transport_active()
+# ---------------------------------------------------------------------------
+
+
+async def test_transport_active_true_when_streaming() -> None:
+    svc = _service()
+    svc._audio_ready = True
+    with patch(
+        "companion.services.audio.asyncio.create_subprocess_exec",
+        return_value=_mock_proc(b"active"),
+    ):
+        assert await svc.transport_active() is True
+
+
+async def test_transport_active_pending_counts_as_streaming() -> None:
+    svc = _service()
+    svc._audio_ready = True
+    with patch(
+        "companion.services.audio.asyncio.create_subprocess_exec",
+        return_value=_mock_proc(b"pending"),
+    ):
+        assert await svc.transport_active() is True
+
+
+async def test_transport_active_false_when_idle() -> None:
+    svc = _service()
+    svc._audio_ready = True
+    with patch(
+        "companion.services.audio.asyncio.create_subprocess_exec",
+        return_value=_mock_proc(b"idle"),
+    ):
+        assert await svc.transport_active() is False
+
+
+async def test_transport_active_short_circuits_when_not_ready() -> None:
+    svc = _service()  # audio_ready is False until run() connects
+    with patch("companion.services.audio.asyncio.create_subprocess_exec") as exec_mock:
+        assert await svc.transport_active() is False
+    exec_mock.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # _connect()
 # ---------------------------------------------------------------------------
 

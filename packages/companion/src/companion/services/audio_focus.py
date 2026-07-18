@@ -9,8 +9,8 @@ connection is the speaker's own FDDF LE advertisement, which carries a
 connected-source indicator (see docs/reverse-engineering/protocol.md
 § "FDDF Advertisement" and ADR-027 for the FDDF discovery mechanism).
 
-This service periodically runs a short passive LE scan (in a subprocess, for
-the same bleak/dbus-fast isolation reasons as ``AudioService`` — see
+This service periodically runs a short LE scan (in a subprocess, for the
+same bleak/dbus-fast isolation reasons as ``AudioService`` — see
 ``_a2dp_connect.py``) and classifies the freshest matching payload:
 
 - ``exclusive`` — the companion is the only source connected to the speaker
@@ -26,6 +26,16 @@ Classification thresholds are model-observed on a PartyBox 520, not
 specified — see ``bluez_dbus.parse_fddf_payload``. If a future model reports
 a different idle baseline the rule errs toward ``exclusive`` (no warning)
 rather than crying wolf.
+
+**Scan cost — the radio is shared.** LE discovery competes with the A2DP
+stream for the same controller's airtime: with audio flowing, a 12 s scan
+window every 60 s produced clearly audible periodic stutter (2026-07-17
+incident). The scan window is therefore a tight cap, and while the transport
+is actively streaming (*streaming_fn*) the cadence stretches from
+``_SCAN_INTERVAL`` to ``_STREAMING_SCAN_INTERVAL``. Scanning never stops
+entirely during playback: "playing but rendering silence because another
+source holds the speaker" is precisely the state this service exists to
+expose, so contested detection must stay live — just cheaper.
 """
 
 from __future__ import annotations
@@ -45,7 +55,14 @@ from companion.services.bluez_dbus import parse_fddf_payload
 log = logging.getLogger(__name__)
 
 _SCAN_INTERVAL = 60.0
-_SCAN_WINDOW = 12.0  # LE scan window inside the helper; adverts arrive every ~1 s
+_STREAMING_SCAN_INTERVAL = 120.0  # relaxed cadence while A2DP audio is flowing
+# The helper exits early on the first matching advert (adverts arrive every
+# ~1 s), so the window is a worst-case cap, not a fixed duration. The cap
+# matters most while audio streams: A2DP starves advert reception, the scan
+# runs its full window, and every scanned second is a second stolen from the
+# stream — 12 s was audible as stutter (2026-07-17), 3 s still spans several
+# advert intervals.
+_SCAN_WINDOW = 3.0
 _SCAN_SUBPROCESS_TIMEOUT = _SCAN_WINDOW + 10.0
 _PAIRING_BACKOFF = 10.0  # re-check cadence while a pairing attempt owns discovery
 _MISS_LIMIT = 3  # consecutive scans without a fresh advert before UNKNOWN
@@ -73,6 +90,8 @@ type AudioFocusEvent = AudioFocusChanged
 
 type ScanFn = Callable[[str], Awaitable[bytes | None]]
 
+type StreamingFn = Callable[[], Awaitable[bool]]
+
 
 class AudioFocusService:
     """Periodic FDDF-advert watcher classifying who holds the speaker's audio.
@@ -81,6 +100,13 @@ class AudioFocusService:
     before first pairing).  *pairing_active_fn* returns True while a pairing
     attempt is running — scans are skipped then, so this service's discovery
     traffic never competes with the pairing flow's own discovery windows.
+
+    *streaming_fn* returns True while the A2DP transport is actively carrying
+    audio (see ``AudioService.transport_active``); the loop then paces itself
+    at *streaming_interval* instead of *interval* so scans steal as little
+    radio time as possible from the live stream. ``None`` means "never
+    streaming" (scan at *interval* always). The callable must not raise —
+    collapse failures to False.
 
     *scan_fn* is injectable for tests; the default runs
     ``companion.services._fddf_scan`` in a subprocess.
@@ -93,11 +119,15 @@ class AudioFocusService:
         *,
         scan_fn: ScanFn | None = None,
         interval: float = _SCAN_INTERVAL,
+        streaming_fn: StreamingFn | None = None,
+        streaming_interval: float = _STREAMING_SCAN_INTERVAL,
     ) -> None:
         self._address_fn = address_fn
         self._pairing_active_fn = pairing_active_fn
         self._scan_fn: ScanFn = scan_fn if scan_fn is not None else _run_scan_subprocess
         self._interval = interval
+        self._streaming_fn = streaming_fn
+        self._streaming_interval = streaming_interval
         self._focus = AudioFocus.UNKNOWN
         self._misses = 0
         self._bus: EventBus[AudioFocusEvent] = EventBus()
@@ -165,7 +195,13 @@ class AudioFocusService:
                             raw.hex(),
                         )
                     self._set_focus(focus)
-            await asyncio.sleep(self._interval)
+            await asyncio.sleep(await self._next_interval())
+
+    async def _next_interval(self) -> float:
+        """Cadence for the next cycle: relaxed while audio is streaming."""
+        if self._streaming_fn is not None and await self._streaming_fn():
+            return self._streaming_interval
+        return self._interval
 
     def _set_focus(self, focus: AudioFocus) -> None:
         if focus == self._focus:

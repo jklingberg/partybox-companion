@@ -131,7 +131,9 @@
   .scene-off          { --wash: rgba(255,61,46,.28); }
   .scene-standby      { --wash: rgba(255,179,0,.26); }
   .scene-powering     { --wash: rgba(154,151,172,.14); }
+  .scene-blocked      { --wash: rgba(255,179,0,.26); }
   .scene-off         .center-ring, .scene-off         .center-ring-icon { --ring: var(--heat-1); }
+  .scene-blocked     .center-ring, .scene-blocked     .center-ring-icon { --ring: var(--heat-3); }
   .scene-standby     .center-ring, .scene-standby     .center-ring-icon { --ring: var(--heat-3); }
   .scene-unreachable .center-ring, .scene-unreachable .center-ring-icon { --ring: var(--faint); }
   .scene-boot        .center-ring, .scene-boot        .center-ring-icon { --ring: var(--faint); }
@@ -601,6 +603,7 @@ const Scene = Object.freeze({
   SETUP:        'setup',
   PAIR:         'pair',
   OFF:          'off',
+  BLOCKED:      'blocked',
   STANDBY:      'standby',
   ON:           'on',
   POWERING:     'powering',
@@ -712,7 +715,8 @@ function bootMock() {
   S.battery = MOCK_BATTERY;
   S.healthDetails = MOCK_HEALTH_DETAILS;
 
-  if (MOCK_STATE === 'off') { S.health = { ...MOCK_HEALTH, ble_connected: false, speaker_state: 'off' }; S.battery = null; }
+  if (MOCK_STATE === 'off') { S.health = { ...MOCK_HEALTH, ble_connected: false, speaker_state: 'off', audio_ready: false }; S.battery = null; }
+  if (MOCK_STATE === 'blocked') { S.health = { ...MOCK_HEALTH, ble_connected: false, speaker_state: 'off' }; S.battery = null; }
   if (MOCK_STATE === 'standby') { S.health = { ...MOCK_HEALTH, speaker_state: 'standby' }; S.battery = null; }
   if (MOCK_STATE === 'powering') {
     S.health = { ...MOCK_HEALTH, ble_connected: false, speaker_state: 'off' };
@@ -792,7 +796,21 @@ function deriveScene() {
     // sendPower, cleared once speaker_state moves off 'off') tells the two
     // apart so this expected, self-inflicted gap doesn't show the "can't
     // reach the speaker, plug it in" copy.
-    return S.powerPending ? Scene.POWERING : Scene.OFF;
+    if (S.powerPending) return Scene.POWERING;
+    // audio_ready proves the speaker is powered (the A2DP link is up) even
+    // though its BLE control channel can't be reached — usually another
+    // device (a phone's JBL app) is holding it. Telling the user the
+    // speaker is "powered off, plug it in" would be flatly wrong.
+    //
+    // Known transient: when the speaker genuinely powers off, BLE drops
+    // (speaker_state 'off') a moment before AudioService notices the A2DP
+    // teardown, so this can flash BLOCKED for a second or two before
+    // settling on OFF. The window is deliberately kept short daemon-side:
+    // _recheck_audio_on_standby nudges an immediate A2DP recheck on every
+    // speaker_state transition away from 'on' (covered by
+    // test_audio_standby_recheck.py).
+    if (S.health.audio_ready) return Scene.BLOCKED;
+    return Scene.OFF;
   }
   if (!S.audio || !S.audio.address) return Scene.PAIR;
   if (S.health.speaker_state === 'standby') return Scene.STANDBY;
@@ -818,6 +836,7 @@ function mountScene(scene) {
     case Scene.SETUP:       root.innerHTML = setupSceneHTML(); wireSetupScene(); break;
     case Scene.PAIR:        root.innerHTML = pairSceneHTML(); break;
     case Scene.OFF:         root.innerHTML = centerSceneHTML('off'); break;
+    case Scene.BLOCKED:     root.innerHTML = centerSceneHTML('blocked'); break;
     case Scene.STANDBY:     root.innerHTML = centerSceneHTML('standby'); break;
     case Scene.POWERING:    root.innerHTML = centerSceneHTML('powering'); break;
     case Scene.ON:          root.innerHTML = onSceneHTML(); break;
@@ -842,6 +861,10 @@ const CENTER_COPY = {
   off: {
     icon: 'i-plug', title: 'Speaker is powered off',
     body: "Companion can't reach the speaker. Plug it into power and switch it on — it will reconnect automatically.",
+  },
+  blocked: {
+    icon: 'i-plug', title: "Speaker is on, but can't be controlled",
+    body: 'The speaker is powered and audio is connected, but its Bluetooth control channel is busy — usually another device is connected to it, like the JBL app on a phone. Close that app or turn off its Bluetooth, and this page will reconnect automatically. Still stuck after a few minutes? Unplug the speaker’s power cable for 10 seconds and plug it back in — its Bluetooth can get stuck in a way only a full power cycle clears (the power button alone isn’t enough, standby keeps its Bluetooth running).',
   },
   standby: {
     icon: 'i-power', title: 'Speaker is asleep',
@@ -878,7 +901,7 @@ function centerSceneHTML(kind) {
           <p class="center-body" style="margin-top:8px">${c.body}</p>
         </div>
         ${c.action ? `<button class="btn btn-heat" id="standby-power-btn" data-action="power-on">Turn speaker on</button>` : ''}
-        ${(kind === 'off' || kind === 'standby') ? `<div class="scene-footer-link"><span class="btn-link" data-action="open-health">Health &amp; settings</span></div>` : ''}
+        ${(kind === 'off' || kind === 'blocked' || kind === 'standby') ? `<div class="scene-footer-link"><span class="btn-link" data-action="open-health">Health &amp; settings</span></div>` : ''}
       </div>
     </div>`;
 }

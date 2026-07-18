@@ -130,3 +130,34 @@ def test_public_api_exposes_no_bleak_types() -> None:
         obj = getattr(bt, name)
         module = getattr(obj, "__module__", "")
         assert not module.startswith("bleak"), f"{name} leaks a bleak type from {module}"
+
+
+async def test_discover_skips_bluez_classic_device_object(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The bonded A2DP (BR/EDR) device object carries the PartyBox name but a
+    ``public`` BlueZ address type — it has no control GATT service and must
+    not become a connect candidate. The LE control advert uses a rotating
+    private (``random``) address and must survive the filter, as must devices
+    from backends that don't expose BlueZ props at all."""
+    classic = SimpleNamespace(
+        address="50:1B:6A:14:FD:1D",
+        name="JBL PartyBox 520",
+        details={"props": {"AddressType": "public"}},
+    )
+    le = SimpleNamespace(
+        address="72:29:68:93:69:AE",
+        name="JBL PartyBox 520",
+        details={"props": {"AddressType": "random"}},
+    )
+    no_props = _device("AA", "JBL PartyBox 310")  # non-BlueZ backend shape
+    _patch_discover(
+        monkeypatch,
+        {
+            "classic": (classic, _adv(rssi=-30)),
+            "le": (le, _adv(rssi=-50)),
+            "bare": (no_props, _adv(rssi=-60)),
+        },
+    )
+    candidates = await Scanner.discover()
+    assert [c.address for c in candidates] == ["72:29:68:93:69:AE", "AA"]

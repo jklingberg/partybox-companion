@@ -139,6 +139,66 @@ async def test_scans_are_skipped_while_pairing_is_active() -> None:
         await task
 
 
+async def test_streaming_relaxes_cadence_but_scans_continue() -> None:
+    # While streaming_fn reports True the loop must pace itself at
+    # streaming_interval (interval would stall this test) — and must keep
+    # scanning at all: "playing but rendering silence because another source
+    # holds the speaker" is the flagship state this service exists to expose.
+    scan = _ScriptedScan([FDDF_PHONE_CONNECTED, FDDF_PHONE_CONNECTED, FDDF_PHONE_CONNECTED])
+
+    async def streaming() -> bool:
+        return True
+
+    service = AudioFocusService(
+        lambda: _ADDRESS,
+        lambda: False,
+        scan_fn=scan,
+        interval=30.0,
+        streaming_fn=streaming,
+        streaming_interval=0.01,
+    )
+    done = asyncio.Event()
+
+    async def watch() -> None:
+        await _wait_for_focus(service, AudioFocus.CONTESTED)
+        while len(scan.calls) < 2:  # a second scan proves the sleep was 0.01
+            await asyncio.sleep(0.005)
+        done.set()
+
+    watcher = asyncio.create_task(watch())
+    await _drive(service, done)
+    await watcher
+    assert service.focus is AudioFocus.CONTESTED
+    assert len(scan.calls) >= 2
+
+
+async def test_not_streaming_uses_normal_cadence() -> None:
+    scan = _ScriptedScan([FDDF_COMPANION_ONLY, FDDF_COMPANION_ONLY])
+
+    async def streaming() -> bool:
+        return False
+
+    service = AudioFocusService(
+        lambda: _ADDRESS,
+        lambda: False,
+        scan_fn=scan,
+        interval=0.01,
+        streaming_fn=streaming,
+        streaming_interval=30.0,  # would stall the test if wrongly chosen
+    )
+    done = asyncio.Event()
+
+    async def watch() -> None:
+        while len(scan.calls) < 2:
+            await asyncio.sleep(0.005)
+        done.set()
+
+    watcher = asyncio.create_task(watch())
+    await _drive(service, done)
+    await watcher
+    assert len(scan.calls) >= 2
+
+
 async def test_subscribe_delivers_current_state_first() -> None:
     service = AudioFocusService(lambda: None, lambda: False, scan_fn=_ScriptedScan([]))
     queue = service.subscribe()
