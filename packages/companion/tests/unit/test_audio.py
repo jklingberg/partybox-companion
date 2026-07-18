@@ -27,6 +27,7 @@ from companion.services.audio import (
     _FLAP_COOLDOWN,
     _FLAP_LIMIT,
     _FLAP_WINDOW,
+    _STANDBY_RECHECK,
     AudioReadyChanged,
     AudioService,
     AudioStatus,
@@ -977,3 +978,135 @@ async def test_retry_now_interrupts_failure_backoff_as_strong_signal() -> None:
     await task
     assert woken_by_retry is True
     assert elapsed < 1.0
+
+
+# ---------------------------------------------------------------------------
+# run() — standby gate
+# ---------------------------------------------------------------------------
+
+
+async def test_run_standby_gate_holds_off_connect() -> None:
+    """While standby_fn reports the speaker asleep, run() must not page it:
+    no _connect() subprocess, just a _STANDBY_RECHECK wait. A page to a
+    standby speaker always fails (err:'br-connection-unknown') and each
+    attempt emits kernel noise + steals radio time from the BLE link
+    (2026-07-18 deep dive)."""
+    svc = AudioService(
+        AudioSettings(sink_address="AA:BB:CC:DD:EE:FF"), speaker_state_fn=lambda: "standby"
+    )
+
+    exec_calls: list[object] = []
+
+    async def fake_exec(*args: object, **kwargs: object) -> MagicMock:
+        exec_calls.append(args)
+        return _mock_proc(b"false")  # _is_connected() → not connected
+
+    retry_calls: list[float] = []
+
+    async def fake_wait_retry(delay: float, *, interrupt_on_recheck: bool = False) -> bool:
+        retry_calls.append(delay)
+        raise asyncio.CancelledError
+
+    with (
+        patch("companion.services.audio.asyncio.create_subprocess_exec", side_effect=fake_exec),
+        patch.object(svc, "_wait_retry", side_effect=fake_wait_retry),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await svc.run()
+
+    assert len(exec_calls) == 1  # the connectivity check only — no connect attempt
+    assert retry_calls == [_STANDBY_RECHECK]
+
+
+async def test_run_standby_gate_resets_retry_state() -> None:
+    """Entering the standby gate must clear the failure/flap ladders so a
+    wake-up retry starts fresh instead of walking into a cool-down — standby
+    is an expected state, not a failure."""
+    svc = AudioService(
+        AudioSettings(sink_address="AA:BB:CC:DD:EE:FF"), speaker_state_fn=lambda: "standby"
+    )
+    svc._consecutive_failures = _FAILURE_LIMIT - 1
+    svc._flap_count = _FLAP_LIMIT
+
+    retry_calls: list[float] = []
+
+    async def fake_exec(*args: object, **kwargs: object) -> MagicMock:
+        return _mock_proc(b"false")
+
+    async def fake_wait_retry(delay: float, *, interrupt_on_recheck: bool = False) -> bool:
+        retry_calls.append(delay)
+        raise asyncio.CancelledError
+
+    with (
+        patch("companion.services.audio.asyncio.create_subprocess_exec", side_effect=fake_exec),
+        patch.object(svc, "_wait_retry", side_effect=fake_wait_retry),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await svc.run()
+
+    # Gate won over the pending flap cool-down and cleared both ladders.
+    assert retry_calls == [_STANDBY_RECHECK]
+    assert svc._consecutive_failures == 0
+    assert svc._flap_count == 0
+
+
+async def test_run_standby_gate_open_when_awake() -> None:
+    """A non-standby state must leave the connect path untouched."""
+    svc = AudioService(
+        AudioSettings(sink_address="AA:BB:CC:DD:EE:FF"), speaker_state_fn=lambda: "on"
+    )
+
+    # check → connect → post-connect check, as in test_run_connects_when_not_connected
+    call_results = [_mock_proc(b"false"), _mock_proc(b""), _mock_proc(b"false")]
+
+    async def fake_exec(*args: object, **kwargs: object) -> MagicMock:
+        return call_results.pop(0)
+
+    retry_calls: list[float] = []
+
+    async def fake_wait_retry(delay: float, *, interrupt_on_recheck: bool = False) -> bool:
+        retry_calls.append(delay)
+        raise asyncio.CancelledError
+
+    with (
+        patch("companion.services.audio.asyncio.create_subprocess_exec", side_effect=fake_exec),
+        patch.object(svc, "_wait_retry", side_effect=fake_wait_retry),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await svc.run()
+
+    assert call_results == []  # all three subprocess stages ran
+    assert retry_calls == [10.0]  # _RETRY_BASE — the normal failure wait
+
+
+async def test_run_standby_gate_logs_entry_once(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The gate logs on entry, not on every 300s re-evaluation — an overnight
+    standby must not repeat the hold-off line all night."""
+    svc = AudioService(
+        AudioSettings(sink_address="AA:BB:CC:DD:EE:FF"), speaker_state_fn=lambda: "standby"
+    )
+
+    async def fake_exec(*args: object, **kwargs: object) -> MagicMock:
+        return _mock_proc(b"false")
+
+    waits = 0
+
+    async def fake_wait_retry(delay: float, *, interrupt_on_recheck: bool = False) -> bool:
+        nonlocal waits
+        waits += 1
+        if waits >= 3:  # three full gate cycles, then stop
+            raise asyncio.CancelledError
+        return False
+
+    with (
+        patch("companion.services.audio.asyncio.create_subprocess_exec", side_effect=fake_exec),
+        patch.object(svc, "_wait_retry", side_effect=fake_wait_retry),
+        caplog.at_level("INFO", logger="companion.services.audio"),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await svc.run()
+
+    holds = [r for r in caplog.records if "holding off connect attempts" in r.message]
+    assert len(holds) == 1  # entered once, re-evaluated silently

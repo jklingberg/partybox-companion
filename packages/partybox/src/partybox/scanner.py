@@ -18,9 +18,19 @@ results to :class:`~partybox.device.PartyBoxDevice` instances ready to connect.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from partybox.bluetooth.scanner import DEFAULT_SCAN_TIMEOUT
 from partybox.bluetooth.scanner import Scanner as _BleScanner
 from partybox.device.partybox import PartyBoxDevice
+
+
+@dataclass(frozen=True)
+class ScanResult:
+    """Result of :meth:`Scanner.find_with_presence` — see that method."""
+
+    device: PartyBoxDevice | None
+    beacon_seen: bool
 
 
 class Scanner:
@@ -57,3 +67,18 @@ class Scanner:
         """
         candidates = await _BleScanner.discover(timeout=timeout)
         return [PartyBoxDevice(c) for c in candidates]
+
+    @staticmethod
+    async def find_with_presence(*, timeout: float = DEFAULT_SCAN_TIMEOUT) -> ScanResult:
+        """Like :meth:`find`, but also reports whether a PartyBox-family
+        device's beacon was seen even when no connectable candidate was —
+        see :class:`partybox.bluetooth.scanner.DiscoveryResult`. Lets a caller
+        distinguish "genuinely off/out of range" from "on, but its control
+        channel isn't reachable right now" without any extra scan.
+
+        Raises:
+            DiscoveryError: if the BLE scan itself cannot be performed.
+        """
+        result = await _BleScanner.discover_with_presence(timeout=timeout)
+        device = PartyBoxDevice(result.candidates[0]) if result.candidates else None
+        return ScanResult(device=device, beacon_seen=result.beacon_seen)

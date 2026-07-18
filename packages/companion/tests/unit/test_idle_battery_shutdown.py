@@ -33,7 +33,7 @@ class _FakeClock:
 
 def _snapshot(state: str, on_mains: bool | None = None) -> StatusSnapshot:
     """Build a StatusSnapshot whose derived speaker_state is *state*."""
-    if state == "off":
+    if state in ("off", "unreachable"):
         return StatusSnapshot(
             connected=False,
             address=None,
@@ -42,6 +42,7 @@ def _snapshot(state: str, on_mains: bool | None = None) -> StatusSnapshot:
             battery_status=None,
             has_battery=False,
             speaker_awake=True,
+            beacon_seen=(state == "unreachable"),
         )
     charging_status = (
         None
@@ -282,6 +283,68 @@ async def test_does_not_retrigger_after_first_shutdown(clock: _FakeClock) -> Non
     power_off.assert_called_once()
 
     clock.now = main_module._STANDBY_GRACE_SECONDS + 10000.0
+    await _settle()
+    power_off.assert_called_once()
+
+    await _cancel(task)
+
+
+async def test_unreachable_uses_standby_grace_not_off_grace(clock: _FakeClock) -> None:
+    """'unreachable' (BLE down, but the speaker's beacon confirms it's still
+    powered — 2026-07-18) must be judged as generously as 'standby', not
+    the short 'off' threshold: the beacon is exactly the confirmation that
+    would otherwise be missing, so there's no reason to treat it more
+    urgently than a speaker we know is merely asleep.
+
+    Starts from a confirmed-on-battery "standby" reading — like "off",
+    "unreachable" is disconnected and so never carries a live
+    charging_status of its own; last_known_on_battery must come from a
+    prior confirmed reading (see test_never_triggers_on_cold_off_with_no_
+    prior_confirmed_battery for what happens without one)."""
+    manager = MagicMock()
+    manager.snapshot = _snapshot("standby", on_mains=False)
+    power_off = AsyncMock()
+
+    task = await _run_watcher(manager, power_off)
+    await _settle()
+
+    manager.snapshot = _snapshot("unreachable")
+    # Past the short off-state threshold, but well under the standby one —
+    # must NOT have fired yet.
+    clock.now = main_module._OFF_STATE_GRACE_SECONDS + 30.0
+    await _settle()
+    power_off.assert_not_called()
+
+    clock.now = main_module._STANDBY_GRACE_SECONDS + 5.0
+    await _settle()
+    power_off.assert_called_once()
+
+    await _cancel(task)
+
+
+async def test_unreachable_to_off_transition_does_not_reset_idle_clock(
+    clock: _FakeClock,
+) -> None:
+    """The idle clock is one continuous counter across state transitions
+    (matching the existing standby->off behavior) — losing the beacon too
+    (unreachable -> off) must not restart it from zero."""
+    manager = MagicMock()
+    manager.snapshot = _snapshot("standby", on_mains=False)
+    power_off = AsyncMock()
+
+    task = await _run_watcher(manager, power_off)
+    await _settle()
+
+    manager.snapshot = _snapshot("unreachable")
+    long_idle = main_module._STANDBY_GRACE_SECONDS - 100.0
+    clock.now = long_idle
+    await _settle()
+    power_off.assert_not_called()
+
+    # Beacon lost too — total idle time already dwarfs the short off-state
+    # threshold, so this must fire on essentially the next tick.
+    manager.snapshot = _snapshot("off")
+    clock.now = long_idle + main_module._OFF_STATE_GRACE_SECONDS + 1.0
     await _settle()
     power_off.assert_called_once()
 

@@ -29,15 +29,17 @@ class DisconnectedEvent:
 class SpeakerStateChangedEvent:
     """Emitted when the speaker's coarse power state changes.
 
-    ``state`` mirrors :attr:`StatusSnapshot.speaker_state` — ``"off"``
-    (BLE disconnected), ``"standby"`` (BLE connected, speaker asleep), or
-    ``"on"`` (BLE connected, speaker awake). Distinct from
+    ``state`` mirrors :attr:`StatusSnapshot.speaker_state` — ``"off"`` (BLE
+    disconnected, no beacon seen either), ``"unreachable"`` (BLE
+    disconnected, but the speaker's FDDF beacon proves it's still powered),
+    ``"standby"`` (BLE connected, speaker asleep), or ``"on"`` (BLE
+    connected, speaker awake). Distinct from
     :class:`ConnectedEvent`/:class:`DisconnectedEvent`: those track the BLE
     link itself, while this tracks the on/standby transition that can happen
     *within* an established connection (see ADR/manager.py `_poll_battery`).
     """
 
-    state: Literal["off", "standby", "on"]
+    state: Literal["off", "unreachable", "standby", "on"]
     type: Literal["speaker_state_changed"] = "speaker_state_changed"
 
 

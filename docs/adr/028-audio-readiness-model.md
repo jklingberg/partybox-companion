@@ -353,3 +353,56 @@ The naive next step — grant `companion` a new sudoers rule for `hciconfig hci0
 The considered alternative: a small, narrowly-scoped **privileged recovery broker** — a separate root-owned component (or a tightly constrained systemd unit invoked via socket activation, a D-Bus method, or similar) that `AudioService` *requests* recovery from, rather than performing privileged operations itself. `AudioService` would signal "I believe the controller is wedged" through a narrow, auditable channel; the broker — not the appliance process — decides whether and how to act, and is the only component whose privilege footprint needs to grow. This keeps today's privilege model intentionally simple (no new grants) while leaving a clear path to runtime self-healing if it's ever prioritized.
 
 This is recorded as a **possible future direction, not a plan** — whether runtime self-healing is worth building (vs. accepting that a wedged controller requires an operator or the existing `Restart=on-failure` / manual restart path) is a product decision, not a missing implementation. No code changes follow from this note.
+
+## Follow-up (2026-07-18): "Unexpected continuation frame (len 0)" reframed — not UART corruption, and the periodicity was our own retry ladder
+
+A dedicated deep dive into the recurring `Bluetooth: Unexpected continuation
+frame (len 0)` kernel line (Pi 5, BCM4345C0, 151 occurrences over a ~5 h boot,
+bursting on a conspicuous ~5–7 min period) overturned the transport-corruption
+framing this ADR previously used for it:
+
+- **The message is not an H5/UART framing error at all.** In kernel 6.6 the
+  string exists only in `net/bluetooth/l2cap_core.c` (`l2cap_recv_acldata`,
+  `case ACL_CONT`): a *well-formed* ACL packet with the continuation flag and
+  length 0 arrived with no L2CAP reassembly pending — logged and dropped. It
+  is not emitted by `hci_h5.c`, and the Pi's BT UART runs `hci_bcm` with H4
+  framing (`h4_recv_buf`), not H5 three-wire, so "H5 framing desync" was a
+  misdiagnosis on two counts. (This ADR's earlier "a known BCM4345/H5
+  three-wire UART framing defect" characterization is hereby corrected.)
+- **Every occurrence tracks BR/EDR link activity toward the speaker.**
+  Correlating all 151 occurrences against the companion log: 148 fell within
+  15 s of an outgoing A2DP `ConnectProfile` attempt (138 within 5 s); the
+  three outliers were boot-time adapter init, an A2DP stream start
+  (`MediaTransport1` fd acquisition +3 s), and an incoming connect when the
+  speaker woke and paged the Pi itself. Zero ambient occurrences despite
+  all-day connected BLE GATT traffic. The empty ACL_CONT frame is a
+  controller/speaker quirk of Classic page/link setup — cosmetic noise.
+- **The ~5–7 min "corruption periodicity" was `AudioService`'s own retry
+  ladder** paging a speaker in standby (which refuses BR/EDR with
+  `err:'br-connection-unknown'` every time): 10+20+40+60+60 s to
+  `_FAILURE_LIMIT`, then the 300 s `_FAILURE_COOLDOWN`, ≈7.5 min per cycle.
+
+**Fix: standby gate.** `AudioService` now takes a `standby_fn` (wired in
+`companion.__main__` to `DeviceManager.snapshot.speaker_state == "standby"`).
+While the speaker is BLE-connected but failing liveness probes — the one
+state where a page provably cannot succeed — the run loop holds off outgoing
+connect attempts entirely (`_STANDBY_RECHECK`, 300 s safety-net
+re-evaluation) instead of walking the ladder; entering the gate resets the
+failure/flap counters so the wake-up retry starts fresh. Wake-up remains
+event-driven (`retry_now` from `_recheck_audio_on_standby`, or the speaker
+paging us). `"off"`/`"unreachable"` deliberately do **not** gate: BLE being
+down is not proof the speaker is unreachable over BR/EDR, and gating there
+could delay audio recovery behind a Pi-side BLE fault.
+
+**Validated on hardware (2026-07-18):** a continuous 15-minute BLE-connected
+standby window (three consecutive gate holds, 17:42–17:57) produced zero
+A2DP connect attempts and zero kernel occurrences, versus ~2 full retry
+ladders with error bursts for any comparable window before the gate.
+Remaining occurrences cluster only in non-gated `"unreachable"` windows, as
+designed.
+
+Implication for the deferred item above ("investigate whether a newer
+linux-firmware/kernel resolves the UART errors"): dropped — there is no
+transport defect to resolve. The line is expected, bounded noise whenever
+Classic connect churn happens, and the standby gate removes the dominant
+source of that churn.

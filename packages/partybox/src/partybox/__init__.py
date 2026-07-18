@@ -46,7 +46,7 @@ from partybox.protocol.messages import (
     BatteryStatusResponse,
     ChargingStatus,
 )
-from partybox.scanner import Scanner
+from partybox.scanner import Scanner, ScanResult
 
 __all__ = [
     "BatteryCapability",
@@ -61,6 +61,7 @@ __all__ = [
     "NotConnectedError",
     "PartyBoxDevice",
     "PowerCapability",
+    "ScanResult",
     "Scanner",
     "VolumeCapability",
     "__version__",

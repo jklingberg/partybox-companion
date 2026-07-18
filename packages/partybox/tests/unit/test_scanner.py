@@ -18,14 +18,23 @@ from partybox.bluetooth import (
     Scanner,
 )
 from partybox.bluetooth import bleak_transport as bleak_mod
+from partybox.bluetooth.scanner import HARMAN_FDDF_UUID
+
+# Real PartyBox 520 FDDF service-data capture — see
+# docs/reverse-engineering/protocol.md § "FDDF Advertisement".
+_REAL_FDDF_PAYLOAD = bytes.fromhex("202101d453e2c70c05586b501b6a14fd1d00010000000000")
 
 
 def _device(address: str, name: str | None) -> SimpleNamespace:
     return SimpleNamespace(address=address, name=name)
 
 
-def _adv(local_name: str | None = None, rssi: int | None = None) -> SimpleNamespace:
-    return SimpleNamespace(local_name=local_name, rssi=rssi)
+def _adv(
+    local_name: str | None = None,
+    rssi: int | None = None,
+    service_data: dict[str, bytes] | None = None,
+) -> SimpleNamespace:
+    return SimpleNamespace(local_name=local_name, rssi=rssi, service_data=service_data or {})
 
 
 def _patch_discover(monkeypatch: pytest.MonkeyPatch, result: object) -> None:
@@ -161,3 +170,112 @@ async def test_discover_skips_bluez_classic_device_object(
     )
     candidates = await Scanner.discover()
     assert [c.address for c in candidates] == ["72:29:68:93:69:AE", "AA"]
+
+
+async def test_discover_with_presence_reports_beacon_without_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The speaker's FDDF beacon can be seen even when no connectable
+    (named) candidate is found — e.g. the control advert is currently
+    suppressed but the beacon, which broadcasts independently while
+    powered, still is. beacon_seen must reflect that."""
+    _patch_discover(
+        monkeypatch,
+        {
+            "beacon-only": (
+                _device("AA:BB:CC:DD:EE:FF", None),
+                _adv(rssi=-50, service_data={HARMAN_FDDF_UUID: _REAL_FDDF_PAYLOAD}),
+            ),
+        },
+    )
+    result = await Scanner.discover_with_presence()
+    assert result.candidates == []
+    assert result.beacon_seen is True
+
+
+async def test_discover_with_presence_false_when_nothing_seen(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_discover(monkeypatch, {"a": (_device("AA", "Laptop"), _adv(rssi=-40))})
+    result = await Scanner.discover_with_presence()
+    assert result.candidates == []
+    assert result.beacon_seen is False
+
+
+async def test_discover_with_presence_true_alongside_a_real_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The common case: the named connectable advert AND the beacon are both
+    seen in the same scan (both come from the same BleakScanner.discover()
+    call, at no extra radio cost)."""
+    _patch_discover(
+        monkeypatch,
+        {
+            "a": (
+                _device("AA:BB:CC:DD:EE:FF", "JBL PartyBox 520"),
+                _adv(rssi=-50, service_data={HARMAN_FDDF_UUID: _REAL_FDDF_PAYLOAD}),
+            ),
+        },
+    )
+    result = await Scanner.discover_with_presence()
+    assert len(result.candidates) == 1
+    assert result.beacon_seen is True
+
+
+async def test_discover_unaffected_by_beacon_presence(monkeypatch: pytest.MonkeyPatch) -> None:
+    """discover() (no presence) must behave exactly as before — beacon-only
+    entries with no connectable name still contribute nothing to it."""
+    _patch_discover(
+        monkeypatch,
+        {
+            "beacon-only": (
+                _device("AA", None),
+                _adv(rssi=-50, service_data={HARMAN_FDDF_UUID: _REAL_FDDF_PAYLOAD}),
+            ),
+        },
+    )
+    assert await Scanner.discover() == []
+
+
+async def test_find_with_presence_wraps_top_level_device(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The top-level partybox.Scanner.find_with_presence() wraps the
+    candidate into a PartyBoxDevice, same as find(), while still surfacing
+    beacon_seen."""
+    import partybox
+
+    _patch_discover(
+        monkeypatch,
+        {
+            "a": (
+                _device("AA:BB:CC:DD:EE:FF", "JBL PartyBox 520"),
+                _adv(rssi=-50, service_data={HARMAN_FDDF_UUID: _REAL_FDDF_PAYLOAD}),
+            ),
+        },
+    )
+    result = await partybox.Scanner.find_with_presence()
+    # PartyBoxDevice.address is only populated after connect() (ADR-015 —
+    # the rotating private address isn't meant to be read pre-connection),
+    # so this only proves the wrapping happened, not the specific address.
+    assert result.device is not None
+    assert result.beacon_seen is True
+
+
+async def test_find_with_presence_beacon_seen_without_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The exact scenario this feature exists for: no connectable candidate,
+    but the beacon proves the speaker is still powered."""
+    import partybox
+
+    _patch_discover(
+        monkeypatch,
+        {
+            "beacon-only": (
+                _device("AA", None),
+                _adv(rssi=-50, service_data={HARMAN_FDDF_UUID: _REAL_FDDF_PAYLOAD}),
+            ),
+        },
+    )
+    result = await partybox.Scanner.find_with_presence()
+    assert result.device is None
+    assert result.beacon_seen is True
