@@ -98,6 +98,18 @@ _WEDGE_WINDOW = 600.0
 # while bluetoothd re-initializes right after a recovery power-cycle.
 _WEDGE_SCAN_ERRORS = 5
 
+# Consecutive *clean-but-empty* scans before the injected stale-connection
+# reclaim runs. An empty scan usually just means the speaker is off — but it
+# is also the only Pi-side symptom of an orphaned LE connection: when a
+# previous companion process died without disconnecting (crash, SIGKILL,
+# power loss, or a shutdown path that never ran), bluetoothd keeps the link
+# up, the speaker stops advertising its connectable set, and every scan comes
+# back clean-but-empty indefinitely (observed 2026-07-17: 60+ empty scans
+# over 30+ minutes while the Pi's own adapter held the stale link). Three
+# cycles keeps the reclaim check off the fast path while still healing the
+# orphan within roughly a minute of a cold start.
+_RECLAIM_EMPTY_SCANS = 3
+
 # Connect failures within this window after a power command are not counted:
 # the speaker resets its own BLE stack for ~15-17 s after every power on/off
 # (ADR-034), during which dense "could not connect" failures are expected and
@@ -188,6 +200,7 @@ class DeviceManager:
         settings: SpeakerSettings,
         *,
         adapter_recover_fn: Callable[[], Awaitable[bool]] | None = None,
+        stale_reclaim_fn: Callable[[], Awaitable[bool]] | None = None,
     ) -> None:
         """*adapter_recover_fn*, when provided, is called after
         ``_WEDGE_CONNECT_FAILURES`` dense connect failures (see
@@ -196,6 +209,16 @@ class DeviceManager:
         recovery action completed. ``None`` (the default, and standalone
         partyboxd's configuration) disables self-healing; the manager then
         just keeps retrying with backoff as before.
+
+        *stale_reclaim_fn*, when provided, disconnects an orphaned LE link to
+        the speaker left behind by a previous process. It is consulted after
+        ``_RECLAIM_EMPTY_SCANS`` consecutive clean-but-empty scans (the
+        orphan suppresses advertising) and on every connect failure before it
+        counts toward wedge recovery (the orphan holds the speaker's single
+        control slot while it keeps advertising — see
+        :meth:`_note_connect_failure`). It returns True if it disconnected
+        something — the manager then retries without backoff, since the
+        speaker becomes connectable again as soon as the stale link drops.
         """
         self._settings = settings
         self._snapshot: StatusSnapshot = _DISCONNECTED
@@ -210,6 +233,10 @@ class DeviceManager:
         #: `_RECONNECT_MAX`, resets to `settings.reconnect_delay` on success.
         self._retry_delay = settings.reconnect_delay
         self._adapter_recover_fn = adapter_recover_fn
+        self._stale_reclaim_fn = stale_reclaim_fn
+        #: Consecutive clean-but-empty scans (reset by any scan that finds
+        #: the speaker; see _note_empty_scan).
+        self._empty_scans = 0
         #: Dense connect failures since the last success (see _WEDGE_WINDOW).
         self._connect_failures = 0
         self._last_connect_failure = 0.0
@@ -557,6 +584,15 @@ class DeviceManager:
         ):
             log.debug("connect failure inside post-power-command grace window; not counted")
             return
+        # An orphaned LE link can also express as connect refusal rather than
+        # absent advertising: the speaker keeps advertising fresh rotating
+        # addresses while its single control slot is held by the stale link
+        # (observed 2026-07-18), so every connect fails. That is not
+        # controller-wedge evidence — reclaiming the stale link fixes it,
+        # while counting it toward _WEDGE_CONNECT_FAILURES escalates to an
+        # adapter power-cycle that drops live audio for nothing.
+        if await self._reclaim_stale_link():
+            return
         if now - self._last_connect_failure > _WEDGE_WINDOW:
             self._connect_failures = 0
         self._last_connect_failure = now
@@ -566,6 +602,49 @@ class DeviceManager:
                 f"{self._connect_failures} dense connect failures while scanning still works"
                 " (suspected controller wedge)"
             )
+
+    async def _note_empty_scan(self) -> None:
+        """Track a clean scan that found nothing; reclaim a stale LE link on a run.
+
+        A connected LE PartyBox device on our own adapter while this manager
+        holds no connection is stale by definition — any *other* holder of
+        the speaker's control channel (a phone running the JBL app, say)
+        never shows up on the Pi's adapter at all. The injected
+        *stale_reclaim_fn* checks for exactly that and disconnects it.
+        Harmless when the speaker is genuinely off: the check finds nothing
+        and the scan loop continues as before. Counting only *clean* empties
+        keeps this orthogonal to ``_note_scan_error`` (adapter unusable) and
+        ``_note_connect_failure`` (controller wedge).
+        """
+        if self._stale_reclaim_fn is None:
+            return
+        self._empty_scans += 1
+        if self._empty_scans < _RECLAIM_EMPTY_SCANS:
+            return
+        self._empty_scans = 0
+        await self._reclaim_stale_link()
+
+    async def _reclaim_stale_link(self) -> bool:
+        """Run the injected stale-link reclaim; True if it disconnected something.
+
+        On success the retry backoff is reset: the speaker's control slot is
+        free again, so the very next cycle should find and connect it.
+        Never raises — a failed reclaim just leaves the retry loop as it was.
+        """
+        if self._stale_reclaim_fn is None:
+            return False
+        try:
+            reclaimed = await self._stale_reclaim_fn()
+        except Exception as exc:
+            log.warning("stale-connection reclaim raised: %s", exc)
+            return False
+        if reclaimed:
+            log.warning(
+                "disconnected a stale LE connection to the speaker "
+                "(orphaned by a previous process); rescanning without backoff"
+            )
+            self._retry_delay = self._settings.reconnect_delay
+        return reclaimed
 
     async def _note_scan_error(self) -> None:
         """Track a scan that *errored* (as opposed to finding nothing).
@@ -631,6 +710,10 @@ class DeviceManager:
             await self._note_scan_error()
             return None
         self._scan_errors = 0
+        if device is None:
+            await self._note_empty_scan()
+        else:
+            self._empty_scans = 0
         return device
 
     async def _refresh(self, device: PartyBoxDevice) -> None:

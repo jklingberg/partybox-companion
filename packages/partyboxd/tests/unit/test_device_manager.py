@@ -652,3 +652,167 @@ async def test_completed_scan_resets_scan_error_count(monkeypatch: pytest.Monkey
     monkeypatch.setattr("partyboxd.device.manager.Scanner.find", _empty_scan)
     assert await manager._scan() is None
     assert manager._scan_errors == 0
+
+
+# ---------------------------------------------------------------------------
+# stale-LE-connection reclaim (orphaned link from a dead process)
+# ---------------------------------------------------------------------------
+
+
+async def test_empty_scans_trigger_stale_reclaim(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Three clean-but-empty scans invoke the injected reclaim exactly once,
+    then the counter starts over."""
+    calls: list[bool] = []
+
+    async def reclaim() -> bool:
+        calls.append(True)
+        return False
+
+    async def _empty_scan(*_: object, **__: object) -> None:
+        return None
+
+    monkeypatch.setattr("partyboxd.device.manager.Scanner.find", _empty_scan)
+    manager = DeviceManager(_settings(), stale_reclaim_fn=reclaim)
+    await manager._scan()
+    await manager._scan()
+    assert calls == []
+    await manager._scan()
+    assert calls == [True]
+    # Counter was reset — a single further empty scan must not re-trigger.
+    await manager._scan()
+    assert calls == [True]
+
+
+async def test_successful_reclaim_resets_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A reclaim that disconnected something resets the retry delay so the
+    now-advertising speaker is found on the next cycle."""
+
+    async def reclaim() -> bool:
+        return True
+
+    async def _empty_scan(*_: object, **__: object) -> None:
+        return None
+
+    monkeypatch.setattr("partyboxd.device.manager.Scanner.find", _empty_scan)
+    manager = DeviceManager(_settings(reconnect_delay=1.0), stale_reclaim_fn=reclaim)
+    manager._retry_delay = 32.0  # simulate prior backoff growth
+    for _ in range(3):
+        await manager._scan()
+    assert manager._retry_delay == 1.0
+
+
+async def test_found_speaker_resets_empty_scan_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A scan that finds the speaker restarts the empty-scan run, so ordinary
+    off-periods interleaved with reconnects never accumulate to a reclaim."""
+    calls: list[bool] = []
+
+    async def reclaim() -> bool:
+        calls.append(True)
+        return False
+
+    manager = DeviceManager(_settings(), stale_reclaim_fn=reclaim)
+    results: list[object | None] = [None, None, object(), None, None]
+
+    async def _scan_script(*_: object, **__: object) -> object | None:
+        return results.pop(0)
+
+    monkeypatch.setattr("partyboxd.device.manager.Scanner.find", _scan_script)
+    for _ in range(5):
+        await manager._scan()
+    assert calls == []
+
+
+async def test_reclaim_exception_is_swallowed(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def reclaim() -> bool:
+        raise RuntimeError("dbus exploded")
+
+    async def _empty_scan(*_: object, **__: object) -> None:
+        return None
+
+    monkeypatch.setattr("partyboxd.device.manager.Scanner.find", _empty_scan)
+    manager = DeviceManager(_settings(), stale_reclaim_fn=reclaim)
+    for _ in range(3):
+        assert await manager._scan() is None  # must not raise
+
+
+async def test_empty_scans_without_reclaim_fn_are_harmless(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Standalone partyboxd (no stale_reclaim_fn) just keeps scanning."""
+
+    async def _empty_scan(*_: object, **__: object) -> None:
+        return None
+
+    monkeypatch.setattr("partyboxd.device.manager.Scanner.find", _empty_scan)
+    manager = _make_manager()
+    for _ in range(10):
+        assert await manager._scan() is None  # must not raise
+
+
+async def test_scan_error_does_not_count_as_empty_scan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Erroring scans say nothing about orphaned links; only clean empties count."""
+    calls: list[bool] = []
+
+    async def reclaim() -> bool:
+        calls.append(True)
+        return False
+
+    async def _broken_scan(*_: object, **__: object) -> None:
+        raise RuntimeError("org.bluez.Error.NotReady")
+
+    monkeypatch.setattr("partyboxd.device.manager.Scanner.find", _broken_scan)
+    manager = DeviceManager(_settings(), stale_reclaim_fn=reclaim)
+    for _ in range(4):
+        await manager._scan()
+    assert calls == []
+
+
+async def test_connect_failure_with_stale_link_reclaims_instead_of_counting() -> None:
+    """A connect failure while an orphaned LE link exists must reclaim the
+    link and not count toward adapter recovery — the speaker refusing
+    connects because its control slot is held is not a controller wedge."""
+    recoveries: list[bool] = []
+    reclaims: list[bool] = []
+
+    async def recover() -> bool:
+        recoveries.append(True)
+        return True
+
+    async def reclaim() -> bool:
+        reclaims.append(True)
+        return True
+
+    manager = DeviceManager(
+        _settings(reconnect_delay=1.0),
+        adapter_recover_fn=recover,
+        stale_reclaim_fn=reclaim,
+    )
+    manager._retry_delay = 32.0
+    for _ in range(5):
+        await manager._note_connect_failure()
+    assert len(reclaims) == 5
+    assert recoveries == []
+    assert manager._connect_failures == 0
+    assert manager._retry_delay == 1.0
+
+
+async def test_connect_failures_still_count_when_nothing_to_reclaim() -> None:
+    """With no stale link present (reclaim returns False), dense connect
+    failures must still escalate to adapter recovery as before (ADR-039)."""
+    recoveries: list[bool] = []
+
+    async def recover() -> bool:
+        recoveries.append(True)
+        return True
+
+    async def reclaim() -> bool:
+        return False
+
+    manager = DeviceManager(_settings(), adapter_recover_fn=recover, stale_reclaim_fn=reclaim)
+    await manager._note_connect_failure()
+    await manager._note_connect_failure()
+    assert recoveries == []
+    await manager._note_connect_failure()
+    assert recoveries == [True]
