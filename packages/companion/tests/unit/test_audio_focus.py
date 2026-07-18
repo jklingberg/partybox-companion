@@ -206,3 +206,75 @@ async def test_subscribe_delivers_current_state_first() -> None:
     assert first.focus == "unknown"
     assert first.type == "audio_focus_changed"
     service.unsubscribe(queue)
+
+
+async def test_scans_are_skipped_while_ble_disconnected() -> None:
+    """The scan must be skipped OUTRIGHT (not merely paced) while
+    ble_connected_fn reports False — DeviceManager holding no connection
+    means it's actively scanning/connecting on the same adapter, and the
+    cheapest way to never contend with that on a resource-constrained Pi is
+    to not scan at all (see class docstring, 2026-07-18 investigation)."""
+    scan = _ScriptedScan([FDDF_COMPANION_ONLY])
+    service = AudioFocusService(
+        lambda: _ADDRESS, lambda: False, scan_fn=scan, interval=0.01, ble_connected_fn=lambda: False
+    )
+
+    task = asyncio.create_task(service.run())
+    await asyncio.sleep(0.05)
+    assert scan.calls == []
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+
+
+async def test_focus_frozen_not_decayed_while_ble_disconnected() -> None:
+    """Pausing must freeze the last reading, not walk it toward UNKNOWN —
+    that would defeat the purpose of keeping the last-known audio_focus
+    around for exactly the diagnostically useful moments (control link
+    down) the class docstring calls out."""
+    scan = _ScriptedScan([FDDF_PHONE_CONNECTED])
+    connected = True
+    service = AudioFocusService(
+        lambda: _ADDRESS,
+        lambda: False,
+        scan_fn=scan,
+        interval=0.01,
+        ble_connected_fn=lambda: connected,
+    )
+    done = asyncio.Event()
+
+    async def watch() -> None:
+        await _wait_for_focus(service, AudioFocus.CONTESTED)
+        done.set()
+
+    watcher = asyncio.create_task(watch())
+    await _drive(service, done)
+    await watcher
+    assert service.focus is AudioFocus.CONTESTED
+
+    # Now BLE goes down: run a few more cycles and confirm focus never moves.
+    connected = False
+    task = asyncio.create_task(service.run())
+    await asyncio.sleep(0.05)
+    assert service.focus is AudioFocus.CONTESTED
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+
+
+async def test_ble_connected_fn_none_never_gates() -> None:
+    """Omitting ble_connected_fn (older call sites / most existing tests)
+    must behave exactly as before — scanning is never gated by it."""
+    scan = _ScriptedScan([FDDF_COMPANION_ONLY, FDDF_COMPANION_ONLY])
+    service = AudioFocusService(lambda: _ADDRESS, lambda: False, scan_fn=scan, interval=0.01)
+    done = asyncio.Event()
+
+    async def watch() -> None:
+        while len(scan.calls) < 2:
+            await asyncio.sleep(0.005)
+        done.set()
+
+    watcher = asyncio.create_task(watch())
+    await _drive(service, done)
+    await watcher
+    assert len(scan.calls) >= 2

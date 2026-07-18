@@ -20,10 +20,11 @@ import logging
 import logging.config
 import os
 import time
-from collections.abc import Awaitable, Callable
-from contextlib import suppress
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager, suppress
 
 import uvicorn
+from fastapi import FastAPI
 from partyboxd.api import create_app as create_daemon_app
 from partyboxd.api.auth import make_auth_dependency
 from partyboxd.config import Settings as DaemonSettings
@@ -162,22 +163,34 @@ async def _forward_ble_volume(manager: DeviceManager, volume_state: VolumeState)
 
 
 async def _recheck_audio_on_standby(manager: DeviceManager, audio: AudioService) -> None:
-    """Nudge AudioService to re-check A2DP as soon as the speaker leaves "on".
+    """Keep AudioService in step with the speaker's power state.
 
     The BLE control link and the A2DP audio link are separate Bluetooth
     subsystems (see ``AudioService``'s module docstring), but in practice
-    they tend to drop together — the speaker going into standby is a strong
-    signal the audio link just went with it. Without this, the Portal's
-    "Bluetooth Audio" status can show a stale "connected" for up to
-    AudioService's 60s idle check interval after the speaker visibly went
-    idle. Runs until cancelled.
+    they track the same speaker, so its power transitions matter in both
+    directions:
+
+    - Leaving "on": the audio link almost certainly just dropped too, so
+      nudge a re-check (``recheck_now``) instead of letting the Portal show
+      a stale "connected" for up to AudioService's 60s idle interval.
+    - Entering "on": the speaker just woke up, so an A2DP connect is now
+      likely to succeed — fire ``retry_now`` to break out of any failure
+      back-off or cool-down accumulated while it was asleep. Without this,
+      powering the speaker on from the Portal right after a failure run
+      left it silent for up to the full 300s cool-down (observed
+      2026-07-18).
+
+    Runs until cancelled.
     """
     queue = manager.subscribe()
     try:
         while True:
             event = await queue.get()
-            if isinstance(event, SpeakerStateChangedEvent) and event.state != "on":
-                audio.recheck_now()
+            if isinstance(event, SpeakerStateChangedEvent):
+                if event.state == "on":
+                    audio.retry_now("speaker woke up")
+                else:
+                    audio.recheck_now()
     finally:
         manager.unsubscribe(queue)
 
@@ -316,6 +329,10 @@ async def _run(
             pairing.status.state in (PairingState.SCANNING, PairingState.PAIRING)
         ),
         streaming_fn=audio.transport_active,
+        # `manager` is assigned below — safe: this closure is only called
+        # from audio_focus.run(), well after _run() finishes constructing
+        # everything and hands off to the supervisor.
+        ble_connected_fn=lambda: manager.snapshot.connected,
     )
 
     # adapter_recover_fn lets the manager clear a wedged controller
@@ -337,12 +354,37 @@ async def _run(
     # registered by the time supervisor.run() starts.
     supervisor = Supervisor()
 
+    # Shutdown work MUST live in the ASGI lifespan, not after server.serve():
+    # uvicorn (0.29+) captures SIGTERM during serve() and re-raises it the
+    # moment serve() returns (Server.capture_signals → signal.raise_signal),
+    # which kills the process with the default disposition before any code
+    # after serve() can run. Our cleanup used to live exactly there — so on
+    # every systemd restart no service was cancelled, DeviceManager never
+    # disconnected, and bluetoothd kept the BLE control link alive as an
+    # orphan, after which the speaker stops advertising and every scan comes
+    # up empty (the wedge stale_reclaim_fn exists to break).
+    #
+    # supervisor_task is created after the app (it needs the assembled app's
+    # services registered first); the closure reads it at shutdown time.
+    supervisor_task: asyncio.Task[None] | None = None
+
+    @asynccontextmanager
+    async def _lifespan(_: FastAPI) -> AsyncIterator[None]:
+        try:
+            yield
+        finally:
+            if supervisor_task is not None:
+                supervisor_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await supervisor_task
+
     app = create_daemon_app(
         manager,
         daemon_settings,
         audio_ready_fn=lambda: audio.audio_ready,
         audio_focus_fn=lambda: audio_focus.focus.value,
         extra_event_sources=[audio, spotify, pairing, audio_focus],
+        lifespan=_lifespan,
     )
     app.include_router(make_portal_router(companion_settings, config_store))
     app.include_router(
@@ -394,9 +436,12 @@ async def _run(
     )
 
     supervisor_task = asyncio.create_task(supervisor.run(), name="supervisor")
+
     try:
         await server.serve()
     finally:
+        # Fallback for exits that never reach the lifespan (serve() raising
+        # during startup); a no-op when the lifespan shutdown already ran.
         supervisor_task.cancel()
         with suppress(asyncio.CancelledError):
             await supervisor_task

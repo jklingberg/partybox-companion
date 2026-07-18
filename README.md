@@ -78,7 +78,7 @@ See [docs/architecture.md](docs/architecture.md) for full design.
 
 1. Flash the appliance image to an SD card and boot the Raspberry Pi.
 2. Join the **`PartyBox Companion Setup`** WiFi network from your phone or laptop and pick your home WiFi in the captive portal. The setup network disappears while the Pi joins your WiFi — success and failure look the same from your device. If the setup network **reappears** after a minute, the join failed (usually a mistyped password): reconnect to it and the portal shows the reason so you can retry.
-3. Open the Companion Portal at `http://partybox.local` from a device on your home network. If the name doesn't resolve, use `http://partybox` or the Pi's IP address from your router's device list (it registers with hostname `partybox`).
+3. Open the Companion Portal at `http://partybox.local` from a device on your home network. **Neither this nor the fallback below is guaranteed to work on every network** — both depend on your router and device, not on anything the appliance controls, and either can stop resolving later even if it worked at first (a router reboot, guest WiFi, or a device without Bonjour/mDNS support are common causes — not an appliance fault). If it doesn't resolve, try `http://partybox` (works when your router auto-registers DHCP hostnames); if neither works, use the Pi's IP address from your router's device list — that always works and is worth noting down.
 4. **Pair the speaker.** The Portal shows a *Pair your speaker* screen until this is done: hold the Bluetooth button on the PartyBox until its LEDs flash (pairing mode), then tap **Start Pairing**. The scan can take up to 60 seconds. JBL's pairing window is short — put the speaker in pairing mode right before tapping the button.
 5. Done — the appliance now appears as **PartyBox Companion** in Spotify Connect and AirPlay device lists.
 
@@ -95,7 +95,8 @@ To run the appliance directly from a source checkout:
 COMPANION_PORT=80 uv run partybox-companion
 ```
 
-The Companion Portal is then accessible at `http://partybox.local`. Manage the
+The Companion Portal is then accessible at `http://partybox.local` (see the
+note on step 3 above if that doesn't resolve). Manage the
 appliance from there or via the [REST API](docs/api/v1.md).
 
 ## REST API
@@ -120,7 +121,8 @@ asyncio.run(main())
 ```
 
 ```bash
-# Or use the REST API
+# Or use the REST API — substitute http://partybox or the Pi's IP if
+# partybox.local doesn't resolve on your network (see Quick Start, step 3)
 curl http://partybox.local/api/v1/health
 curl -H "X-Api-Key: your-key" http://partybox.local/api/v1/speaker
 curl -X POST -H "X-Api-Key: your-key" http://partybox.local/api/v1/power/on

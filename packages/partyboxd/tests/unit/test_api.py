@@ -383,3 +383,32 @@ async def test_error_shape(
     assert "message" in detail, "missing 'message' key in detail"
     assert isinstance(detail["error"], str)
     assert isinstance(detail["message"], str)
+
+
+async def test_create_app_runs_provided_lifespan() -> None:
+    """A lifespan passed to create_app must actually run — shutdown work the
+    appliance registers there (supervisor cancellation, BLE disconnect) is
+    the only cleanup that executes on a signal-initiated stop: uvicorn
+    re-raises the captured signal the moment serve() returns, so code after
+    serve() never runs."""
+    from collections.abc import AsyncIterator
+    from contextlib import asynccontextmanager
+
+    from fastapi import FastAPI
+
+    events: list[str] = []
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        events.append("startup")
+        try:
+            yield
+        finally:
+            events.append("shutdown")
+
+    manager = MagicMock()
+    app = create_app(manager, _make_settings(), lifespan=lifespan)
+
+    async with app.router.lifespan_context(app):
+        assert events == ["startup"]
+    assert events == ["startup", "shutdown"]

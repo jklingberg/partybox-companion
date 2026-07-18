@@ -132,8 +132,10 @@
   .scene-standby      { --wash: rgba(255,179,0,.26); }
   .scene-powering     { --wash: rgba(154,151,172,.14); }
   .scene-blocked      { --wash: rgba(255,179,0,.26); }
+  .scene-contested    { --wash: rgba(255,179,0,.26); }
   .scene-off         .center-ring, .scene-off         .center-ring-icon { --ring: var(--heat-1); }
   .scene-blocked     .center-ring, .scene-blocked     .center-ring-icon { --ring: var(--heat-3); }
+  .scene-contested   .center-ring, .scene-contested   .center-ring-icon { --ring: var(--heat-3); }
   .scene-standby     .center-ring, .scene-standby     .center-ring-icon { --ring: var(--heat-3); }
   .scene-unreachable .center-ring, .scene-unreachable .center-ring-icon { --ring: var(--faint); }
   .scene-boot        .center-ring, .scene-boot        .center-ring-icon { --ring: var(--faint); }
@@ -604,6 +606,7 @@ const Scene = Object.freeze({
   PAIR:         'pair',
   OFF:          'off',
   BLOCKED:      'blocked',
+  CONTESTED:    'contested',
   STANDBY:      'standby',
   ON:           'on',
   POWERING:     'powering',
@@ -718,6 +721,10 @@ function bootMock() {
   if (MOCK_STATE === 'off') { S.health = { ...MOCK_HEALTH, ble_connected: false, speaker_state: 'off', audio_ready: false }; S.battery = null; }
   if (MOCK_STATE === 'blocked') { S.health = { ...MOCK_HEALTH, ble_connected: false, speaker_state: 'off' }; S.battery = null; }
   if (MOCK_STATE === 'standby') { S.health = { ...MOCK_HEALTH, speaker_state: 'standby' }; S.battery = null; }
+  if (MOCK_STATE === 'contested') {
+    S.health = { ...MOCK_HEALTH, speaker_state: 'standby', audio_focus: 'contested' };
+    S.battery = null;
+  }
   if (MOCK_STATE === 'powering') {
     S.health = { ...MOCK_HEALTH, ble_connected: false, speaker_state: 'off' };
     S.battery = null;
@@ -799,7 +806,8 @@ function deriveScene() {
     if (S.powerPending) return Scene.POWERING;
     // audio_ready proves the speaker is powered (the A2DP link is up) even
     // though its BLE control channel can't be reached — usually another
-    // device (a phone's JBL app) is holding it. Telling the user the
+    // device, like a phone, is connected to it and holding it (system-level
+    // Bluetooth, not tied to any app being open). Telling the user the
     // speaker is "powered off, plug it in" would be flatly wrong.
     //
     // Known transient: when the speaker genuinely powers off, BLE drops
@@ -813,7 +821,16 @@ function deriveScene() {
     return Scene.OFF;
   }
   if (!S.audio || !S.audio.address) return Scene.PAIR;
-  if (S.health.speaker_state === 'standby') return Scene.STANDBY;
+  if (S.health.speaker_state === 'standby') {
+    // A speaker that isn't answering our liveness probes (battery/firmware)
+    // usually genuinely is asleep — but when audio_focus says another
+    // Bluetooth source holds the speaker's connection (a phone, typically),
+    // that's the real reason: it's busy serving that source, not powered
+    // down. Telling the user it's "asleep" there is actively wrong — it's
+    // audibly on. See docs/adr/035 for the audio_focus signal's origin.
+    if (S.health.audio_focus === 'contested') return Scene.CONTESTED;
+    return Scene.STANDBY;
+  }
   return Scene.ON;
 }
 
@@ -837,6 +854,7 @@ function mountScene(scene) {
     case Scene.PAIR:        root.innerHTML = pairSceneHTML(); break;
     case Scene.OFF:         root.innerHTML = centerSceneHTML('off'); break;
     case Scene.BLOCKED:     root.innerHTML = centerSceneHTML('blocked'); break;
+    case Scene.CONTESTED:   root.innerHTML = centerSceneHTML('contested'); break;
     case Scene.STANDBY:     root.innerHTML = centerSceneHTML('standby'); break;
     case Scene.POWERING:    root.innerHTML = centerSceneHTML('powering'); break;
     case Scene.ON:          root.innerHTML = onSceneHTML(); break;
@@ -864,7 +882,11 @@ const CENTER_COPY = {
   },
   blocked: {
     icon: 'i-plug', title: "Speaker is on, but can't be controlled",
-    body: 'The speaker is powered and audio is connected, but its Bluetooth control channel is busy — usually another device is connected to it, like the JBL app on a phone. Close that app or turn off its Bluetooth, and this page will reconnect automatically. Still stuck after a few minutes? Unplug the speaker’s power cable for 10 seconds and plug it back in — its Bluetooth can get stuck in a way only a full power cycle clears (the power button alone isn’t enough, standby keeps its Bluetooth running).',
+    body: 'The speaker is powered and audio is connected, but its Bluetooth control channel is busy — usually another device, like a phone, is connected to it. On that phone, disconnect the speaker in its Bluetooth settings (or turn Bluetooth off entirely) — closing an app like JBL Portable isn’t enough, since the connection lives at the phone’s system level, not the app. This page will reconnect automatically once it’s free. Still stuck after a few minutes? Unplug the speaker’s power cable for 10 seconds and plug it back in — its Bluetooth can get stuck in a way only a full power cycle clears (the power button alone isn’t enough, standby keeps its Bluetooth running).',
+  },
+  contested: {
+    icon: 'i-bluetooth', title: 'Playing from another device',
+    body: "The speaker is connected to another device over Bluetooth — likely a phone — and playing audio from it, not from this appliance. That's also why Companion can't reach its controls right now. On that phone, disconnect the speaker in its Bluetooth settings (or turn Bluetooth off entirely) to take back control — closing an app isn't enough, since the connection lives at the phone's system level, not the app.",
   },
   standby: {
     icon: 'i-power', title: 'Speaker is asleep',
@@ -886,9 +908,10 @@ function centerSceneHTML(kind) {
   const title = kind === 'powering'
     ? (S.powerPending === 'on' ? 'Turning speaker on…' : 'Turning speaker off…')
     : c.title;
-  // Standby/powering breathe (alive, working). Off is unlit (dead — no
-  // power, nothing to wait for). Unreachable/boot are neutral and static.
-  const ringClass = kind === 'standby' || kind === 'powering' ? ' breathing' : kind === 'off' ? ' unlit' : '';
+  // Standby/powering/contested breathe (alive, working). Off is unlit (dead
+  // — no power, nothing to wait for). Unreachable/boot are neutral and static.
+  const ringClass = kind === 'standby' || kind === 'powering' || kind === 'contested' ? ' breathing'
+    : kind === 'off' ? ' unlit' : '';
   return `
     <div class="center-scene scene-${kind}">
       <div class="center-card">
@@ -901,7 +924,7 @@ function centerSceneHTML(kind) {
           <p class="center-body" style="margin-top:8px">${c.body}</p>
         </div>
         ${c.action ? `<button class="btn btn-heat" id="standby-power-btn" data-action="power-on">Turn speaker on</button>` : ''}
-        ${(kind === 'off' || kind === 'blocked' || kind === 'standby') ? `<div class="scene-footer-link"><span class="btn-link" data-action="open-health">Health &amp; settings</span></div>` : ''}
+        ${(kind === 'off' || kind === 'blocked' || kind === 'contested' || kind === 'standby') ? `<div class="scene-footer-link"><span class="btn-link" data-action="open-health">Health &amp; settings</span></div>` : ''}
       </div>
     </div>`;
 }
@@ -1058,8 +1081,20 @@ function patchOnScene() {
     action.classList.remove('hidden');
     action.textContent = 'Restart';
   } else if (sp.active) {
-    detail.textContent = 'Playing via Spotify Connect.';
-    detail.className = 'source-detail is-active';
+    // sp.active only means librespot itself believes it's streaming — A2DP
+    // is single-source at the speaker, so if another Bluetooth device (a
+    // phone, typically) is also connected, the speaker may be rendering
+    // THAT audio instead while every signal on our side still reads
+    // healthy (see audio_focus in healthItems() below). Saying "Playing
+    // via Spotify Connect" unconditionally here was a confident claim we
+    // can't actually back up in that case.
+    if (S.health && S.health.audio_focus === 'contested') {
+      detail.textContent = 'Spotify Connect is active, but another device is also connected — you may be hearing that device instead.';
+      detail.className = 'source-detail is-problem';
+    } else {
+      detail.textContent = 'Playing via Spotify Connect.';
+      detail.className = 'source-detail is-active';
+    }
     action.classList.add('hidden');
   } else {
     detail.textContent = `Open Spotify and choose "${sp.device_name}".`;
