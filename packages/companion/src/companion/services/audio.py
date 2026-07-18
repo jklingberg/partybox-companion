@@ -153,6 +153,9 @@ class AudioService:
         self._address_ready = asyncio.Event()
         self._bus: EventBus[AudioServiceEvent] = EventBus()
         self._reconnect_now = asyncio.Event()
+        #: Woken by recheck_now(); only ever interrupts the connected-idle
+        #: wait, never a failure backoff — see _wait_retry.
+        self._recheck_now = asyncio.Event()
         self._connected_at: float | None = None
         self._flap_count = 0
         self._consecutive_failures = 0
@@ -221,8 +224,17 @@ class AudioService:
         up to a minute after the speaker visibly went idle. Callers that
         observe such a signal (see ``_recheck_audio_on_standby`` in
         ``companion.__main__``) call this to short-circuit the wait instead.
+
+        Deliberately a *different* signal from :meth:`update_address`'s
+        ``_reconnect_now``: a recheck request means "look at the link again
+        now", not "a new pairing exists, retry with a fresh backoff". It
+        therefore only interrupts the connected-idle wait. Sharing one event
+        let every BLE standby/off flap cancel the flap/failure cool-downs
+        and immediately re-hammer a sleeping speaker with A2DP connects —
+        which kicked the BLE link again, closing a reconnect→hammer→drop
+        feedback loop (observed 2026-07-18).
         """
-        self._reconnect_now.set()
+        self._recheck_now.set()
 
     def update_address(self, address: str) -> None:
         """Set or update the A2DP sink address and interrupt any backoff sleep.
@@ -341,7 +353,7 @@ class AudioService:
                     self._consecutive_failures = 0
                     # Interruptible so recheck_now() can cut this short — see
                     # its docstring for why.
-                    await self._wait_retry(_CHECK_INTERVAL)
+                    await self._wait_retry(_CHECK_INTERVAL, interrupt_on_recheck=True)
         except asyncio.CancelledError:
             self._set_audio_ready(False)
             log.info("Audio service stopping")
@@ -424,18 +436,46 @@ class AudioService:
             return False, "stderr: " + stderr.decode(errors="replace").strip()
         return False, line
 
-    async def _wait_retry(self, delay: float) -> bool:
-        """Sleep delay seconds; return True if woken early by update_address().
+    async def _wait_retry(self, delay: float, *, interrupt_on_recheck: bool = False) -> bool:
+        """Sleep up to *delay* seconds; return whether a re-pair happened.
+
+        The return value means "update_address() was called while waiting"
+        (a new pairing exists — callers reset their backoff), NOT merely
+        "the wait was interrupted". Conflating those two concepts is exactly
+        the bug this separation fixed: a recheck interruption must never
+        read as a re-pair.
 
         Clears _reconnect_now before waiting so only a call made AFTER this
         point (i.e. a new pairing) can interrupt the sleep.
+
+        *interrupt_on_recheck* additionally lets :meth:`recheck_now` cut the
+        wait short — still returning False, per the contract above. Only the
+        connected-idle wait passes it; the failure and cool-down waits must
+        stay immune to recheck nudges, or every BLE flap would bypass them
+        (see :meth:`recheck_now`). When both events fire in the same tick,
+        the re-pair interpretation wins so backoff still resets.
         """
         self._reconnect_now.clear()
+        if not interrupt_on_recheck:
+            try:
+                await asyncio.wait_for(self._reconnect_now.wait(), timeout=delay)
+                return True
+            except TimeoutError:
+                return False
+        self._recheck_now.clear()
+        reconnect = asyncio.create_task(self._reconnect_now.wait())
+        recheck = asyncio.create_task(self._recheck_now.wait())
         try:
-            await asyncio.wait_for(self._reconnect_now.wait(), timeout=delay)
-            return True
-        except TimeoutError:
-            return False
+            done, _ = await asyncio.wait(
+                {reconnect, recheck},
+                timeout=delay,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            reconnect.cancel()
+            recheck.cancel()
+            await asyncio.gather(reconnect, recheck, return_exceptions=True)
+        return reconnect in done
 
     async def _connect(self) -> bool:
         """Attempt A2DP connection.  Returns True when ConnectProfile succeeded.

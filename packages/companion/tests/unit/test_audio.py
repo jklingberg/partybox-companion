@@ -92,7 +92,7 @@ async def test_update_address_sets_value_and_wakes_run() -> None:
         entered_loop.set()
         return _mock_proc(b"Connected: no")
 
-    async def fake_wait_retry(delay: float) -> bool:
+    async def fake_wait_retry(delay: float, *, interrupt_on_recheck: bool = False) -> bool:
         raise asyncio.CancelledError
 
     task = asyncio.create_task(svc.run())
@@ -127,7 +127,7 @@ async def test_run_connects_when_not_connected() -> None:
 
     retry_calls: list[float] = []
 
-    async def fake_wait_retry(delay: float) -> bool:
+    async def fake_wait_retry(delay: float, *, interrupt_on_recheck: bool = False) -> bool:
         retry_calls.append(delay)
         raise asyncio.CancelledError
 
@@ -186,7 +186,7 @@ async def test_run_backoff_doubles_on_repeated_failures() -> None:
     retry_calls: list[float] = []
     call_count = 0
 
-    async def fake_wait_retry(delay: float) -> bool:
+    async def fake_wait_retry(delay: float, *, interrupt_on_recheck: bool = False) -> bool:
         nonlocal call_count
         retry_calls.append(delay)
         call_count += 1
@@ -227,7 +227,7 @@ async def test_run_backoff_resets_on_success() -> None:
 
     retry_calls: list[float] = []
 
-    async def fake_wait_retry(delay: float) -> bool:
+    async def fake_wait_retry(delay: float, *, interrupt_on_recheck: bool = False) -> bool:
         retry_calls.append(delay)
         if len(retry_calls) >= 3:
             raise asyncio.CancelledError
@@ -256,7 +256,7 @@ async def test_run_update_address_resets_backoff() -> None:
     retry_calls: list[float] = []
     call_count = 0
 
-    async def fake_wait_retry(delay: float) -> bool:
+    async def fake_wait_retry(delay: float, *, interrupt_on_recheck: bool = False) -> bool:
         nonlocal call_count
         retry_calls.append(delay)
         call_count += 1
@@ -278,20 +278,22 @@ async def test_run_update_address_resets_backoff() -> None:
     assert retry_calls[2] == 10.0  # reset after re-pair wakeup
 
 
-async def test_recheck_now_wakes_a_pending_wait_retry() -> None:
-    """recheck_now() interrupts _wait_retry immediately instead of waiting out
-    its full delay — the mechanism _recheck_audio_on_standby (companion.
-    __main__) depends on to avoid a stale "connected" status for up to 60s
-    after the speaker leaves standby (ADR-034)."""
+async def test_recheck_now_wakes_a_pending_idle_wait() -> None:
+    """recheck_now() interrupts the connected-idle wait immediately instead of
+    waiting out its full delay — the mechanism _recheck_audio_on_standby
+    (companion.__main__) depends on to avoid a stale "connected" status for up
+    to 60s after the speaker leaves standby (ADR-034). It reports False (not a
+    re-pair): only the idle wait opts in via interrupt_on_recheck, so failure
+    backoffs stay immune to recheck nudges (see recheck_now's docstring)."""
     svc = _service()
 
-    wait_task = asyncio.create_task(svc._wait_retry(60.0))
-    await asyncio.sleep(0)  # let _wait_retry start waiting on _reconnect_now
+    wait_task = asyncio.create_task(svc._wait_retry(60.0, interrupt_on_recheck=True))
+    await asyncio.sleep(0)  # let _wait_retry start waiting on its events
 
     svc.recheck_now()
 
-    woke_early = await asyncio.wait_for(wait_task, timeout=1.0)
-    assert woke_early is True
+    woke_by_repair = await asyncio.wait_for(wait_task, timeout=1.0)
+    assert woke_by_repair is False
 
 
 async def test_run_skips_connect_when_already_connected() -> None:
@@ -312,7 +314,7 @@ async def test_run_skips_connect_when_already_connected() -> None:
 
     svc._connect = spy_connect  # type: ignore[method-assign]
 
-    async def fake_wait_retry(delay: float) -> bool:
+    async def fake_wait_retry(delay: float, *, interrupt_on_recheck: bool = False) -> bool:
         raise asyncio.CancelledError
 
     with patch("companion.services.audio.asyncio.create_subprocess_exec", side_effect=fake_exec):
@@ -334,7 +336,7 @@ async def test_run_cancels_cleanly() -> None:
     async def fake_exec(*args: object, **kwargs: object) -> MagicMock:
         return _mock_proc(b"true")
 
-    async def fake_wait_retry(delay: float) -> bool:
+    async def fake_wait_retry(delay: float, *, interrupt_on_recheck: bool = False) -> bool:
         raise asyncio.CancelledError
 
     with patch("companion.services.audio.asyncio.create_subprocess_exec", side_effect=fake_exec):
@@ -710,7 +712,7 @@ async def test_run_emits_audio_ready_true_on_connect() -> None:
     async def fake_exec(*args: object, **kwargs: object) -> MagicMock:
         return responses.pop(0)
 
-    async def fake_wait_retry(delay: float) -> bool:
+    async def fake_wait_retry(delay: float, *, interrupt_on_recheck: bool = False) -> bool:
         raise asyncio.CancelledError
 
     with patch("companion.services.audio.asyncio.create_subprocess_exec", side_effect=fake_exec):
@@ -734,7 +736,7 @@ async def test_run_emits_audio_ready_false_on_cancel() -> None:
     async def fake_exec(*args: object, **kwargs: object) -> MagicMock:
         return _mock_proc(b"true")
 
-    async def fake_wait_retry(delay: float) -> bool:
+    async def fake_wait_retry(delay: float, *, interrupt_on_recheck: bool = False) -> bool:
         nonlocal call_count
         call_count += 1
         if call_count >= 2:
@@ -787,7 +789,7 @@ async def test_run_enters_cooldown_when_flap_limit_reached() -> None:
 
     retry_calls: list[float] = []
 
-    async def fake_wait_retry(delay: float) -> bool:
+    async def fake_wait_retry(delay: float, *, interrupt_on_recheck: bool = False) -> bool:
         retry_calls.append(delay)
         raise asyncio.CancelledError
 
@@ -820,7 +822,7 @@ async def test_consecutive_failures_increments_on_outright_connect_failure() -> 
     async def fake_exec(*args: object, **kwargs: object) -> MagicMock:
         return call_results.pop(0)
 
-    async def fake_wait_retry(delay: float) -> bool:
+    async def fake_wait_retry(delay: float, *, interrupt_on_recheck: bool = False) -> bool:
         raise asyncio.CancelledError
 
     with (
@@ -871,7 +873,7 @@ async def test_run_enters_cooldown_when_consecutive_failures_reach_limit() -> No
 
     retry_calls: list[float] = []
 
-    async def fake_wait_retry(delay: float) -> bool:
+    async def fake_wait_retry(delay: float, *, interrupt_on_recheck: bool = False) -> bool:
         retry_calls.append(delay)
         raise asyncio.CancelledError
 
@@ -884,3 +886,75 @@ async def test_run_enters_cooldown_when_consecutive_failures_reach_limit() -> No
 
     assert retry_calls == [_FAILURE_COOLDOWN]
     assert svc._consecutive_failures == 0
+
+
+# ---------------------------------------------------------------------------
+# recheck vs re-pair wake separation (reconnect->hammer->drop loop, 2026-07-18)
+# ---------------------------------------------------------------------------
+
+
+async def test_recheck_does_not_interrupt_failure_backoff() -> None:
+    """recheck_now() must NOT wake a failure/cool-down wait: every BLE
+    standby/off flap fires a recheck, and letting it through bypassed the
+    flap/failure cool-downs and re-hammered a sleeping speaker."""
+    svc = _service()
+    svc.recheck_now()
+    started = asyncio.get_running_loop().time()
+    woken_by_repair = await svc._wait_retry(0.1)
+    elapsed = asyncio.get_running_loop().time() - started
+    assert woken_by_repair is False
+    assert elapsed >= 0.09  # slept the full delay despite the recheck nudge
+
+
+async def test_recheck_interrupts_connected_idle_wait_without_repair_signal() -> None:
+    """With interrupt_on_recheck the idle wait ends early, but is not reported as
+    a re-pair (True would reset backoff)."""
+    svc = _service()
+
+    async def nudge() -> None:
+        await asyncio.sleep(0.01)
+        svc.recheck_now()
+
+    task = asyncio.create_task(nudge())
+    started = asyncio.get_running_loop().time()
+    woken_by_repair = await svc._wait_retry(5.0, interrupt_on_recheck=True)
+    elapsed = asyncio.get_running_loop().time() - started
+    await task
+    assert woken_by_repair is False
+    assert elapsed < 1.0  # cut short, didn't sleep the full 5s
+
+
+async def test_update_address_interrupts_any_wait_as_repair() -> None:
+    """update_address() (a real re-pair) wakes both wait shapes and reports
+    True so callers reset their backoff."""
+    svc = _service()
+
+    async def repair() -> None:
+        await asyncio.sleep(0.01)
+        svc.update_address("AA:BB:CC:DD:EE:FF")
+
+    for kwargs in ({}, {"interrupt_on_recheck": True}):
+        task = asyncio.create_task(repair())
+        assert await svc._wait_retry(5.0, **kwargs) is True
+        await task
+
+
+async def test_simultaneous_repair_and_recheck_reports_repair() -> None:
+    """When both wake signals fire in the same scheduler tick while the wait
+    is pending, the re-pair interpretation must win — callers need to reset
+    their retry state. Locks in the priority rule against future rewrites
+    (e.g. TaskGroup/asyncio.timeout-based reimplementations).
+
+    Note: signals set BEFORE the wait begins are deliberately dropped by the
+    clear()-then-wait design ("only a call made after this point can
+    interrupt"), so the race worth pinning is both events firing mid-wait.
+    """
+    svc = _service()
+    wait_task = asyncio.create_task(svc._wait_retry(5.0, interrupt_on_recheck=True))
+    await asyncio.sleep(0)  # let both event-waiters start
+
+    # Same tick, no yield between them: recheck first, then the re-pair.
+    svc.recheck_now()
+    svc.update_address("AA:BB:CC:DD:EE:FF")
+
+    assert await asyncio.wait_for(wait_task, timeout=1.0) is True
