@@ -328,7 +328,13 @@ async def _run(
     # A2DP address: prefer the persisted config value (set by first-time pairing)
     # over the env-var default so the Portal-saved address survives reboots.
     audio_sink = portal_cfg.audio_sink_address or companion_settings.audio.sink_address
-    audio = AudioService(AudioSettings(sink_address=audio_sink))
+    audio = AudioService(
+        AudioSettings(sink_address=audio_sink),
+        # `manager` is assigned below — safe: this closure is only called
+        # from audio.run(), well after _run() finishes constructing
+        # everything and hands off to the supervisor.
+        standby_fn=lambda: manager.snapshot.speaker_state == "standby",
+    )
     pairing = PairingService(config_store, audio)
     audio_focus = AudioFocusService(
         address_fn=lambda: audio.status.address,
