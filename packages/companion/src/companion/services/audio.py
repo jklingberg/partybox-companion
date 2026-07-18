@@ -353,7 +353,7 @@ class AudioService:
                     self._consecutive_failures = 0
                     # Interruptible so recheck_now() can cut this short — see
                     # its docstring for why.
-                    await self._wait_retry(_CHECK_INTERVAL, wake_on_recheck=True)
+                    await self._wait_retry(_CHECK_INTERVAL, interrupt_on_recheck=True)
         except asyncio.CancelledError:
             self._set_audio_ready(False)
             log.info("Audio service stopping")
@@ -436,20 +436,27 @@ class AudioService:
             return False, "stderr: " + stderr.decode(errors="replace").strip()
         return False, line
 
-    async def _wait_retry(self, delay: float, *, wake_on_recheck: bool = False) -> bool:
-        """Sleep delay seconds; return True if woken early by update_address().
+    async def _wait_retry(self, delay: float, *, interrupt_on_recheck: bool = False) -> bool:
+        """Sleep up to *delay* seconds; return whether a re-pair happened.
+
+        The return value means "update_address() was called while waiting"
+        (a new pairing exists — callers reset their backoff), NOT merely
+        "the wait was interrupted". Conflating those two concepts is exactly
+        the bug this separation fixed: a recheck interruption must never
+        read as a re-pair.
 
         Clears _reconnect_now before waiting so only a call made AFTER this
         point (i.e. a new pairing) can interrupt the sleep.
 
-        *wake_on_recheck* additionally lets :meth:`recheck_now` cut the wait
-        short (returning False — a recheck is not a re-pair and must not
-        reset backoff). Only the connected-idle wait passes it; the failure
-        and cool-down waits must stay immune to recheck nudges, or every BLE
-        flap would bypass them (see :meth:`recheck_now`).
+        *interrupt_on_recheck* additionally lets :meth:`recheck_now` cut the
+        wait short — still returning False, per the contract above. Only the
+        connected-idle wait passes it; the failure and cool-down waits must
+        stay immune to recheck nudges, or every BLE flap would bypass them
+        (see :meth:`recheck_now`). When both events fire in the same tick,
+        the re-pair interpretation wins so backoff still resets.
         """
         self._reconnect_now.clear()
-        if not wake_on_recheck:
+        if not interrupt_on_recheck:
             try:
                 await asyncio.wait_for(self._reconnect_now.wait(), timeout=delay)
                 return True
