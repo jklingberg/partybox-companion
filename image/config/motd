@@ -1,6 +1,9 @@
 PartyBox Companion COMPANION_VERSION
 
-  Portal   http://partybox.local
+  Portal   http://partybox.local  (or http://partybox, or this Pi's IP —
+                                    run `hostname -I` — if .local doesn't
+                                    resolve on your network; neither
+                                    shortcut is guaranteed on every router)
   Status   sudo systemctl status companion
   Logs     sudo journalctl -u companion -f
   Config   sudo nano /etc/companion/companion.env

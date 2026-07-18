@@ -113,7 +113,12 @@ Document observations (what bytes appear on the wire). Do not transcribe or para
 
 ### SSH access
 
-The appliance Pi is reachable at `pi@partybox.local` (mDNS, preferred) or `pi@partybox` (router DNS).
+The appliance Pi is normally reachable at `pi@partybox.local` (mDNS) or `pi@partybox` (router DNS), but **neither is guaranteed** — both depend on network/client behavior outside this project's control, not on anything Companion configures:
+
+- `partybox.local` requires the *client's* OS to have a working mDNS resolver (reliable on macOS/most Linux; not guaranteed on Windows without Bonjour; often blocked on guest/corporate VLANs that filter multicast). It can and does stop resolving with no change on the Pi side (observed 2026-07-18: `DNS_PROBE_FINISHED_NXDOMAIN` in Chrome with no appliance-side fault) — a client-side or router-side mDNS hiccup, not an appliance bug.
+- `partybox` (no `.local`) depends on the *router* auto-registering the DHCP client hostname in its local resolver. Most consumer routers do this, but it's still router-specific behavior, not a protocol guarantee.
+
+If either stops resolving, don't treat it as an appliance fault — first try the other, then fall back to the Pi's IP address (check your router's device list, or a reservation if one is configured) and use that IP directly for the SSH/rsync/curl commands below in place of `partybox.local`.
 
 The default credentials are `pi` / `raspberry` (set by `install.sh`). Use `sshpass` for non-interactive access — it is installed in the devcontainer:
 
