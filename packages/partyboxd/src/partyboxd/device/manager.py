@@ -110,6 +110,13 @@ _WEDGE_SCAN_ERRORS = 5
 # orphan within roughly a minute of a cold start.
 _RECLAIM_EMPTY_SCANS = 3
 
+# Minimum time between *unsuccessful* reclaim attempts. The connect-failure
+# path consults the reclaim before every counted failure; if some unexpected
+# BlueZ or firmware state produces a dense run of failures with nothing to
+# reclaim, this keeps the helper from re-enumerating the bus on every one.
+# Successful reclaims are never rate-limited — they carry real signal.
+_RECLAIM_COOLDOWN = 30.0
+
 # Connect failures within this window after a power command are not counted:
 # the speaker resets its own BLE stack for ~15-17 s after every power on/off
 # (ADR-034), during which dense "could not connect" failures are expected and
@@ -219,6 +226,11 @@ class DeviceManager:
         :meth:`_note_connect_failure`). It returns True if it disconnected
         something — the manager then retries without backoff, since the
         speaker becomes connectable again as soon as the stale link drops.
+
+        Invariant: *stale_reclaim_fn* is only ever called while the manager
+        holds no active control connection (both call sites live in the
+        scan/connect path, which runs only while ``_device is None``), so a
+        reclaim can never disconnect the manager's own live link.
         """
         self._settings = settings
         self._snapshot: StatusSnapshot = _DISCONNECTED
@@ -237,6 +249,9 @@ class DeviceManager:
         #: Consecutive clean-but-empty scans (reset by any scan that finds
         #: the speaker; see _note_empty_scan).
         self._empty_scans = 0
+        #: loop.time() of the last reclaim attempt that found nothing
+        #: (cool-down gate; None after a successful reclaim).
+        self._last_failed_reclaim: float | None = None
         #: Dense connect failures since the last success (see _WEDGE_WINDOW).
         self._connect_failures = 0
         self._last_connect_failure = 0.0
@@ -629,22 +644,33 @@ class DeviceManager:
 
         On success the retry backoff is reset: the speaker's control slot is
         free again, so the very next cycle should find and connect it.
+        Unsuccessful attempts are rate-limited by ``_RECLAIM_COOLDOWN``.
         Never raises — a failed reclaim just leaves the retry loop as it was.
         """
         if self._stale_reclaim_fn is None:
+            return False
+        now = asyncio.get_running_loop().time()
+        if (
+            self._last_failed_reclaim is not None
+            and now - self._last_failed_reclaim < _RECLAIM_COOLDOWN
+        ):
             return False
         try:
             reclaimed = await self._stale_reclaim_fn()
         except Exception as exc:
             log.warning("stale-connection reclaim raised: %s", exc)
+            self._last_failed_reclaim = now
             return False
-        if reclaimed:
-            log.warning(
-                "disconnected a stale LE connection to the speaker "
-                "(orphaned by a previous process); rescanning without backoff"
-            )
-            self._retry_delay = self._settings.reconnect_delay
-        return reclaimed
+        if not reclaimed:
+            self._last_failed_reclaim = now
+            return False
+        self._last_failed_reclaim = None
+        log.warning(
+            "disconnected a stale LE connection to the speaker "
+            "(orphaned by a previous process); rescanning without backoff"
+        )
+        self._retry_delay = self._settings.reconnect_delay
+        return True
 
     async def _note_scan_error(self) -> None:
         """Track a scan that *errored* (as opposed to finding nothing).

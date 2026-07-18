@@ -801,6 +801,14 @@ function deriveScene() {
     // though its BLE control channel can't be reached — usually another
     // device (a phone's JBL app) is holding it. Telling the user the
     // speaker is "powered off, plug it in" would be flatly wrong.
+    //
+    // Known transient: when the speaker genuinely powers off, BLE drops
+    // (speaker_state 'off') a moment before AudioService notices the A2DP
+    // teardown, so this can flash BLOCKED for a second or two before
+    // settling on OFF. The window is deliberately kept short daemon-side:
+    // _recheck_audio_on_standby nudges an immediate A2DP recheck on every
+    // speaker_state transition away from 'on' (covered by
+    // test_audio_standby_recheck.py).
     if (S.health.audio_ready) return Scene.BLOCKED;
     return Scene.OFF;
   }

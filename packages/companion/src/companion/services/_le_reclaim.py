@@ -29,6 +29,7 @@ Output protocol (single line on stdout):
 from __future__ import annotations
 
 import asyncio
+import sys
 from typing import Any
 
 _BLUEZ = "org.bluez"
@@ -71,13 +72,20 @@ async def _reclaim() -> None:
             name = _prop(device_props, "Name") or _prop(device_props, "Alias") or ""
             if not isinstance(name, str) or _NAME_MARKER not in name:
                 continue
-            dev_introspection = await bus.introspect(_BLUEZ, path)
-            dev_obj = bus.get_proxy_object(_BLUEZ, path, dev_introspection)
-            dev = dev_obj.get_interface("org.bluez.Device1")
-            await asyncio.wait_for(
-                dev.call_disconnect(),  # type: ignore[attr-defined]
-                timeout=_DISCONNECT_TIMEOUT,
-            )
+            # Per-device failure containment: one wedged Device1 object (a
+            # Disconnect that times out, say) must not stop the remaining
+            # stale links from being reclaimed.
+            try:
+                dev_introspection = await bus.introspect(_BLUEZ, path)
+                dev_obj = bus.get_proxy_object(_BLUEZ, path, dev_introspection)
+                dev = dev_obj.get_interface("org.bluez.Device1")
+                await asyncio.wait_for(
+                    dev.call_disconnect(),  # type: ignore[attr-defined]
+                    timeout=_DISCONNECT_TIMEOUT,
+                )
+            except Exception as exc:
+                print(f"note: disconnect failed for {path}: {exc}", file=sys.stderr, flush=True)
+                continue
             count += 1
         print(f"ok:{count}", flush=True)
     except Exception as exc:

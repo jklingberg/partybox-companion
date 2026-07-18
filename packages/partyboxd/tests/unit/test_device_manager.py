@@ -816,3 +816,60 @@ async def test_connect_failures_still_count_when_nothing_to_reclaim() -> None:
     assert recoveries == []
     await manager._note_connect_failure()
     assert recoveries == [True]
+
+
+async def test_reclaim_recovery_path_end_to_end(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Full recovery arc: empty scans trigger a successful reclaim, the
+    backoff resets, the next scan finds the speaker, the empty-scan counter
+    restarts, and no second reclaim is attempted below the threshold."""
+    reclaims: list[bool] = []
+
+    async def reclaim() -> bool:
+        reclaims.append(True)
+        return True
+
+    found = object()
+    results: list[object | None] = [None, None, None, found, None, None]
+
+    async def _scan_script(*_: object, **__: object) -> object | None:
+        return results.pop(0)
+
+    monkeypatch.setattr("partyboxd.device.manager.Scanner.find", _scan_script)
+    manager = DeviceManager(_settings(reconnect_delay=1.0), stale_reclaim_fn=reclaim)
+    manager._retry_delay = 32.0  # simulate prior backoff growth
+
+    for _ in range(3):
+        await manager._scan()
+    assert reclaims == [True]
+    assert manager._retry_delay == 1.0  # reset so the rescan happens promptly
+
+    # The speaker, freed by the reclaim, is found on the very next scan.
+    assert await manager._scan() is found
+    assert manager._empty_scans == 0
+
+    # Two further empties stay under the threshold: no second reclaim.
+    await manager._scan()
+    await manager._scan()
+    assert reclaims == [True]
+
+
+async def test_unsuccessful_reclaim_is_rate_limited(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A reclaim that found nothing is not retried within _RECLAIM_COOLDOWN,
+    so dense connect failures don't re-enumerate the bus on every one."""
+    from partyboxd.device.manager import _RECLAIM_COOLDOWN
+
+    reclaims: list[bool] = []
+
+    async def reclaim() -> bool:
+        reclaims.append(True)
+        return False
+
+    manager = DeviceManager(_settings(), stale_reclaim_fn=reclaim)
+    assert await manager._reclaim_stale_link() is False
+    assert await manager._reclaim_stale_link() is False  # inside cool-down
+    assert reclaims == [True]
+    # Age past the cool-down; the next attempt runs again.
+    assert manager._last_failed_reclaim is not None
+    manager._last_failed_reclaim -= _RECLAIM_COOLDOWN + 1
+    assert await manager._reclaim_stale_link() is False
+    assert reclaims == [True, True]

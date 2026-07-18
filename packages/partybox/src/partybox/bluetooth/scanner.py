@@ -45,8 +45,12 @@ def _is_classic_device(device: BLEDevice) -> bool:
     toward the daemon's wedged-controller heuristic (ADR-039), which can
     escalate to an adapter power-cycle that drops live audio. The control
     advertisement always comes from a ``random`` address, so a ``public``
-    BlueZ address type safely marks the Classic object. Backends that don't
-    expose BlueZ props are left alone.
+    BlueZ address type safely marks the Classic object.
+
+    This filter deliberately reaches into bleak's BlueZ backend details
+    (``device.details["props"]["AddressType"]``) and is therefore only
+    active on the BlueZ backend; other backends intentionally fall back to
+    the previous name-only behaviour.
     """
     details = getattr(device, "details", None)
     if not isinstance(details, dict):
