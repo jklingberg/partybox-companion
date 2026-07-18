@@ -165,16 +165,25 @@ class AudioService:
     def __init__(
         self,
         settings: AudioSettings,
-        standby_fn: Callable[[], bool] | None = None,
+        speaker_state_fn: Callable[[], str] | None = None,
     ) -> None:
-        #: Returns True while the speaker is confirmed to be in standby —
-        #: BLE control link up but liveness probes unanswered
-        #: (DeviceManager.snapshot.speaker_state == "standby"). While True,
-        #: the run loop holds off outgoing BR/EDR connect attempts entirely
-        #: instead of walking the retry ladder; see _STANDBY_RECHECK. Only
-        #: "standby" gates: "off"/"unreachable" mean BLE is down, where a
-        #: page might still succeed and gating would risk never connecting.
-        self._standby_fn = standby_fn
+        #: Returns the speaker's current coarse power state
+        #: (DeviceManager.snapshot.speaker_state: "off" / "unreachable" /
+        #: "standby" / "on"). Typed as plain ``str`` so this service never
+        #: imports partyboxd's literal — the loop only ever asks "is it
+        #: standby?". While the answer is "standby" — BLE control link up
+        #: but liveness probes unanswered — the run loop holds off outgoing
+        #: BR/EDR connect attempts entirely instead of walking the retry
+        #: ladder; see _STANDBY_RECHECK. Only "standby" gates:
+        #: "off"/"unreachable" mean BLE is down, where a page might still
+        #: succeed and gating would risk never connecting. Passing the full
+        #: state (rather than a pre-baked bool) keeps the gating policy —
+        #: and its logging — in one place, and leaves room to gate other
+        #: states later without another callback.
+        self._speaker_state_fn = speaker_state_fn
+        #: True while the standby gate is holding connect attempts off;
+        #: used to log gate entry/exit once instead of every re-evaluation.
+        self._gate_active = False
         self._address: str | None = settings.sink_address
         self._audio_ready = False
         self._address_ready = asyncio.Event()
@@ -340,21 +349,32 @@ class AudioService:
                     continue
                 if not await self._is_connected():
                     self._set_audio_ready(False)
-                    if self._standby_fn is not None and self._standby_fn():
+                    state = self._speaker_state_fn() if self._speaker_state_fn is not None else None
+                    if state == "standby":
                         # A page can't succeed while the speaker sleeps, and
                         # standby is not a failure — reset the ladder so the
-                        # wake-up retry starts fresh.
-                        log.info(
-                            "A2DP: speaker in standby — holding off connect attempts"
-                            " (re-evaluating in %.0fs)",
-                            _STANDBY_RECHECK,
-                        )
+                        # wake-up retry starts fresh. Log on entry only; an
+                        # overnight standby re-evaluates every 300s and would
+                        # otherwise repeat this line all night.
+                        if not self._gate_active:
+                            self._gate_active = True
+                            log.info(
+                                "A2DP: speaker in standby — holding off connect attempts"
+                                " (re-evaluating every %.0fs until it wakes)",
+                                _STANDBY_RECHECK,
+                            )
                         self._consecutive_failures = 0
                         self._flap_count = 0
                         retry_delay = _RETRY_BASE
                         if await self._wait_retry(_STANDBY_RECHECK):
                             log.info("A2DP: %s — retrying immediately", self._retry_reason)
                         continue
+                    if self._gate_active:
+                        self._gate_active = False
+                        log.info(
+                            "A2DP: speaker no longer in standby (%s) — resuming connect attempts",
+                            state,
+                        )
                     if self._flap_count >= _FLAP_LIMIT:
                         log.warning(
                             "A2DP flapping detected (%d short-lived connections to %s)"
@@ -413,6 +433,10 @@ class AudioService:
                 else:
                     if retry_delay > _RETRY_BASE:
                         log.info("A2DP connection stable, backoff reset")
+                    # Speaker may have paged us while the gate held (it
+                    # auto-connects on wake); the connection itself tells the
+                    # story, no separate gate-exit log needed.
+                    self._gate_active = False
                     self._set_audio_ready(True)
                     retry_delay = _RETRY_BASE
                     self._consecutive_failures = 0

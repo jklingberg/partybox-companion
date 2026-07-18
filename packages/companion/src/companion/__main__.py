@@ -333,7 +333,7 @@ async def _run(
         # `manager` is assigned below — safe: this closure is only called
         # from audio.run(), well after _run() finishes constructing
         # everything and hands off to the supervisor.
-        standby_fn=lambda: manager.snapshot.speaker_state == "standby",
+        speaker_state_fn=lambda: manager.snapshot.speaker_state,
     )
     pairing = PairingService(config_store, audio)
     audio_focus = AudioFocusService(
