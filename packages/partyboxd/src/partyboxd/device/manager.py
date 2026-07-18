@@ -174,6 +174,14 @@ class StatusSnapshot:
     #: wedged local controller, radio interference, its control slot held
     #: elsewhere) while ``connected`` is False. Meaningless while
     #: ``connected`` is True — ``speaker_state`` never consults it then.
+    #: Scan-driven and eventually consistent, NOT a live signal: this is
+    #: what the *last* reconnect-loop scan saw, refreshed only when the
+    #: next scan runs, so it lags reality by up to one scan cycle in both
+    #: directions (a speaker that just powered off still reads
+    #: "unreachable" until the next scan; deliberate — presence rides
+    #: along on the existing scan rather than adding an observing scan
+    #: that would contend for the radio). Consumers must not treat the
+    #: "unreachable"/"off" distinction as real-time truth.
     #: Investigated and added 2026-07-18: a live incident showed the
     #: Portal reporting "powered off" while the speaker was audibly on and
     #: only its BLE control link was unreachable — see
