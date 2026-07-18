@@ -5,6 +5,7 @@ Settings are read from environment variables (prefix ``COMPANION_``)::
     COMPANION_HOST=0.0.0.0
     COMPANION_PORT=80
     COMPANION_DATA_DIR=/var/lib/companion
+    COMPANION_RUNTIME_DIR=/run/companion
     COMPANION_SPOTIFY__CONNECT_NAME=Living Room
     COMPANION_SPOTIFY__BITRATE=320
     COMPANION_AUDIO__SINK_ADDRESS=50:1B:6A:14:FD:1D
@@ -12,6 +13,7 @@ Settings are read from environment variables (prefix ``COMPANION_``)::
 
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 from typing import Literal
 
@@ -81,6 +83,11 @@ class CompanionSettings(BaseSettings):
     host: str = "0.0.0.0"  # noqa: S104 — appliance must be reachable on the local network
     port: int = Field(default=8080, ge=1, le=65535)
     data_dir: Path = Field(default_factory=lambda: Path.home() / ".local" / "share" / "companion")
+    # SpotifyService's librespot --onevent hook and its Unix socket live here.
+    # On the appliance, the systemd unit overrides this to /run/companion
+    # (RuntimeDirectory=companion — tmpfs, cleared on every restart, which is
+    # what we want for ephemeral playback-state signalling).
+    runtime_dir: Path = Field(default_factory=lambda: Path(tempfile.gettempdir()) / "companion")
     audio: AudioSettings = Field(default_factory=AudioSettings)
     spotify: SpotifySettings = Field(default_factory=SpotifySettings)
     wifi: WifiSettings = Field(default_factory=WifiSettings)

@@ -323,7 +323,9 @@ async def _run(
         backend=companion_settings.spotify.backend,
     )
     volume_state = VolumeState()
-    spotify = SpotifyService(effective_spotify, volume_state=volume_state)
+    spotify = SpotifyService(
+        effective_spotify, volume_state=volume_state, runtime_dir=companion_settings.runtime_dir
+    )
 
     # A2DP address: prefer the persisted config value (set by first-time pairing)
     # over the env-var default so the Portal-saved address survives reboots.

@@ -665,7 +665,7 @@ const MOCK_SPEAKER = { connected: true, address: 'AA:BB:CC:DD:EE:FF', firmware: 
 const MOCK_BATTERY = { level: 87, power_source: 'battery', charging: false,
                         remaining_playtime_minutes: 612, state_of_health_percent: 99, cycle_count: 4 };
 const MOCK_CONFIG  = { spotify_connect_name: 'Living Room', spotify_bitrate: 320 };
-const MOCK_SPOTIFY = { running: true, active: true, device_name: 'Living Room' };
+const MOCK_SPOTIFY = { running: true, state: 'playing', device_name: 'Living Room' };
 const MOCK_AUDIO   = { connected: true, address: '50:1B:6A:14:FD:1D', pairing_state: 'idle' };
 const MOCK_NETWORKS = [
   { ssid: 'Home Network', signal: 85, security: 'WPA2' },
@@ -1097,11 +1097,12 @@ function patchOnScene() {
   const ringIcon = document.getElementById('hero-ring-icon');
   const caption = document.getElementById('hero-caption');
   const audioUp = S.audio && S.audio.connected;
-  const playing = audioUp && S.spotify && S.spotify.active;
+  const playing = audioUp && S.spotify && S.spotify.state === 'playing';
+  const paused = audioUp && S.spotify && S.spotify.state === 'paused';
 
   ring.className = 'hero-ring ' + (!audioUp ? 'state-pending' : playing ? 'state-playing' : 'state-idle');
   ringIcon.innerHTML = `<svg class="icon" style="width:1.5em;height:1.5em"><use href="#${playing ? 'i-music' : 'i-music'}"/></svg>`;
-  caption.textContent = !audioUp ? 'Connecting audio…' : playing ? 'Playing' : 'Ready to play';
+  caption.textContent = !audioUp ? 'Connecting audio…' : playing ? 'Playing' : paused ? 'Paused' : 'Ready to play';
   caption.classList.toggle('is-playing', !!playing);
 
   const powerBtn = document.getElementById('power-toggle-btn');
@@ -1132,21 +1133,26 @@ function patchOnScene() {
     detail.className = 'source-detail is-problem';
     action.classList.remove('hidden');
     action.textContent = 'Restart';
-  } else if (sp.active) {
-    // sp.active only means librespot itself believes it's streaming — A2DP
-    // is single-source at the speaker, so if another Bluetooth device (a
-    // phone, typically) is also connected, the speaker may be rendering
-    // THAT audio instead while every signal on our side still reads
-    // healthy (see audio_focus in healthItems() below). Saying "Playing
-    // via Spotify Connect" unconditionally here was a confident claim we
-    // can't actually back up in that case.
+  } else if (sp.state === 'playing') {
+    // sp.state comes from librespot's own --onevent hook, not a log-line
+    // guess, so "playing" here is real — but A2DP is single-source at the
+    // speaker, so if another Bluetooth device (a phone, typically) is also
+    // connected, the speaker may be rendering THAT audio instead while
+    // every signal on our side still reads healthy (see audio_focus in
+    // healthItems() below). Saying "Playing via Spotify Connect"
+    // unconditionally here was a confident claim we can't actually back up
+    // in that case.
     if (S.health && S.health.audio_focus === 'contested') {
-      detail.textContent = 'Spotify Connect is active, but another device is also connected — you may be hearing that device instead.';
+      detail.textContent = 'Spotify Connect is playing, but another device is also connected — you may be hearing that device instead.';
       detail.className = 'source-detail is-problem';
     } else {
       detail.textContent = 'Playing via Spotify Connect.';
       detail.className = 'source-detail is-active';
     }
+    action.classList.add('hidden');
+  } else if (sp.state === 'paused') {
+    detail.textContent = 'Paused on Spotify Connect.';
+    detail.className = 'source-detail';
     action.classList.add('hidden');
   } else {
     detail.textContent = `Open Spotify and choose "${sp.device_name}".`;
@@ -1211,7 +1217,7 @@ function healthItems() {
       text: 'Stopped', action: { label: 'Restart', fn: 'spotify-restart' } });
   } else {
     items.push({ name: 'Spotify Connect', icon: 'i-music', state: 'ok', shortIssue: '',
-      text: sp.active ? 'Playing' : 'Ready' });
+      text: sp.state === 'playing' ? 'Playing' : sp.state === 'paused' ? 'Paused' : 'Ready' });
   }
 
   items.push(companionHealthItem());
@@ -1386,7 +1392,7 @@ function onEvent(ev) {
       render();
       break;
     case 'spotify_changed':
-      S.spotify = { running: ev.running, active: ev.active, device_name: ev.device_name };
+      S.spotify = { running: ev.running, state: ev.state, device_name: ev.device_name };
       render();
       break;
     case 'audio_focus_changed':

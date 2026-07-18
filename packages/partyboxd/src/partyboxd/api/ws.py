@@ -97,7 +97,7 @@ def make_ws_router(
         | ``power_changed`` | ``state`` (``"on"`` or ``"off"``) | Power command accepted |
         | ``audio_changed`` | ``audio_ready``, ``address`` | A2DP link connected/dropped |
         | ``audio_focus_changed`` | ``focus`` | Competing BT source appeared/left |
-        | ``spotify_changed`` | ``running``, ``active``, ``device_name`` | Spotify state changed |
+        | ``spotify_changed`` | ``running``, ``state``, ``device_name`` | Spotify state changed |
         | ``pairing_progress`` | ``state``, ``error`` | Pairing attempt progressed |
         | ``ping`` | — | Heartbeat sent every ~20 s when idle |
 

@@ -34,7 +34,7 @@ def _make_manager() -> MagicMock:
 def _make_spotify() -> MagicMock:
     spotify = MagicMock()
     type(spotify).status = PropertyMock(
-        return_value=SpotifyStatus(running=False, active=False, device_name="PartyBox")
+        return_value=SpotifyStatus(running=False, state="stopped", device_name="PartyBox")
     )
     spotify.settings = SpotifySettings()
     return spotify

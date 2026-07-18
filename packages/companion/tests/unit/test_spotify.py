@@ -3,7 +3,7 @@
 No librespot binary is required. Tests cover:
 - Initial state
 - Command construction
-- Playback-state inference from log lines
+- Playback state from librespot's --onevent hook (via the Unix event socket)
 - Graceful handling when librespot is not installed
 - Clean cancellation (shutdown)
 """
@@ -11,6 +11,8 @@ No librespot binary is required. Tests cover:
 from __future__ import annotations
 
 import asyncio
+import tempfile
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -26,9 +28,11 @@ def _service(
     connect_name: str = "PartyBox",
     bitrate: int = 320,
     backend: str | None = None,
+    runtime_dir: Path | None = None,
 ) -> SpotifyService:
     return SpotifyService(
-        SpotifySettings(connect_name=connect_name, bitrate=bitrate, backend=backend)  # type: ignore[arg-type]
+        SpotifySettings(connect_name=connect_name, bitrate=bitrate, backend=backend),  # type: ignore[arg-type]
+        runtime_dir=runtime_dir if runtime_dir is not None else Path(tempfile.mkdtemp()),
     )
 
 
@@ -38,9 +42,9 @@ def _service(
 
 
 def test_spotify_status_fields() -> None:
-    s = SpotifyStatus(running=True, active=False, device_name="Test")
+    s = SpotifyStatus(running=True, state="stopped", device_name="Test")
     assert s.running is True
-    assert s.active is False
+    assert s.state == "stopped"
     assert s.device_name == "Test"
 
 
@@ -52,7 +56,7 @@ def test_spotify_status_fields() -> None:
 def test_initial_status_not_running() -> None:
     svc = _service()
     assert svc.status.running is False
-    assert svc.status.active is False
+    assert svc.status.state == "stopped"
 
 
 def test_initial_status_device_name() -> None:
@@ -105,60 +109,92 @@ def test_build_command_includes_disable_audio_cache() -> None:
     assert "--disable-audio-cache" in svc._build_command()
 
 
+def test_build_command_includes_onevent_hook() -> None:
+    svc = _service()
+    cmd = svc._build_command()
+    assert "--onevent" in cmd
+    idx = cmd.index("--onevent")
+    assert cmd[idx + 1] == str(svc._onevent_script_path)
+
+
+def test_build_command_includes_emit_sink_events() -> None:
+    svc = _service()
+    assert "--emit-sink-events" in svc._build_command()
+
+
 # ---------------------------------------------------------------------------
-# Playback-state inference from log lines
+# Playback state from librespot's --onevent hook
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    "line",
+    ("event", "expected"),
     [
-        "Track ABC is now playing.",
-        "Loading track spotify:track:XYZ",
-        "Preloading next track",
-        "INFO librespot_playback: track IS NOW PLAYING",  # case-insensitive
+        ("playing", "playing"),
+        ("paused", "paused"),
+        ("stopped", "stopped"),
+        ("session_disconnected", "stopped"),
     ],
 )
-def test_infer_active_from_playing_lines(line: str) -> None:
+def test_apply_player_event_sets_state(event: str, expected: str) -> None:
     svc = _service()
-    svc._infer_playback_state(line)
-    assert svc._active is True
+    svc._apply_player_event(event)
+    assert svc._state == expected
 
 
-@pytest.mark.parametrize(
-    "line",
-    [
-        "Track paused",
-        "Track stopped",
-        "End of track",
-        "INFO librespot_playback: TRACK STOPPED",  # case-insensitive
-    ],
-)
-def test_infer_inactive_from_stop_lines(line: str) -> None:
+@pytest.mark.parametrize("event", ["changed", "loading", "preloading", "seeked", "volume_set", ""])
+def test_apply_player_event_ignores_unrecognized(event: str) -> None:
     svc = _service()
-    svc._active = True  # seed active state
-    svc._infer_playback_state(line)
-    assert svc._active is False
+    svc._state = "playing"
+    svc._apply_player_event(event)
+    assert svc._state == "playing"  # unchanged
 
 
-def test_infer_no_change_on_irrelevant_line() -> None:
+def test_apply_player_event_playing_then_paused() -> None:
+    """The bug this replaces: paused must be distinguishable from playing."""
     svc = _service()
-    svc._infer_playback_state("Connecting to Spotify")
-    assert svc._active is False
+    svc._apply_player_event("playing")
+    assert svc._state == "playing"
+    svc._apply_player_event("paused")
+    assert svc._state == "paused"
 
 
-def test_infer_idempotent_when_already_active() -> None:
-    svc = _service()
-    svc._active = True
-    # Calling again with an "active" line should not flip state
-    svc._infer_playback_state("is now playing")
-    assert svc._active is True
+# ---------------------------------------------------------------------------
+# --onevent launcher script + event socket
+# ---------------------------------------------------------------------------
 
 
-def test_infer_idempotent_when_already_inactive() -> None:
-    svc = _service()
-    svc._infer_playback_state("track stopped")
-    assert svc._active is False
+def test_ensure_runtime_files_writes_executable_script(tmp_path: Path) -> None:
+    svc = _service(runtime_dir=tmp_path)
+    svc._ensure_runtime_files()
+    script = svc._onevent_script_path
+    assert script.exists()
+    assert script.stat().st_mode & 0o111  # executable by someone
+    assert "companion.services._librespot_onevent" in script.read_text()
+
+
+async def test_event_socket_round_trip(tmp_path: Path) -> None:
+    """A client connecting to the event socket and sending PLAYER_EVENT updates state."""
+    svc = _service(runtime_dir=tmp_path)
+    svc._ensure_runtime_files()
+    server = await asyncio.start_unix_server(
+        svc._handle_event_connection, path=str(svc._event_sock_path)
+    )
+    try:
+        _reader, writer = await asyncio.open_unix_connection(str(svc._event_sock_path))
+        writer.write(b"playing\n")
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+        for _ in range(50):
+            if svc._state == "playing":
+                break
+            await asyncio.sleep(0.01)
+        assert svc._state == "playing"
+    finally:
+        server.close()
+        await server.wait_closed()
 
 
 # ---------------------------------------------------------------------------
@@ -171,7 +207,7 @@ def test_subscribe_delivers_current_state_immediately() -> None:
     queue = svc.subscribe()
     assert not queue.empty()
     assert queue.get_nowait() == SpotifyStatusChanged(
-        running=False, active=False, device_name="Living Room"
+        running=False, state="stopped", device_name="Living Room"
     )
 
 
@@ -180,11 +216,11 @@ def test_subscribe_returns_queue_that_receives_events() -> None:
     queue = svc.subscribe()
     queue.get_nowait()  # drain initial-state event
 
-    svc._infer_playback_state("is now playing")
+    svc._apply_player_event("playing")
     assert not queue.empty()
     event = queue.get_nowait()
     assert event.running is False
-    assert event.active is True
+    assert event.state == "playing"
 
 
 def test_no_event_emitted_when_status_unchanged() -> None:
@@ -192,7 +228,7 @@ def test_no_event_emitted_when_status_unchanged() -> None:
     queue = svc.subscribe()
     queue.get_nowait()  # drain initial-state event
 
-    svc._infer_playback_state("track stopped")  # already inactive — no-op
+    svc._apply_player_event("stopped")  # already stopped — no-op
     assert queue.empty()
 
 
@@ -202,7 +238,7 @@ def test_unsubscribe_stops_delivery() -> None:
     queue.get_nowait()  # drain initial-state event
     svc.unsubscribe(queue)
 
-    svc._infer_playback_state("is now playing")
+    svc._apply_player_event("playing")
     assert queue.empty()
 
 
@@ -211,9 +247,9 @@ def test_unsubscribe_stops_delivery() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_run_sets_not_running_when_librespot_missing() -> None:
+async def test_run_sets_not_running_when_librespot_missing(tmp_path: Path) -> None:
     """When librespot is not in PATH the service stays not-running."""
-    svc = _service()
+    svc = _service(runtime_dir=tmp_path)
 
     sleep_patch = patch("companion.services.spotify.asyncio.sleep", new_callable=AsyncMock)
     with patch("companion.services.spotify.shutil.which", return_value=None):
@@ -236,9 +272,9 @@ async def test_run_sets_not_running_when_librespot_missing() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_run_cancels_cleanly_without_librespot() -> None:
+async def test_run_cancels_cleanly_without_librespot(tmp_path: Path) -> None:
     """Cancelling the task raises CancelledError and leaves running=False."""
-    svc = _service()
+    svc = _service(runtime_dir=tmp_path)
 
     with patch("companion.services.spotify.shutil.which", return_value=None):
         with patch("companion.services.spotify.asyncio.sleep", new_callable=AsyncMock):
@@ -249,7 +285,7 @@ async def test_run_cancels_cleanly_without_librespot() -> None:
                 await task
 
     assert svc.status.running is False
-    assert svc.status.active is False
+    assert svc.status.state == "stopped"
 
 
 async def test_terminate_is_noop_when_no_process() -> None:
