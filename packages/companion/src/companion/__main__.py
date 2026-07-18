@@ -20,10 +20,11 @@ import logging
 import logging.config
 import os
 import time
-from collections.abc import Awaitable, Callable
-from contextlib import suppress
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager, suppress
 
 import uvicorn
+from fastapi import FastAPI
 from partyboxd.api import create_app as create_daemon_app
 from partyboxd.api.auth import make_auth_dependency
 from partyboxd.config import Settings as DaemonSettings
@@ -349,12 +350,37 @@ async def _run(
     # registered by the time supervisor.run() starts.
     supervisor = Supervisor()
 
+    # Shutdown work MUST live in the ASGI lifespan, not after server.serve():
+    # uvicorn (0.29+) captures SIGTERM during serve() and re-raises it the
+    # moment serve() returns (Server.capture_signals → signal.raise_signal),
+    # which kills the process with the default disposition before any code
+    # after serve() can run. Our cleanup used to live exactly there — so on
+    # every systemd restart no service was cancelled, DeviceManager never
+    # disconnected, and bluetoothd kept the BLE control link alive as an
+    # orphan, after which the speaker stops advertising and every scan comes
+    # up empty (the wedge stale_reclaim_fn exists to break).
+    #
+    # supervisor_task is created after the app (it needs the assembled app's
+    # services registered first); the closure reads it at shutdown time.
+    supervisor_task: asyncio.Task[None] | None = None
+
+    @asynccontextmanager
+    async def _lifespan(_: FastAPI) -> AsyncIterator[None]:
+        try:
+            yield
+        finally:
+            if supervisor_task is not None:
+                supervisor_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await supervisor_task
+
     app = create_daemon_app(
         manager,
         daemon_settings,
         audio_ready_fn=lambda: audio.audio_ready,
         audio_focus_fn=lambda: audio_focus.focus.value,
         extra_event_sources=[audio, spotify, pairing, audio_focus],
+        lifespan=_lifespan,
     )
     app.include_router(make_portal_router(companion_settings, config_store))
     app.include_router(
@@ -406,9 +432,12 @@ async def _run(
     )
 
     supervisor_task = asyncio.create_task(supervisor.run(), name="supervisor")
+
     try:
         await server.serve()
     finally:
+        # Fallback for exits that never reach the lifespan (serve() raising
+        # during startup); a no-op when the lifespan shutdown already ran.
         supervisor_task.cancel()
         with suppress(asyncio.CancelledError):
             await supervisor_task

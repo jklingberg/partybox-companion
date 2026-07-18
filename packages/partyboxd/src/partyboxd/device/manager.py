@@ -479,7 +479,16 @@ class DeviceManager:
         """
         while True:
             drain = asyncio.create_task(device.drain_until_disconnect())
-            done, _ = await asyncio.wait({drain}, timeout=_HEALTH_CHECK_INTERVAL)
+            try:
+                done, _ = await asyncio.wait({drain}, timeout=_HEALTH_CHECK_INTERVAL)
+            except asyncio.CancelledError:
+                # Shutdown lands here (asyncio.wait does not cancel its
+                # awaitables). Reap the drain task, or the cleanup
+                # disconnect makes it raise NotConnectedError into the void
+                # ("Task exception was never retrieved" noise at exit).
+                drain.cancel()
+                await asyncio.gather(drain, return_exceptions=True)
+                raise
             if drain in done:
                 await drain  # propagates ConnectionLostError / NotConnectedError
                 return

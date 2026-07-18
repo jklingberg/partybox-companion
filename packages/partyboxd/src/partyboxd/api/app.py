@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 
 from fastapi import FastAPI
+from starlette.types import Lifespan
 
 from partyboxd.config import Settings
 from partyboxd.device import DeviceManager
@@ -20,6 +21,7 @@ def create_app(
     audio_ready_fn: Callable[[], bool] | None = None,
     audio_focus_fn: Callable[[], str] | None = None,
     extra_event_sources: Sequence[EventSource] = (),
+    lifespan: Lifespan[FastAPI] | None = None,
 ) -> FastAPI:
     """Create and return the FastAPI application.
 
@@ -32,8 +34,15 @@ def create_app(
     *extra_event_sources* lets a layer above partyboxd (companion) fan
     additional events into the same WebSocket stream — see
     ``docs/adr/035-state-ownership-and-signal-pipeline.md``.
+
+    *lifespan* is passed through to :class:`FastAPI`. Shutdown work that
+    must complete before the process exits belongs there: uvicorn runs the
+    lifespan inside ``serve()``, whereas code placed after ``serve()``
+    never runs on a signal-initiated stop (uvicorn re-raises the captured
+    signal the moment ``serve()`` returns).
     """
     app = FastAPI(
+        lifespan=lifespan,
         title="partyboxd",
         version="0.1.0-dev",
         description=(
