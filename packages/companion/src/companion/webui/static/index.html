@@ -815,11 +815,11 @@ function deriveScene() {
     // tells the two apart so this expected, self-inflicted gap doesn't show
     // the "can't reach the speaker, plug it in" copy.
     if (S.powerPending) return Scene.POWERING;
-    // audio_ready proves the speaker is powered (the A2DP link is up) even
-    // though its BLE control channel can't be reached — usually another
-    // device, like a phone, is connected to it and holding it (system-level
-    // Bluetooth, not tied to any app being open). Telling the user the
-    // speaker is "powered off, plug it in" would be flatly wrong.
+    // audio_focus 'contested' is real evidence another Bluetooth source
+    // (typically a phone) holds the speaker — it comes from the FDDF
+    // beacon's own connection-count/bits, not a guess. This must be checked
+    // before 'unreachable' below: BLOCKED is the more actionable scene when
+    // we know who's actually holding the speaker.
     //
     // Known transient: when the speaker genuinely powers off, BLE drops
     // (speaker_state 'off') a moment before AudioService notices the A2DP
@@ -828,7 +828,7 @@ function deriveScene() {
     // _recheck_audio_on_standby nudges an immediate A2DP recheck on every
     // speaker_state transition away from 'on' (covered by
     // test_audio_standby_recheck.py).
-    if (S.health.audio_ready) return Scene.BLOCKED;
+    if (S.health.audio_focus === 'contested') return Scene.BLOCKED;
     // 'unreachable' (vs plain 'off'): the daemon's own BLE scan still sees
     // the speaker's FDDF beacon, which it broadcasts continuously while
     // powered — so the control link is the problem, not the speaker.
@@ -839,7 +839,21 @@ function deriveScene() {
     // the user to check whether the speaker itself is plugged in there is
     // actively unhelpful — the fix (if any) is on the Companion/Pi side,
     // not the speaker.
+    //
+    // Checked ahead of the audio_ready fallback below on purpose: audio and
+    // BLE control are independent subsystems (AudioService's module
+    // docstring) — our OWN A2DP link can stay up for a while after our OWN
+    // BLE control link independently wedges. An earlier version of this
+    // check used audio_ready alone and could not tell that apart from real
+    // phone contention, so it showed BLOCKED's "another device, like a
+    // phone" copy even with audio_focus: "exclusive" — flatly wrong, and
+    // confusing during exactly the kind of BLE flakiness this scene exists
+    // to explain honestly. Found live 2026-07-18.
     if (S.health.speaker_state === 'unreachable') return Scene.SPEAKER_UNREACHABLE;
+    // Fallback for plain 'off' with audio_ready true and audio_focus not
+    // (yet) confirmed contested: still better than telling the user to plug
+    // in a speaker that's audibly playing.
+    if (S.health.audio_ready) return Scene.BLOCKED;
     return Scene.OFF;
   }
   if (!S.audio || !S.audio.address) return Scene.PAIR;
