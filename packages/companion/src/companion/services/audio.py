@@ -190,6 +190,25 @@ class AudioService:
         """Stop delivering events to *queue*."""
         self._bus.unsubscribe(queue)
 
+    async def transport_active(self) -> bool:
+        """True while the A2DP transport is actively carrying audio.
+
+        Distinct from :attr:`audio_ready`, which only says the link exists:
+        BlueZ's ``MediaTransport1`` goes ``active`` when the AVDTP stream
+        starts and back to ``idle`` a few seconds after playback stops, so
+        this is the "audio is flowing right now" signal. AudioFocusService
+        uses it to relax its scan cadence during playback — active LE
+        scanning on the shared controller steals radio slots from the live
+        stream (observed as periodic stutter, 2026-07-17). ``pending`` (the
+        stream is being acquired) counts as active so a scan never lands
+        right as playback starts. All failure shapes collapse to False;
+        callers treat the signal as advisory.
+        """
+        if not self._audio_ready or self._address is None:
+            return False
+        _, line = await self._run_subprocess(self._address, "state")
+        return line in ("active", "pending")
+
     def recheck_now(self) -> None:
         """Interrupt an idle wait and re-check the A2DP link immediately.
 
@@ -366,6 +385,8 @@ class AudioService:
 
         command="connect" — returns (True, "") on success, (False, msg) on failure.
         command="check"   — returns (True, "") if connected, (False, "") if not.
+        command="state"   — returns (True, <transport state line>); the caller
+                            interprets the line ("active"/"pending"/"idle"/"none").
         """
         import sys as _sys
 
@@ -395,6 +416,8 @@ class AudioService:
             )
         if command == "check":
             return line == "true", ""
+        if command == "state":
+            return True, line
         if line == "ok":
             return True, ""
         if not line and stderr:

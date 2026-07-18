@@ -9,6 +9,10 @@ Output protocol (single line on stdout):
                                          machine contract, <detail> is human text
             "err:<detail>"             — unclassified failure (free text only)
   check:    "true" | "false"
+  state:    "active" | "pending" | "idle" | "none"
+                                       — the A2DP MediaTransport1 stream state;
+                                         "none" when no transport exists (link
+                                         down) or on any error
 
 The first colon-delimited token after ``err:`` is the machine-readable status
 code and is the *only* thing the parent should branch on — see
@@ -133,13 +137,45 @@ async def _check(address: str) -> None:
         bus.disconnect()
 
 
+async def _state(address: str) -> None:
+    from dbus_fast import BusType
+    from dbus_fast.aio import MessageBus
+    from dbus_fast.aio.proxy_object import ProxyInterface
+
+    bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
+    try:
+        introspection = await bus.introspect(_BLUEZ, "/")
+        obj = bus.get_proxy_object(_BLUEZ, "/", introspection)
+        manager: ProxyInterface = obj.get_interface("org.freedesktop.DBus.ObjectManager")
+        objects = await asyncio.wait_for(
+            manager.call_get_managed_objects(),  # type: ignore[attr-defined]
+            timeout=5,
+        )
+        device_prefix = _device_path(address) + "/"
+        for object_path, interfaces in objects.items():
+            transport = interfaces.get("org.bluez.MediaTransport1")
+            if transport is None or not object_path.startswith(device_prefix):
+                continue
+            uuid = transport["UUID"].value.lower()
+            if uuid == _A2DP_SOURCE_UUID or uuid == _A2DP_SINK_UUID:
+                print(transport["State"].value, flush=True)
+                return
+        print("none", flush=True)
+    except Exception:
+        print("none", flush=True)
+    finally:
+        bus.disconnect()
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("err:usage: _a2dp_connect.py <MAC> [check]", flush=True)
+        print("err:usage: _a2dp_connect.py <MAC> [check|state]", flush=True)
         sys.exit(1)
     address = sys.argv[1]
     command = sys.argv[2] if len(sys.argv) > 2 else "connect"
     if command == "check":
         asyncio.run(_check(address))
+    elif command == "state":
+        asyncio.run(_state(address))
     else:
         asyncio.run(_connect(address))

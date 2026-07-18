@@ -314,6 +314,7 @@ async def _run(
         pairing_active_fn=lambda: (
             pairing.status.state in (PairingState.SCANNING, PairingState.PAIRING)
         ),
+        streaming_fn=audio.transport_active,
     )
 
     # adapter_recover_fn lets the manager clear a wedged controller
