@@ -984,6 +984,26 @@ async def test_manual_adapter_reset_serializes_concurrent_calls() -> None:
     assert {result_a, result_b} == {"ok", "cooling_down"}
 
 
+async def test_manual_adapter_reset_cooldown_timestamp_reflects_completion() -> None:
+    """_last_manual_recovery is set at completion, not at the start of the
+    attempt — a slow adapter_recover_fn must not quietly shrink the
+    effective post-attempt cooldown window. Review feedback on #66 (round 2)."""
+
+    async def recover() -> bool:
+        await asyncio.sleep(0.05)
+        return True
+
+    manager = DeviceManager(_settings(), adapter_recover_fn=recover)
+    loop = asyncio.get_running_loop()
+    before = loop.time()
+    await manager.request_adapter_reset()
+    after = loop.time()
+
+    assert manager._last_manual_recovery is not None
+    assert before <= manager._last_manual_recovery <= after
+    assert manager._last_manual_recovery - before >= 0.04  # reflects the sleep, not entry
+
+
 async def test_reclaim_recovery_path_end_to_end(monkeypatch: pytest.MonkeyPatch) -> None:
     """Full recovery arc: empty scans trigger a successful reclaim, the
     backoff resets, the next scan finds the speaker, the empty-scan counter

@@ -441,53 +441,29 @@ class DeviceManager:
     ) -> Literal["ok", "failed", "cooling_down", "not_configured"]:
         """Manually power-cycle the Bluetooth adapter, on user request.
 
-        The Portal's "Reset Bluetooth" button (shown in the ``"unreachable"``
-        scene) calls this via ``POST /api/v1/bluetooth/reset``. It runs the
-        same recovery ADR-039's automatic wedge detection uses
-        (``adapter_recover_fn``), but on demand rather than after 3 dense
-        connect failures — that heuristic only catches *dense* failure
-        bursts; a case observed live (2026-07-18) had connect failures
-        spaced minutes apart, never dense enough to trip it, leaving the
-        appliance quietly retrying forever without ever taking the one
-        action that was likely to fix it.
+        The Portal's "Reset Bluetooth" button (``"unreachable"`` scene) calls
+        this via ``POST /api/v1/bluetooth/reset``. Runs the same recovery
+        ADR-039's automatic wedge detection uses (``adapter_recover_fn``), but
+        on demand — that heuristic needs 3 *dense* connect failures to fire,
+        which a slow/intermittent failure pattern may never reach (observed
+        live 2026-07-18).
 
-        Rate-limited by ``_MANUAL_RECOVERY_COOLDOWN`` — a short debounce
-        against accidental double-clicks, not a safety brake (see that
-        constant's comment for why it's much shorter than the automatic
-        path's ``_RECOVERY_COOLDOWN``).
+        Rate-limited by ``_MANUAL_RECOVERY_COOLDOWN`` (a short debounce, not
+        a safety brake — see that constant) and serialized by
+        ``_manual_reset_lock`` so two concurrent calls can't both invoke
+        ``adapter_recover_fn``; see
+        ``test_manual_adapter_reset_serializes_concurrent_calls``.
 
-        Serialized by ``_manual_reset_lock``: with no ``await`` between the
-        cooldown check and setting ``_last_manual_recovery``, two concurrent
-        calls actually couldn't race each other even without the lock —
-        asyncio's cooperative scheduling means whichever call runs first
-        completes that whole prefix before the other gets a turn, so the
-        second always observes the just-set timestamp and returns
-        "cooling_down". The lock exists anyway, held across the
-        ``await self._adapter_recover_fn()`` call too, so that invariant
-        can't silently break under a future refactor (e.g. an `await`
-        added before the timestamp write) without a test catching it — see
-        ``test_manual_adapter_reset_serializes_concurrent_calls``. It also
-        means a second call arriving *while a reset is still running*
-        blocks until that one finishes, rather than launching a second
-        concurrent power-cycle subprocess.
+        Only a confirmed success feeds the automatic path's bookkeeping
+        (``_last_recovery``, the failure counters) — a failed manual attempt
+        isn't evidence a wedge is fixed. ``_last_manual_recovery`` (the
+        manual cooldown gate) is set on every outcome via the ``finally``
+        below, timestamped at *completion* rather than at the start of the
+        attempt, so a slow ``adapter_recover_fn`` doesn't quietly shrink the
+        effective post-attempt cooldown window.
 
-        Only a *confirmed success* feeds the automatic path's bookkeeping
-        (``_last_recovery``, ``_connect_failures``, ``_scan_errors``) — a
-        failed manual attempt must not grant the automatic wedge detector a
-        free pass on its own 900s cooldown, nor erase failure counts that
-        still reflect a real, unresolved wedge. ``_last_manual_recovery``
-        (the *manual* cooldown gate) is the one exception: it is set before
-        the attempt regardless of outcome, because it exists to debounce
-        repeated manual presses — including an immediate retry after a
-        failure — not to record that recovery worked.
-
-        Returns ``"not_configured"`` if no ``adapter_recover_fn`` was
-        injected (bare ``partyboxd`` without Companion); ``"cooling_down"``
-        if called again within the debounce window; otherwise ``"ok"``/
-        ``"failed"`` reflecting whether the power-cycle itself completed.
-        Never raises — mirrors ``_maybe_recover``'s and
-        ``adapter_recover_fn``'s own "collapse every failure to a value, not
-        an exception" contract.
+        Returns ``"not_configured"`` (no ``adapter_recover_fn`` injected),
+        ``"cooling_down"``, or ``"ok"``/``"failed"``. Never raises.
         """
         if self._adapter_recover_fn is None:
             return "not_configured"
@@ -498,20 +474,23 @@ class DeviceManager:
                 and now - self._last_manual_recovery < _MANUAL_RECOVERY_COOLDOWN
             ):
                 return "cooling_down"
-            self._last_manual_recovery = now
             log.warning("Bluetooth adapter reset requested manually (Portal)")
+            start = now
             try:
                 recovered = await self._adapter_recover_fn()
             except Exception as exc:
                 log.warning("manual adapter reset raised: %s", exc)
-                return "failed"
+                recovered = False
+            finally:
+                self._last_manual_recovery = asyncio.get_running_loop().time()
+            duration = self._last_manual_recovery - start
             if not recovered:
-                log.warning("manual adapter reset reported failure")
+                log.warning("manual adapter reset failed after %.1fs", duration)
                 return "failed"
-            self._last_recovery = now
+            self._last_recovery = self._last_manual_recovery
             self._connect_failures = 0
             self._scan_errors = 0
-            log.info("manual adapter reset completed")
+            log.info("manual adapter reset completed in %.1fs", duration)
             return "ok"
 
     async def run(self) -> None:

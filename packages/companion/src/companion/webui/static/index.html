@@ -124,14 +124,10 @@
     font-size: 30px;
   }
   .center-title { font-family: var(--font-display); font-weight: 600; font-size: 20px; }
-  /* margin: 0 auto centers the box itself, not just the text inside it.
-     Without it, this <p> sits flush against the left edge of its flex-item
-     parent (a plain wrapping <div> that — confirmed via computed styles —
-     stretches to the full 380px .center-card width rather than shrinking to
-     fit-content), so max-width's leftover space all lands on the right and
-     every center-scene body reads as left-aligned regardless of
-     text-align. Found 2026-07-19 chasing a "text looks left-justified"
-     report; affected every centered scene, not just the one reported. */
+  /* margin auto centers the box itself, not just the text inside it — its
+     flex-item parent stretches to the full .center-card width instead of
+     shrinking to fit-content, so without this the max-width leftover space
+     all lands on the right and the text reads as left-aligned. */
   .center-body { color: var(--muted); font-size: 14.5px; line-height: 1.65; max-width: 320px; margin-left: auto; margin-right: auto; }
 
   .scene-boot         { --wash: rgba(154,151,172,.14); }
@@ -652,20 +648,15 @@ const S = {
   //: disconnect, so deriveScene() shows Scene.POWERING instead of the
   //: "can't reach the speaker, plug it in" Scene.OFF copy.
   powerPending: null,
-  //: Date.now() at the moment a "Reset Bluetooth" request succeeded, null
-  //: otherwise. Like powerPending, this has no daemon source — it exists so
-  //: deriveScene() can show Scene.BT_RECONNECTING (with a live elapsed-time
-  //: readout) instead of falling back to Scene.SPEAKER_UNREACHABLE's "not
-  //: responding" copy for the minute-plus a reconnect can genuinely take.
-  //: Cleared reactively by refresh() the moment ble_connected reads true, or
-  //: by a bounded timeout — see resetBluetooth().
-  //: TODO: this is the second client-only "bridge the gap until the daemon
-  //: catches up" timestamp (powerPending was the first). Worth a small ADR
-  //: if a third one shows up: should reconnect progress become a
-  //: daemon-owned concept (e.g. DeviceManager exposing "time since last
-  //: adapter action" via health) instead of the Portal continuing to grow
-  //: local-only state for each new recovery flow? Raised in review of #66,
-  //: no action taken here.
+  //: Date.now() when a "Reset Bluetooth" request succeeded, null otherwise.
+  //: No daemon source, like powerPending — lets deriveScene() show
+  //: Scene.BT_RECONNECTING (live elapsed-time readout) instead of the
+  //: "not responding" copy for the minute-plus a reconnect can take.
+  //: Cleared reactively by refresh() on ble_connected, or by timeout — see
+  //: resetBluetooth().
+  //: TODO: second client-only "bridge the gap" timestamp after powerPending
+  //: — worth an ADR on daemon-owned reconnect progress if a third shows up
+  //: (raised in #66 review, no action taken).
   btResetStartedAt: null,
   //: True for the duration of an in-progress startPairing() flow. Like
   //: powerPending, this has no daemon source — it exists only to decide
@@ -817,22 +808,12 @@ async function refresh() {
   }
 
   // Resolve a pending Scene.BT_RECONNECTING the moment the BLE link is back
-  // — see S.btResetStartedAt's doc comment. Reached via both the WS-pushed
-  // connected/speaker_state_changed events (onEvent() routes those through
-  // refresh()) and the 30s reconcile poll, so this can't be missed by
-  // either path.
-  //
-  // Can't double-fire or fire on an unrelated reconnect: the guard is
-  // `S.btResetStartedAt !== null`, which is only ever true between a
-  // successful resetBluetooth() call and this block clearing it — a plain
-  // page reload or an ordinary WS reconnect starts/stays at the null
-  // default, so this toast is scoped to reconnects *we* are waiting on, not
-  // reconnects in general. Nor can two concurrent refresh() calls (e.g. the
-  // 30s reconcile poll landing at the same moment as a WS-pushed one) both
-  // fire it: JS's single-threaded execution means there's no `await`
-  // between the read and the `= null` write below, so whichever refresh()
-  // resumes first clears the flag before the other's continuation runs —
-  // same reasoning as request_adapter_reset()'s lock comment on the backend.
+  // (via both the WS-pushed events and the 30s reconcile poll, both of
+  // which route through refresh()). Scoped to reconnects we're actually
+  // waiting on, not reconnects in general: the guard is only ever true
+  // between a successful resetBluetooth() and this clearing it, and can't
+  // double-fire from a concurrent refresh() for the same no-await-between-
+  // check-and-write reason as request_adapter_reset()'s lock (#66 review).
   if (S.btResetStartedAt !== null && S.health && S.health.ble_connected) {
     const elapsedSec = Math.round((Date.now() - S.btResetStartedAt) / 1000);
     S.btResetStartedAt = null;
@@ -864,12 +845,10 @@ async function refreshSpeaker() {
 function deriveScene() {
   if (S.fetchFailed && !S.health) return Scene.UNREACHABLE;
   if (!S.health) return Scene.BOOT;
-  // Takes priority over everything below except the two Companion-liveness
-  // checks above: a Bluetooth reset genuinely can take over a minute to
-  // reconnect (2026-07-19), and showing SPEAKER_UNREACHABLE's "not
-  // responding" copy throughout would read as the action having failed.
-  // Cleared reactively by refresh() the instant ble_connected reads true —
-  // see S.btResetStartedAt's doc comment.
+  // Priority over everything below except the Companion-liveness checks
+  // above — a reset can take over a minute to reconnect, and showing
+  // SPEAKER_UNREACHABLE meanwhile would read as the action having failed.
+  // See S.btResetStartedAt's doc comment.
   if (S.btResetStartedAt !== null) return Scene.BT_RECONNECTING;
   if (S.health.speaker_state === 'off' || S.health.speaker_state === 'unreachable') {
     // A power command we just sent makes the speaker drop its own BLE link
@@ -987,22 +966,12 @@ function patchScene(scene) {
 
 // -- Centered scenes (Boot / Unreachable / Off / Standby) ------------------
 
-// Bound on Scene.BT_RECONNECTING. Grounded in partyboxd's own reconnect
-// backoff (packages/partyboxd/src/partyboxd/device/manager.py), not just
-// anecdote: the adapter itself comes back in a few seconds, but
-// DeviceManager's scan/connect retry loop backs off exponentially on each
-// failed cycle — reconnect_delay defaults to 5s, doubling (5, 10, 20, 40,
-// 60…) capped at _RECONNECT_MAX = 60s. A reconnect that needs several failed
-// cycles before landing (a stale scan result, a rotating BLE address that
-// changed mid-attempt, bluetoothd still settling) can plausibly chain
-// 5+10+20+40+60 ≈ 135s of backoff sleeps alone before a cycle finally
-// succeeds — 150s covers one full ramp to the cap plus a little slack,
-// without being so long that a reset that genuinely didn't help leaves the
-// user staring at "Reconnecting…" for many minutes. Live observations
-// (2026-07-19: ~45s and ~2-3 min across two incidents) sit comfortably
-// inside this envelope. Revisit if a future incident's timing says the
-// backoff constants above have changed, or this bound is consistently too
-// tight/loose in practice.
+// Bound on Scene.BT_RECONNECTING. The adapter itself comes back in a few
+// seconds; the reconnect afterwards rides DeviceManager's own backoff
+// (partyboxd/device/manager.py: reconnect_delay 5s, doubling, capped at
+// _RECONNECT_MAX=60s) — a full ramp to the cap is ~135s (5+10+20+40+60), so
+// 150s covers one such ramp plus slack. Live observations (~45s, ~2-3min)
+// fall inside that. Revisit if those backoff constants change.
 const _BT_RESET_TIMEOUT_MS = 150000; // 2.5 min
 
 const CENTER_COPY = {
@@ -1629,27 +1598,14 @@ async function spotifyRestart() {
   setTimeout(() => refresh().then(render), 4000);
 }
 
-// Cleanup audit (review of #66 asked this be checked explicitly):
-// - Page unload/reload: the browser destroys the whole JS realm, including
-//   any live interval/timeout — nothing to do here, a fresh load starts
-//   with btResetStartedAt back at its null default.
-// - WS reconnect (connectWS()'s onclose -> setTimeout(connectWS, 5000)):
-//   independent of these timers entirely; reconnecting the event socket
-//   neither reads nor clears btReset state.
-// - Health polling failing repeatedly: refresh() sets S.fetchFailed but
-//   does not itself clear these timers — correct, not a leak: deriveScene()
-//   still shows BT_RECONNECTING (we don't know the real state, so keep
-//   waiting) until either a poll succeeds with ble_connected: true, or the
-//   hard timeout below fires regardless of poll health. Bounded either way.
-// - Another scene pre-empting BT_RECONNECTING: only Scene.UNREACHABLE
-//   (Companion itself down, checked ahead of it in deriveScene()) can do
-//   this while the timers are running, and that's a strictly worse problem
-//   already taking priority — the ticker keeps running harmlessly in the
-//   background and self-resolves via refresh() or the timeout either way.
-//   factoryResetConfirm() is the one real gap this audit found: a factory
-//   reset succeeding supersedes any pending reconnect wait, so it clears
-//   this state explicitly (see there) rather than leaving deriveScene()
-//   stuck showing BT_RECONNECTING over the post-reset pairing flow.
+// Cleanup audit (#66 review): page unload and WS reconnect need no handling
+// here (browser destroys the JS realm; WS lifecycle is independent of these
+// timers). Repeated health-poll failure is bounded by the hard timeout
+// regardless. A pre-empting scene can only be Scene.UNREACHABLE (a worse
+// problem, already prioritized) — the ticker self-resolves either way,
+// except factoryResetConfirm(), the one real gap found: it now clears this
+// state explicitly (see there) instead of leaving deriveScene() stuck on
+// BT_RECONNECTING through the post-reset pairing flow.
 function clearBtResetTimers() {
   clearInterval(timers.btReconnectTick);
   clearTimeout(timers.btReconnectTimeout);
@@ -1660,8 +1616,15 @@ function clearBtResetTimers() {
 async function resetBluetooth() {
   const btn = document.getElementById('bt-reset-btn');
   if (btn) { btn.disabled = true; }
-  const r = await get('/api/v1/bluetooth/reset', false, 'POST');
-  if (btn) { btn.disabled = false; }
+  // get() already catches every fetch failure internally and resolves to
+  // null rather than throwing — this try/finally is defense-in-depth
+  // against that guarantee changing, not a response to a known bug.
+  let r;
+  try {
+    r = await get('/api/v1/bluetooth/reset', false, 'POST');
+  } finally {
+    if (btn) { btn.disabled = false; }
+  }
   // Status-specific messages: 429 (cooling down) and 501 (not available on
   // this deployment) are worth telling apart from a generic failure — both
   // are expected, not errors, and telling the user to "try again shortly"
