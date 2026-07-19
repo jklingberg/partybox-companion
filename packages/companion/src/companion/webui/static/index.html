@@ -288,7 +288,8 @@
     content: ''; position: absolute; inset: -34px; border-radius: 50%; z-index: -1;
     background: radial-gradient(circle, rgba(255,138,0,.32), transparent 70%);
     filter: blur(4px);
-    transition: opacity .4s;
+    opacity: .35;
+    transition: opacity .5s;
   }
   .hero-ring-wrap.is-playing::before { animation: glow-pulse 1.8s ease-in-out infinite; }
   @keyframes glow-pulse {
@@ -320,6 +321,15 @@
     animation: spin-slow 14s linear infinite, ring-flame 2.6s ease-in-out infinite,
                flame-color-shift 5.2s ease-in-out infinite;
   }
+  /* Paused is deliberately the opposite of playing, not a milder version of
+     it: frozen (no animation at all — spin, flicker, and color-shift all
+     stop dead) and heavily desaturated/dimmed. The .4s filter transition on
+     .hero-ring above turns that into a visible "the fire goes out" cut
+     rather than an instant jump. This is the fix for paused reading as
+     "still kind of playing" — a calmer animation wasn't enough contrast on
+     its own; going fully static is what actually reads as "not playing" at
+     a glance. */
+  .hero-ring.state-paused  { filter: grayscale(.7) brightness(.55); animation: none; }
   .hero-ring.state-pending { filter: grayscale(.55) brightness(.85); animation: breathe 2.4s ease-in-out infinite; }
   @keyframes spin-slow { to { transform: rotate(360deg); } }
   /* Irregular keyframe spacing (not evenly 25/50/75%) reads as flame flicker
@@ -1233,7 +1243,9 @@ function patchOnScene() {
   const playing = audioUp && S.spotify && S.spotify.state === 'playing';
   const paused = audioUp && S.spotify && S.spotify.state === 'paused';
 
-  ring.className = 'hero-ring ' + (!audioUp ? 'state-pending' : playing ? 'state-playing' : 'state-idle');
+  ring.className = 'hero-ring ' + (
+    !audioUp ? 'state-pending' : playing ? 'state-playing' : paused ? 'state-paused' : 'state-idle'
+  );
   ringWrap.classList.toggle('is-playing', !!playing);
   ringIcon.innerHTML = `<svg class="icon" style="width:1.5em;height:1.5em"><use href="#${playing ? 'i-music' : 'i-music'}"/></svg>`;
   caption.textContent = !audioUp ? 'Connecting audio…' : playing ? 'Playing' : paused ? 'Paused' : 'Ready to play';
