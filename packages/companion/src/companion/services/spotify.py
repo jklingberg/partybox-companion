@@ -33,6 +33,7 @@ import shutil
 import signal
 import sys
 import tempfile
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -190,11 +191,7 @@ class SpotifyService:
     async def run(self) -> None:
         """Start librespot and restart after unexpected exits. Runs until cancelled."""
         log.info("Spotify service starting (device_name=%r)", self._settings.connect_name)
-        self._ensure_runtime_files()
-        self._event_sock_path.unlink(missing_ok=True)
-        event_server = await asyncio.start_unix_server(
-            self._handle_event_connection, path=str(self._event_sock_path)
-        )
+        event_server = await self._start_event_server()
         try:
             while True:
                 await self._run_once()
@@ -211,6 +208,41 @@ class SpotifyService:
     # internals
     # ------------------------------------------------------------------
 
+    async def _start_event_server(self) -> asyncio.Server:
+        """Create the runtime dir/launcher script and bind the --onevent socket.
+
+        Retries on OSError (e.g. the runtime dir isn't writable yet at early
+        boot) instead of raising. This matters here specifically:
+        SpotifyService.run() is launched via a bare ``asyncio.create_task()``
+        inside ``_gate_spotify_on_audio`` (see ``__main__.py``), not awaited
+        by the Supervisor directly — an uncaught exception here would be
+        silently dropped (surfacing only as an unretrieved-task-exception
+        warning) rather than triggering a restart. Retrying keeps
+        SpotifyService self-healing on its own, per its own docstring
+        ("owns subprocess crash-recovery internally"), without depending on
+        that propagation path.
+
+        Removing any stale socket file before binding also covers the crash
+        case: if a prior companion process died without reaching the
+        `finally` cleanup below, `start_unix_server` would otherwise fail
+        with "address already in use" against the leftover socket file.
+        """
+        while True:
+            try:
+                self._ensure_runtime_files()
+                self._event_sock_path.unlink(missing_ok=True)
+                return await asyncio.start_unix_server(
+                    self._handle_event_connection, path=str(self._event_sock_path)
+                )
+            except OSError as exc:
+                log.error(
+                    "failed to set up Spotify event socket in %s: %s (retrying in %.0fs)",
+                    self._runtime_dir,
+                    exc,
+                    _RESTART_DELAY,
+                )
+                await asyncio.sleep(_RESTART_DELAY)
+
     def _ensure_runtime_files(self) -> None:
         """Create the runtime dir and the librespot --onevent launcher script.
 
@@ -219,14 +251,29 @@ class SpotifyService:
         that execs the real hook (:mod:`companion.services._librespot_onevent`)
         via the current interpreter. Regenerated on every start so a Python
         interpreter path change (e.g. venv rebuild) doesn't leave a stale shim.
+
+        The runtime dir is chmod'd 0700: it holds the event socket and this
+        executable script, and should not be readable by other local users.
+        On the appliance this is already true (RuntimeDirectoryMode=0700 in
+        companion.service), but ``mkdir(exist_ok=True)`` does not update the
+        mode of a pre-existing directory, and the dev-mode default (a temp
+        dir) has no such guarantee — so it's set explicitly here regardless.
+
+        The script itself is written to a temp file and atomically renamed
+        into place (same filesystem, since both live in runtime_dir) so a
+        process interrupted mid-write never leaves librespot pointing at a
+        truncated or half-written launcher.
         """
         self._runtime_dir.mkdir(parents=True, exist_ok=True)
+        self._runtime_dir.chmod(0o700)
         script = (
             "#!/bin/sh\n"
             f"exec {shlex.quote(sys.executable)} -m companion.services._librespot_onevent\n"
         )
-        self._onevent_script_path.write_text(script)
-        self._onevent_script_path.chmod(0o755)
+        tmp_path = self._onevent_script_path.with_name(self._onevent_script_path.name + ".tmp")
+        tmp_path.write_text(script)
+        tmp_path.chmod(0o755)
+        tmp_path.replace(self._onevent_script_path)
 
     async def _handle_event_connection(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -239,10 +286,13 @@ class SpotifyService:
             pass
         finally:
             writer.close()
+            with suppress(OSError):
+                await writer.wait_closed()
 
     def _apply_player_event(self, event: str) -> None:
         state = _EVENT_TO_STATE.get(event)
         if state is None:
+            log.debug("Spotify: ignoring unknown PLAYER_EVENT %r", event)
             return
         self._set_status(running=self._running, state=state)
 

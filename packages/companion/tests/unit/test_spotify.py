@@ -11,6 +11,7 @@ No librespot binary is required. Tests cover:
 from __future__ import annotations
 
 import asyncio
+import stat
 import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -173,6 +174,41 @@ def test_ensure_runtime_files_writes_executable_script(tmp_path: Path) -> None:
     assert "companion.services._librespot_onevent" in script.read_text()
 
 
+def test_ensure_runtime_files_sets_runtime_dir_permissions(tmp_path: Path) -> None:
+    svc = _service(runtime_dir=tmp_path)
+    svc._ensure_runtime_files()
+    assert stat.S_IMODE(tmp_path.stat().st_mode) == 0o700
+
+
+def test_ensure_runtime_files_leaves_no_tmp_file_behind(tmp_path: Path) -> None:
+    svc = _service(runtime_dir=tmp_path)
+    svc._ensure_runtime_files()
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+async def test_start_event_server_retries_on_oserror(tmp_path: Path) -> None:
+    """A transient OSError while setting up the socket is retried, not raised."""
+    svc = _service(runtime_dir=tmp_path)
+    real_ensure = svc._ensure_runtime_files
+    calls = {"n": 0}
+
+    def flaky_ensure() -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("runtime dir not ready yet")
+        real_ensure()
+
+    svc._ensure_runtime_files = flaky_ensure  # type: ignore[method-assign]
+
+    with patch("companion.services.spotify.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+        server = await svc._start_event_server()
+
+    assert calls["n"] == 2
+    mock_sleep.assert_called_once()
+    server.close()
+    await server.wait_closed()
+
+
 async def test_event_socket_round_trip(tmp_path: Path) -> None:
     """A client connecting to the event socket and sending PLAYER_EVENT updates state."""
     svc = _service(runtime_dir=tmp_path)
@@ -292,6 +328,67 @@ async def test_terminate_is_noop_when_no_process() -> None:
     """_terminate() must not raise when no subprocess is running."""
     svc = _service()
     await svc._terminate()  # should complete without error
+
+
+# ---------------------------------------------------------------------------
+# Full lifecycle: run() -> playing -> paused -> cancel -> socket cleaned up
+# ---------------------------------------------------------------------------
+
+
+async def test_full_lifecycle_playing_paused_cancel(tmp_path: Path) -> None:
+    """End-to-end: the event socket a real onevent hook would talk to.
+
+    librespot itself is unavailable in this environment, but _start_event_server()
+    binds the socket unconditionally before entering the librespot retry loop, so
+    the socket is live regardless — this exercises the same connection path a real
+    librespot --onevent invocation would use.
+    """
+    svc = _service(runtime_dir=tmp_path)
+
+    async def _send(event: str) -> None:
+        _reader, writer = await asyncio.open_unix_connection(str(svc._event_sock_path))
+        writer.write(event.encode() + b"\n")
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+    async def _wait_for_state(expected: str) -> None:
+        for _ in range(50):
+            if svc._state == expected:
+                return
+            await asyncio.sleep(0.01)
+        pytest.fail(f"state never became {expected!r}, last seen {svc._state!r}")
+
+    # asyncio.sleep is deliberately *not* mocked here (unlike the other run()
+    # tests): mocking it replaces the real asyncio.sleep globally (spotify.py
+    # does `import asyncio`, so `companion.services.spotify.asyncio` is the
+    # same module object the test's own `await asyncio.sleep(...)` polling
+    # below relies on) — an AsyncMock's awaited call resolves without an
+    # actual suspension point, so it never hands control back to the event
+    # loop, and the polling below would never observe svc.run() making
+    # progress. Real sleep is fine here: librespot being "missing" only
+    # means _run_once() parks in a real asyncio.sleep(_NOT_FOUND_RETRY),
+    # which task.cancel() below interrupts immediately regardless of how
+    # long that sleep is.
+    with patch("companion.services.spotify.shutil.which", return_value=None):
+        task = asyncio.create_task(svc.run())
+        for _ in range(50):
+            if svc._event_sock_path.exists():
+                break
+            await asyncio.sleep(0.01)
+        assert svc._event_sock_path.exists()
+
+        await _send("playing")
+        await _wait_for_state("playing")
+
+        await _send("paused")
+        await _wait_for_state("paused")
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert not svc._event_sock_path.exists()
 
 
 # ---------------------------------------------------------------------------
