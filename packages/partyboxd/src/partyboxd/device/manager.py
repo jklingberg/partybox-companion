@@ -305,6 +305,10 @@ class DeviceManager:
         #: (separate, much shorter cool-down gate — see
         #: _MANUAL_RECOVERY_COOLDOWN and request_adapter_reset()).
         self._last_manual_recovery: float | None = None
+        #: Serializes request_adapter_reset() calls — see that method's
+        #: docstring for why this matters even though nothing here is
+        #: multi-threaded.
+        self._manual_reset_lock = asyncio.Lock()
 
     @property
     def snapshot(self) -> StatusSnapshot:
@@ -450,9 +454,32 @@ class DeviceManager:
         Rate-limited by ``_MANUAL_RECOVERY_COOLDOWN`` — a short debounce
         against accidental double-clicks, not a safety brake (see that
         constant's comment for why it's much shorter than the automatic
-        path's ``_RECOVERY_COOLDOWN``). Also feeds ``_last_recovery`` so the
-        automatic path doesn't immediately re-trigger right after a manual
-        one succeeds.
+        path's ``_RECOVERY_COOLDOWN``).
+
+        Serialized by ``_manual_reset_lock``: with no ``await`` between the
+        cooldown check and setting ``_last_manual_recovery``, two concurrent
+        calls actually couldn't race each other even without the lock —
+        asyncio's cooperative scheduling means whichever call runs first
+        completes that whole prefix before the other gets a turn, so the
+        second always observes the just-set timestamp and returns
+        "cooling_down". The lock exists anyway, held across the
+        ``await self._adapter_recover_fn()`` call too, so that invariant
+        can't silently break under a future refactor (e.g. an `await`
+        added before the timestamp write) without a test catching it — see
+        ``test_manual_adapter_reset_serializes_concurrent_calls``. It also
+        means a second call arriving *while a reset is still running*
+        blocks until that one finishes, rather than launching a second
+        concurrent power-cycle subprocess.
+
+        Only a *confirmed success* feeds the automatic path's bookkeeping
+        (``_last_recovery``, ``_connect_failures``, ``_scan_errors``) — a
+        failed manual attempt must not grant the automatic wedge detector a
+        free pass on its own 900s cooldown, nor erase failure counts that
+        still reflect a real, unresolved wedge. ``_last_manual_recovery``
+        (the *manual* cooldown gate) is the one exception: it is set before
+        the attempt regardless of outcome, because it exists to debounce
+        repeated manual presses — including an immediate retry after a
+        failure — not to record that recovery worked.
 
         Returns ``"not_configured"`` if no ``adapter_recover_fn`` was
         injected (bare ``partyboxd`` without Companion); ``"cooling_down"``
@@ -464,27 +491,28 @@ class DeviceManager:
         """
         if self._adapter_recover_fn is None:
             return "not_configured"
-        now = asyncio.get_running_loop().time()
-        if (
-            self._last_manual_recovery is not None
-            and now - self._last_manual_recovery < _MANUAL_RECOVERY_COOLDOWN
-        ):
-            return "cooling_down"
-        self._last_manual_recovery = now
-        self._last_recovery = now
-        self._connect_failures = 0
-        self._scan_errors = 0
-        log.warning("Bluetooth adapter reset requested manually (Portal)")
-        try:
-            recovered = await self._adapter_recover_fn()
-        except Exception as exc:
-            log.warning("manual adapter reset raised: %s", exc)
-            return "failed"
-        if recovered:
+        async with self._manual_reset_lock:
+            now = asyncio.get_running_loop().time()
+            if (
+                self._last_manual_recovery is not None
+                and now - self._last_manual_recovery < _MANUAL_RECOVERY_COOLDOWN
+            ):
+                return "cooling_down"
+            self._last_manual_recovery = now
+            log.warning("Bluetooth adapter reset requested manually (Portal)")
+            try:
+                recovered = await self._adapter_recover_fn()
+            except Exception as exc:
+                log.warning("manual adapter reset raised: %s", exc)
+                return "failed"
+            if not recovered:
+                log.warning("manual adapter reset reported failure")
+                return "failed"
+            self._last_recovery = now
+            self._connect_failures = 0
+            self._scan_errors = 0
             log.info("manual adapter reset completed")
             return "ok"
-        log.warning("manual adapter reset reported failure")
-        return "failed"
 
     async def run(self) -> None:
         """Main connection loop. Runs until cancelled.
