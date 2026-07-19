@@ -253,6 +253,57 @@ async def test_power_off_disconnected_returns_503() -> None:
 
 
 # ---------------------------------------------------------------------------
+# POST /api/v1/bluetooth/reset
+# ---------------------------------------------------------------------------
+
+
+def _make_reset_client(result: str) -> AsyncClient:
+    manager = MagicMock()
+    type(manager).snapshot = PropertyMock(return_value=_DISCONNECTED)
+    manager.request_adapter_reset = AsyncMock(return_value=result)
+    app = create_app(manager, _make_settings())
+    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+
+
+async def test_bluetooth_reset_success() -> None:
+    async with _make_reset_client("ok") as client:
+        r = await client.post("/api/v1/bluetooth/reset")
+    assert r.status_code == 204
+
+
+async def test_bluetooth_reset_cooling_down_returns_429() -> None:
+    async with _make_reset_client("cooling_down") as client:
+        r = await client.post("/api/v1/bluetooth/reset")
+    assert r.status_code == 429
+    assert r.json()["detail"]["error"] == "adapter_reset_cooling_down"
+
+
+async def test_bluetooth_reset_not_configured_returns_501() -> None:
+    async with _make_reset_client("not_configured") as client:
+        r = await client.post("/api/v1/bluetooth/reset")
+    assert r.status_code == 501
+    assert r.json()["detail"]["error"] == "adapter_reset_not_configured"
+
+
+async def test_bluetooth_reset_failed_returns_502() -> None:
+    async with _make_reset_client("failed") as client:
+        r = await client.post("/api/v1/bluetooth/reset")
+    assert r.status_code == 502
+    assert r.json()["detail"]["error"] == "adapter_reset_failed"
+
+
+async def test_bluetooth_reset_requires_auth() -> None:
+    manager = MagicMock()
+    type(manager).snapshot = PropertyMock(return_value=_DISCONNECTED)
+    manager.request_adapter_reset = AsyncMock(return_value="ok")
+    app = create_app(manager, _make_settings(api_key="secret"))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.post("/api/v1/bluetooth/reset")
+    assert r.status_code == 401
+    manager.request_adapter_reset.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
 # API key authentication
 # ---------------------------------------------------------------------------
 

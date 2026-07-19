@@ -826,6 +826,184 @@ async def test_connect_failures_still_count_when_nothing_to_reclaim() -> None:
     assert recoveries == [True]
 
 
+# ---------------------------------------------------------------------------
+# manually requested adapter reset (Portal "Reset Bluetooth" button)
+# ---------------------------------------------------------------------------
+
+
+async def test_manual_adapter_reset_succeeds() -> None:
+    calls: list[bool] = []
+
+    async def recover() -> bool:
+        calls.append(True)
+        return True
+
+    manager = DeviceManager(_settings(), adapter_recover_fn=recover)
+    result = await manager.request_adapter_reset()
+    assert result == "ok"
+    assert calls == [True]
+
+
+async def test_manual_adapter_reset_reports_failure() -> None:
+    async def recover() -> bool:
+        return False
+
+    manager = DeviceManager(_settings(), adapter_recover_fn=recover)
+    assert await manager.request_adapter_reset() == "failed"
+
+
+async def test_manual_adapter_reset_not_configured_without_recover_fn() -> None:
+    manager = _make_manager()
+    assert await manager.request_adapter_reset() == "not_configured"
+
+
+async def test_manual_adapter_reset_cools_down_on_repeat_calls() -> None:
+    """A second manual reset within _MANUAL_RECOVERY_COOLDOWN is suppressed —
+    debounce against an accidental double-click, not a real recovery attempt."""
+    calls: list[bool] = []
+
+    async def recover() -> bool:
+        calls.append(True)
+        return True
+
+    manager = DeviceManager(_settings(), adapter_recover_fn=recover)
+    assert await manager.request_adapter_reset() == "ok"
+    assert await manager.request_adapter_reset() == "cooling_down"
+    assert calls == [True]  # the second call never reached adapter_recover_fn
+
+
+async def test_manual_adapter_reset_ignores_exceptions() -> None:
+    """Mirrors adapter_recover_fn's own contract: a raised exception collapses
+    to "failed", it never propagates to the caller (the Portal action)."""
+
+    async def recover() -> bool:
+        raise RuntimeError("dbus boom")
+
+    manager = DeviceManager(_settings(), adapter_recover_fn=recover)
+    assert await manager.request_adapter_reset() == "failed"
+
+
+async def test_manual_adapter_reset_feeds_automatic_cooldown() -> None:
+    """A successful manual reset also updates _last_recovery, so the
+    automatic wedge-detection path doesn't immediately re-trigger its own
+    (900s) cooldown right after — the two paths share one adapter, not one
+    cooldown clock each."""
+
+    async def recover() -> bool:
+        return True
+
+    manager = DeviceManager(_settings(), adapter_recover_fn=recover)
+    assert manager._last_recovery is None
+    await manager.request_adapter_reset()
+    assert manager._last_recovery is not None
+
+
+async def test_manual_adapter_reset_resets_failure_counters() -> None:
+    """A manual reset clears the dense-failure counters the same way the
+    automatic path does — otherwise a manual reset right before the 3rd
+    dense failure would leave stale count state around."""
+
+    async def recover() -> bool:
+        return True
+
+    manager = DeviceManager(_settings(), adapter_recover_fn=recover)
+    await manager._note_connect_failure()
+    await manager._note_connect_failure()
+    assert manager._connect_failures == 2
+    await manager.request_adapter_reset()
+    assert manager._connect_failures == 0
+
+
+async def test_manual_adapter_reset_failure_does_not_feed_automatic_cooldown() -> None:
+    """A *failed* manual reset must not grant the automatic wedge detector a
+    free 900s pass — only a confirmed success should (see
+    test_manual_adapter_reset_feeds_automatic_cooldown). Review feedback on
+    #66: the original implementation set _last_recovery unconditionally
+    before the attempt."""
+
+    async def recover() -> bool:
+        return False
+
+    manager = DeviceManager(_settings(), adapter_recover_fn=recover)
+    assert await manager.request_adapter_reset() == "failed"
+    assert manager._last_recovery is None
+
+
+async def test_manual_adapter_reset_failure_does_not_reset_failure_counters() -> None:
+    """A failed manual reset must not erase failure counts that still
+    reflect a real, unresolved wedge — only a confirmed success clears them
+    (see test_manual_adapter_reset_resets_failure_counters)."""
+
+    async def recover() -> bool:
+        return False
+
+    manager = DeviceManager(_settings(), adapter_recover_fn=recover)
+    await manager._note_connect_failure()
+    await manager._note_connect_failure()
+    assert await manager.request_adapter_reset() == "failed"
+    assert manager._connect_failures == 2
+
+
+async def test_manual_adapter_reset_exception_does_not_feed_automatic_cooldown() -> None:
+    """Same guarantee as the plain-failure case above, for the
+    adapter_recover_fn-raised path."""
+
+    async def recover() -> bool:
+        raise RuntimeError("dbus boom")
+
+    manager = DeviceManager(_settings(), adapter_recover_fn=recover)
+    assert await manager.request_adapter_reset() == "failed"
+    assert manager._last_recovery is None
+
+
+async def test_manual_adapter_reset_serializes_concurrent_calls() -> None:
+    """Two POSTs arriving at once must not both invoke adapter_recover_fn —
+    the second must observe the first's just-set cooldown and back off,
+    even though the first is still awaiting the recovery subprocess when
+    the second call begins. Review feedback on #66 (concurrency safety)."""
+    calls = 0
+    release = asyncio.Event()
+
+    async def recover() -> bool:
+        nonlocal calls
+        calls += 1
+        await release.wait()  # hold the lock open long enough for a real race
+        return True
+
+    manager = DeviceManager(_settings(), adapter_recover_fn=recover)
+    task_a = asyncio.create_task(manager.request_adapter_reset())
+    await asyncio.sleep(0)  # let task_a enter the lock and start recover()
+    task_b = asyncio.create_task(manager.request_adapter_reset())
+    await asyncio.sleep(0)  # let task_b attempt to enter — must block, not race in
+
+    release.set()
+    result_a = await task_a
+    result_b = await task_b
+
+    assert calls == 1  # adapter_recover_fn invoked exactly once
+    assert {result_a, result_b} == {"ok", "cooling_down"}
+
+
+async def test_manual_adapter_reset_cooldown_timestamp_reflects_completion() -> None:
+    """_last_manual_recovery is set at completion, not at the start of the
+    attempt — a slow adapter_recover_fn must not quietly shrink the
+    effective post-attempt cooldown window. Review feedback on #66 (round 2)."""
+
+    async def recover() -> bool:
+        await asyncio.sleep(0.05)
+        return True
+
+    manager = DeviceManager(_settings(), adapter_recover_fn=recover)
+    loop = asyncio.get_running_loop()
+    before = loop.time()
+    await manager.request_adapter_reset()
+    after = loop.time()
+
+    assert manager._last_manual_recovery is not None
+    assert before <= manager._last_manual_recovery <= after
+    assert manager._last_manual_recovery - before >= 0.04  # reflects the sleep, not entry
+
+
 async def test_reclaim_recovery_path_end_to_end(monkeypatch: pytest.MonkeyPatch) -> None:
     """Full recovery arc: empty scans trigger a successful reclaim, the
     backoff resets, the next scan finds the speaker, the empty-scan counter

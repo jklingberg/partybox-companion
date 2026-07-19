@@ -124,7 +124,11 @@
     font-size: 30px;
   }
   .center-title { font-family: var(--font-display); font-weight: 600; font-size: 20px; }
-  .center-body { color: var(--muted); font-size: 14.5px; line-height: 1.65; max-width: 320px; }
+  /* margin auto centers the box itself, not just the text inside it — its
+     flex-item parent stretches to the full .center-card width instead of
+     shrinking to fit-content, so without this the max-width leftover space
+     all lands on the right and the text reads as left-aligned. */
+  .center-body { color: var(--muted); font-size: 14.5px; line-height: 1.65; max-width: 320px; margin-left: auto; margin-right: auto; }
 
   .scene-boot         { --wash: rgba(154,151,172,.14); }
   .scene-unreachable  { --wash: rgba(90,88,112,.5); }
@@ -134,6 +138,7 @@
   .scene-blocked      { --wash: rgba(255,179,0,.26); }
   .scene-speaker-unreachable { --wash: rgba(255,179,0,.26); }
   .scene-contested    { --wash: rgba(255,179,0,.26); }
+  .scene-bt-reconnecting { --wash: rgba(154,151,172,.14); }
   .scene-off         .center-ring, .scene-off         .center-ring-icon { --ring: var(--heat-1); }
   .scene-blocked     .center-ring, .scene-blocked     .center-ring-icon { --ring: var(--heat-3); }
   .scene-speaker-unreachable .center-ring, .scene-speaker-unreachable .center-ring-icon { --ring: var(--heat-3); }
@@ -142,6 +147,7 @@
   .scene-unreachable .center-ring, .scene-unreachable .center-ring-icon { --ring: var(--faint); }
   .scene-boot        .center-ring, .scene-boot        .center-ring-icon { --ring: var(--faint); }
   .scene-powering    .center-ring, .scene-powering    .center-ring-icon { --ring: var(--heat-2); }
+  .scene-bt-reconnecting .center-ring, .scene-bt-reconnecting .center-ring-icon { --ring: var(--heat-2); }
 
   @keyframes breathe { 0%, 100% { opacity: .5; } 50% { opacity: 1; } }
 
@@ -628,6 +634,9 @@ const Scene = Object.freeze({
   STANDBY:      'standby',
   ON:           'on',
   POWERING:     'powering',
+  // Local-only state (no daemon equivalent — see S.btResetStartedAt below):
+  // shown while waiting for reconnect after the "Reset Bluetooth" action.
+  BT_RECONNECTING: 'bt-reconnecting',
 });
 
 // ==========================================================================
@@ -650,6 +659,16 @@ const S = {
   //: disconnect, so deriveScene() shows Scene.POWERING instead of the
   //: "can't reach the speaker, plug it in" Scene.OFF copy.
   powerPending: null,
+  //: Date.now() when a "Reset Bluetooth" request succeeded, null otherwise.
+  //: No daemon source, like powerPending — lets deriveScene() show
+  //: Scene.BT_RECONNECTING (live elapsed-time readout) instead of the
+  //: "not responding" copy for the minute-plus a reconnect can take.
+  //: Cleared reactively by refresh() on ble_connected, or by timeout — see
+  //: resetBluetooth().
+  //: TODO: second client-only "bridge the gap" timestamp after powerPending
+  //: — worth an ADR on daemon-owned reconnect progress if a third shows up
+  //: (raised in #66 review, no action taken).
+  btResetStartedAt: null,
   //: True for the duration of an in-progress startPairing() flow. Like
   //: powerPending, this has no daemon source — it exists only to decide
   //: whether an incoming audio_changed/pairing_progress WS event should
@@ -664,7 +683,7 @@ const timers = {};
 
 const MOCK = location.search.includes('mock');
 const MOCK_PROVISION = location.search.includes('provision');
-const MOCK_STATE = new URLSearchParams(location.search).get('state'); // off|standby|pair|on
+const MOCK_STATE = new URLSearchParams(location.search).get('state'); // off|standby|pair|on|blocked|speaker-unreachable|contested|powering|bt-reconnecting
 
 const MOCK_HEALTH  = { status: 'ok', version: '0.2.0-dev', ble_connected: true, audio_ready: true, speaker_state: 'on', audio_focus: 'exclusive' };
 const MOCK_HEALTH_DETAILS = { tasks: [
@@ -742,6 +761,11 @@ function bootMock() {
     S.health = { ...MOCK_HEALTH, ble_connected: false, speaker_state: 'unreachable', audio_ready: false };
     S.battery = null;
   }
+  if (MOCK_STATE === 'bt-reconnecting') {
+    S.health = { ...MOCK_HEALTH, ble_connected: false, speaker_state: 'unreachable', audio_ready: false };
+    S.battery = null;
+    S.btResetStartedAt = Date.now() - 17000; // mid-wait, for a representative screenshot
+  }
   if (MOCK_STATE === 'standby') { S.health = { ...MOCK_HEALTH, speaker_state: 'standby' }; S.battery = null; }
   if (MOCK_STATE === 'contested') {
     S.health = { ...MOCK_HEALTH, speaker_state: 'standby', audio_focus: 'contested' };
@@ -794,6 +818,20 @@ async function refresh() {
     S.battery = null;
   }
 
+  // Resolve a pending Scene.BT_RECONNECTING the moment the BLE link is back
+  // (via both the WS-pushed events and the 30s reconcile poll, both of
+  // which route through refresh()). Scoped to reconnects we're actually
+  // waiting on, not reconnects in general: the guard is only ever true
+  // between a successful resetBluetooth() and this clearing it, and can't
+  // double-fire from a concurrent refresh() for the same no-await-between-
+  // check-and-write reason as request_adapter_reset()'s lock (#66 review).
+  if (S.btResetStartedAt !== null && S.health && S.health.ble_connected) {
+    const elapsedSec = Math.round((Date.now() - S.btResetStartedAt) / 1000);
+    S.btResetStartedAt = null;
+    clearBtResetTimers();
+    toast(`Bluetooth reconnected after ${elapsedSec}s.`);
+  }
+
   S.scene = deriveScene();
 }
 
@@ -818,6 +856,11 @@ async function refreshSpeaker() {
 function deriveScene() {
   if (S.fetchFailed && !S.health) return Scene.UNREACHABLE;
   if (!S.health) return Scene.BOOT;
+  // Priority over everything below except the Companion-liveness checks
+  // above — a reset can take over a minute to reconnect, and showing
+  // SPEAKER_UNREACHABLE meanwhile would read as the action having failed.
+  // See S.btResetStartedAt's doc comment.
+  if (S.btResetStartedAt !== null) return Scene.BT_RECONNECTING;
   if (S.health.speaker_state === 'off' || S.health.speaker_state === 'unreachable') {
     // A power command we just sent makes the speaker drop its own BLE link
     // for ~15-20s before reconnecting (ADR-034) — indistinguishable from a
@@ -915,6 +958,7 @@ function mountScene(scene) {
     case Scene.CONTESTED:   root.innerHTML = centerSceneHTML('contested'); break;
     case Scene.STANDBY:     root.innerHTML = centerSceneHTML('standby'); break;
     case Scene.POWERING:    root.innerHTML = centerSceneHTML('powering'); break;
+    case Scene.BT_RECONNECTING: root.innerHTML = centerSceneHTML('bt-reconnecting'); break;
     case Scene.ON:          root.innerHTML = onSceneHTML(); break;
   }
 }
@@ -922,9 +966,25 @@ function mountScene(scene) {
 function patchScene(scene) {
   if (scene === Scene.ON) patchOnScene();
   if (scene === Scene.PAIR) patchPairScene();
+  // Ticks the elapsed-time readout once a second (see resetBluetooth()'s
+  // timers.btReconnectTick) without a full remount — mountScene() only runs
+  // on an actual scene change, and this scene doesn't change every tick.
+  if (scene === Scene.BT_RECONNECTING) {
+    const el = document.getElementById('center-title');
+    if (el) el.textContent = btReconnectingTitle();
+  }
 }
 
 // -- Centered scenes (Boot / Unreachable / Off / Standby) ------------------
+
+// Bound on Scene.BT_RECONNECTING. The adapter itself comes back in a few
+// seconds; the reconnect afterwards rides DeviceManager's own backoff
+// (partyboxd/device/manager.py: reconnect_delay 5s, doubling, capped at
+// _RECONNECT_MAX=60s) — a full ramp to the cap is ~135s (5+10+20+40+60), so
+// 150s covers one such ramp plus slack. Live observations (~45s, ~2-3min)
+// fall inside that. Revisit if those backoff constants change.
+const _BT_RESET_TIMEOUT_MS = 150000; // 2.5 min
+
 const CENTER_COPY = {
   boot: {
     icon: 'i-server', title: 'Starting up…',
@@ -944,7 +1004,8 @@ const CENTER_COPY = {
   },
   'speaker-unreachable': {
     icon: 'i-bluetooth', title: 'Speaker seems to be on, but not responding',
-    body: "The speaker is broadcasting that it's powered, but its Bluetooth control link is down. Most often this is the speaker in deep standby — after a while asleep it stops accepting control connections until it's woken. Press the power button on the speaker to wake it; Companion reconnects automatically. Less often it's a temporary radio issue on the Companion side, which clears on its own within a few minutes. Still stuck? Unplug the speaker's power cable for 10 seconds and plug it back in.",
+    body: "The speaker is on, but its Bluetooth link is down — often just deep standby. Try the speaker's power button first. Still stuck? Reset Bluetooth below, or unplug the speaker for 10 seconds as a last resort.",
+    resetAction: true,
   },
   contested: {
     icon: 'i-bluetooth', title: 'Playing from another device',
@@ -963,17 +1024,30 @@ const CENTER_COPY = {
     // something that isn't broken.
     icon: 'i-power', body: 'This can take up to 20 seconds.',
   },
+  'bt-reconnecting': {
+    // Title is set dynamically below (and ticked every second by
+    // patchScene()) from S.btResetStartedAt — a live elapsed-time readout,
+    // not a static string.
+    icon: 'i-bluetooth',
+    body: `Looking for the speaker after a Bluetooth reset. Giving up after ${Math.round(_BT_RESET_TIMEOUT_MS / 1000)}s if it doesn't reconnect.`,
+  },
 };
+
+function btReconnectingTitle() {
+  const elapsedSec = Math.max(0, Math.round((Date.now() - S.btResetStartedAt) / 1000));
+  return `Reconnecting… ${elapsedSec}s`;
+}
 
 function centerSceneHTML(kind) {
   const c = CENTER_COPY[kind];
   const title = kind === 'powering'
     ? (S.powerPending === 'on' ? 'Turning speaker on…' : 'Turning speaker off…')
+    : kind === 'bt-reconnecting' ? btReconnectingTitle()
     : c.title;
   // Standby/powering/contested breathe (alive, working). Off is unlit (dead
   // — no power, nothing to wait for). Unreachable/boot are neutral and static.
   const ringClass = kind === 'standby' || kind === 'powering' || kind === 'contested'
-      || kind === 'speaker-unreachable' ? ' breathing'
+      || kind === 'speaker-unreachable' || kind === 'bt-reconnecting' ? ' breathing'
     : kind === 'off' ? ' unlit' : '';
   return `
     <div class="center-scene scene-${kind}">
@@ -983,11 +1057,12 @@ function centerSceneHTML(kind) {
           <div class="center-ring-icon"><svg class="icon" style="width:1.4em;height:1.4em"><use href="#${c.icon}"/></svg></div>
         </div>
         <div>
-          <div class="center-title">${title}</div>
+          <div class="center-title" id="center-title">${title}</div>
           <p class="center-body" style="margin-top:8px">${c.body}</p>
         </div>
         ${c.action ? `<button class="btn btn-heat" id="standby-power-btn" data-action="power-on">Turn speaker on</button>` : ''}
-        ${(kind === 'off' || kind === 'blocked' || kind === 'speaker-unreachable' || kind === 'contested' || kind === 'standby') ? `<div class="scene-footer-link"><span class="btn-link" data-action="open-health">Health &amp; settings</span></div>` : ''}
+        ${c.resetAction ? `<button class="btn btn-ghost" id="bt-reset-btn" data-action="reset-bluetooth">Reset Bluetooth</button>` : ''}
+        ${(kind === 'off' || kind === 'blocked' || kind === 'speaker-unreachable' || kind === 'contested' || kind === 'standby' || kind === 'bt-reconnecting') ? `<div class="scene-footer-link"><span class="btn-link" data-action="open-health">Health &amp; settings</span></div>` : ''}
       </div>
     </div>`;
 }
@@ -1311,6 +1386,7 @@ document.addEventListener('click', e => {
     'close-health': closeHealth,
     'open-pair': () => { closeHealth(); S.audio = S.audio || {}; S.audio.address = null; S.scene = Scene.PAIR; render(); },
     'spotify-restart': spotifyRestart,
+    'reset-bluetooth': resetBluetooth,
     'scan-networks': scanNetworks,
     'connect-wifi': connectWifi,
     'start-pairing': startPairing,
@@ -1521,6 +1597,13 @@ async function factoryResetConfirm() {
     toast('Appliance reset to factory defaults.');
     factoryResetCancel();
     closeSettings();
+    // A factory reset supersedes any pending Bluetooth-reconnect wait — the
+    // pairing is gone, so waiting on ble_connected here would only delay
+    // deriveScene() from moving to the pairing flow a fresh setup needs.
+    // Found during the #66 review's cleanup-path audit — see
+    // clearBtResetTimers()'s comment for the rest of that audit.
+    S.btResetStartedAt = null;
+    clearBtResetTimers();
     await refresh();
     render();
   } else {
@@ -1532,6 +1615,70 @@ async function spotifyRestart() {
   const r = await get('/api/v1/spotify/restart', false, 'POST');
   toast(r && r.status === 204 ? 'Spotify Connect is restarting…' : 'Could not restart Spotify Connect.');
   setTimeout(() => refresh().then(render), 4000);
+}
+
+// Cleanup audit (#66 review): page unload and WS reconnect need no handling
+// here (browser destroys the JS realm; WS lifecycle is independent of these
+// timers). Repeated health-poll failure is bounded by the hard timeout
+// regardless. A pre-empting scene can only be Scene.UNREACHABLE (a worse
+// problem, already prioritized) — the ticker self-resolves either way,
+// except factoryResetConfirm(), the one real gap found: it now clears this
+// state explicitly (see there) instead of leaving deriveScene() stuck on
+// BT_RECONNECTING through the post-reset pairing flow.
+function clearBtResetTimers() {
+  clearInterval(timers.btReconnectTick);
+  clearTimeout(timers.btReconnectTimeout);
+  timers.btReconnectTick = null;
+  timers.btReconnectTimeout = null;
+}
+
+async function resetBluetooth() {
+  const btn = document.getElementById('bt-reset-btn');
+  if (btn) { btn.disabled = true; }
+  // get() already catches every fetch failure internally and resolves to
+  // null rather than throwing — this try/finally is defense-in-depth
+  // against that guarantee changing, not a response to a known bug.
+  let r;
+  try {
+    r = await get('/api/v1/bluetooth/reset', false, 'POST');
+  } finally {
+    if (btn) { btn.disabled = false; }
+  }
+  // Status-specific messages: 429 (cooling down) and 501 (not available on
+  // this deployment) are worth telling apart from a generic failure — both
+  // are expected, not errors, and telling the user to "try again shortly"
+  // vs "this appliance doesn't support it" needs different next actions.
+  if (r && r.status === 429) {
+    toast('Reset requested too recently — try again in a bit.');
+    return;
+  }
+  if (r && r.status === 501) {
+    toast('Bluetooth reset is not available on this appliance.');
+    return;
+  }
+  if (!(r && r.status === 204)) {
+    toast('Could not reset Bluetooth.');
+    return;
+  }
+
+  // Success: the adapter itself is back in seconds, but finding and
+  // reconnecting to the speaker rides the normal scan cycle and can
+  // genuinely take over a minute (see _BT_RESET_TIMEOUT_MS). Show live
+  // progress instead of a toast that goes stale — cleared reactively by
+  // refresh() the moment ble_connected reads true, with the timeout below
+  // as a hard fallback so this never waits forever.
+  clearBtResetTimers();
+  S.btResetStartedAt = Date.now();
+  S.scene = deriveScene();
+  render();
+  timers.btReconnectTick = setInterval(render, 1000);
+  timers.btReconnectTimeout = setTimeout(() => {
+    S.btResetStartedAt = null;
+    clearBtResetTimers();
+    toast("Still not responding after the reset — try again, or check the speaker's power.");
+    S.scene = deriveScene();
+    render();
+  }, _BT_RESET_TIMEOUT_MS);
 }
 
 // ==========================================================================
