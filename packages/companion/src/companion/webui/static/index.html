@@ -288,16 +288,27 @@
     content: ''; position: absolute; inset: -34px; border-radius: 50%; z-index: -1;
     background: radial-gradient(circle, rgba(255,138,0,.32), transparent 70%);
     filter: blur(4px);
-    transition: opacity .4s;
+    opacity: .35;
+    transition: opacity .5s;
   }
   .hero-ring-wrap.is-playing::before { animation: glow-pulse 1.8s ease-in-out infinite; }
   @keyframes glow-pulse {
     0%, 100% { opacity: .7; transform: scale(1); }
     50%      { opacity: 1;  transform: scale(1.1); }
   }
+  /* Typed as <color> so they're actually interpolatable in a keyframe
+     animation — a plain custom property (untyped) can only ever jump
+     between values, not blend through the spectrum between them. This is
+     what lets flame-color-shift below animate real gradient colors instead
+     of faking a color change with a hue-rotate filter. */
+  @property --flame-c1 { syntax: '<color>'; inherits: true; initial-value: #FF3D2E; }
+  @property --flame-c2 { syntax: '<color>'; inherits: true; initial-value: #FF8A00; }
+  @property --flame-c3 { syntax: '<color>'; inherits: true; initial-value: #FFC53D; }
+
   .hero-ring {
     width: 176px; height: 176px; border-radius: 50%;
-    background: var(--heat-ring);
+    --flame-c1: var(--heat-1); --flame-c2: var(--heat-2); --flame-c3: var(--heat-3);
+    background: conic-gradient(from -90deg, var(--flame-c1), var(--flame-c2), var(--flame-c3), var(--flame-c1));
     padding: 8px;
     transition: filter .4s;
   }
@@ -306,17 +317,62 @@
     background: var(--bg);
   }
   .hero-ring.state-idle    { animation: breathe 4s ease-in-out infinite; }
-  .hero-ring.state-playing { animation: spin-slow 14s linear infinite, ring-pulse 1.8s ease-in-out infinite; }
+  .hero-ring.state-playing {
+    animation: spin-slow 14s linear infinite, ring-flame 2.6s ease-in-out infinite,
+               flame-color-shift 5.2s ease-in-out infinite;
+  }
+  /* Paused is deliberately the opposite of playing, not a milder version of
+     it: frozen (no animation at all — spin, flicker, and color-shift all
+     stop dead) and heavily desaturated/dimmed. The .4s filter transition on
+     .hero-ring above turns that into a visible "the fire goes out" cut
+     rather than an instant jump. This is the fix for paused reading as
+     "still kind of playing" — a calmer animation wasn't enough contrast on
+     its own; going fully static is what actually reads as "not playing" at
+     a glance. */
+  .hero-ring.state-paused  { filter: grayscale(.7) brightness(.55); animation: none; }
   .hero-ring.state-pending { filter: grayscale(.55) brightness(.85); animation: breathe 2.4s ease-in-out infinite; }
   @keyframes spin-slow { to { transform: rotate(360deg); } }
-  @keyframes ring-pulse {
-    0%, 100% { filter: brightness(1) saturate(1); }
-    50%      { filter: brightness(1.2) saturate(1.35); }
+  /* Irregular keyframe spacing (not evenly 25/50/75%) reads as flame flicker
+     rather than a metronomic pulse — deliberately not in lockstep with
+     glow-pulse (1.8s), icon-breathe (2.6s, same period but different
+     easing), or flame-color-shift (5.2s) below, so the combined motion
+     doesn't look like one thing repeating on a beat.
+
+     hue-rotate is the PRIMARY color-change mechanism, not a decoration —
+     `filter` has been supported everywhere for over a decade with no
+     dependency on @property, unlike flame-color-shift below. Kept the
+     swing mostly negative (toward deep red/ember) with a smaller positive
+     excursion (toward amber) so it stays in flame-plausible hues instead
+     of rotating into green/blue. */
+  @keyframes ring-flame {
+    0%   { filter: brightness(1)    saturate(1)    hue-rotate(0deg); }
+    22%  { filter: brightness(1.16) saturate(1.3)  hue-rotate(-24deg); }
+    48%  { filter: brightness(0.98) saturate(1.15) hue-rotate(12deg); }
+    71%  { filter: brightness(1.22) saturate(1.4)  hue-rotate(-32deg); }
+    100% { filter: brightness(1)    saturate(1)    hue-rotate(0deg); }
+  }
+  /* Layers on top of the hue-rotate above in browsers that support typed
+     custom properties (@property, syntax: <color>) — reassigns the
+     gradient's actual stop colors for extra richness. Browsers without
+     support simply don't animate these (the hue-rotate above still runs
+     regardless), so this is a progressive enhancement, not a dependency. */
+  @keyframes flame-color-shift {
+    0%   { --flame-c1: #FF3D2E; --flame-c2: #FF8A00; --flame-c3: #FFC53D; }
+    30%  { --flame-c1: #FF6A2E; --flame-c2: #FFB300; --flame-c3: #FFE066; }
+    55%  { --flame-c1: #E8281A; --flame-c2: #FF7A00; --flame-c3: #FFD93D; }
+    80%  { --flame-c1: #FF4D3D; --flame-c2: #FF9A1F; --flame-c3: #FFDD55; }
+    100% { --flame-c1: #FF3D2E; --flame-c2: #FF8A00; --flame-c3: #FFC53D; }
   }
 
   .hero-ring-icon {
     position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
     color: var(--ink); font-size: 30px;
+    transition: transform .4s;
+  }
+  .hero-ring-wrap.is-playing .hero-ring-icon { animation: icon-breathe 2.6s ease-in-out infinite; }
+  @keyframes icon-breathe {
+    0%, 100% { transform: scale(1); }
+    50%      { transform: scale(1.12); }
   }
   .hero-caption { font-family: var(--font-display); font-weight: 500; font-size: 15px; color: var(--muted); }
   .hero-caption.is-playing { color: var(--ink); }
@@ -478,7 +534,7 @@
 
   @media (prefers-reduced-motion: reduce) {
     .hero-ring.state-idle, .hero-ring.state-playing, .hero-ring.state-pending,
-    .hero-ring-wrap.is-playing::before,
+    .hero-ring-wrap.is-playing::before, .hero-ring-wrap.is-playing .hero-ring-icon,
     .center-ring.breathing, .dot.pending, .skel::after { animation: none !important; }
   }
 
@@ -1187,7 +1243,9 @@ function patchOnScene() {
   const playing = audioUp && S.spotify && S.spotify.state === 'playing';
   const paused = audioUp && S.spotify && S.spotify.state === 'paused';
 
-  ring.className = 'hero-ring ' + (!audioUp ? 'state-pending' : playing ? 'state-playing' : 'state-idle');
+  ring.className = 'hero-ring ' + (
+    !audioUp ? 'state-pending' : playing ? 'state-playing' : paused ? 'state-paused' : 'state-idle'
+  );
   ringWrap.classList.toggle('is-playing', !!playing);
   ringIcon.innerHTML = `<svg class="icon" style="width:1.5em;height:1.5em"><use href="#${playing ? 'i-music' : 'i-music'}"/></svg>`;
   caption.textContent = !audioUp ? 'Connecting audio…' : playing ? 'Playing' : paused ? 'Paused' : 'Ready to play';
