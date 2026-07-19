@@ -79,7 +79,7 @@ type PlaybackState = Literal["stopped", "playing", "paused"]
 # "volume_set", "shuffle_changed", ...) don't affect play/pause and are
 # ignored. "session_disconnected" resets to stopped — the Spotify client that
 # was driving playback went away.
-_EVENT_TO_STATE: dict[str, PlaybackState] = {
+_PLAYER_EVENT_TO_STATE: dict[str, PlaybackState] = {
     "playing": "playing",
     "paused": "paused",
     "stopped": "stopped",
@@ -334,7 +334,7 @@ class SpotifyService:
                 await writer.wait_closed()
 
     def _apply_player_event(self, event: str) -> None:
-        state = _EVENT_TO_STATE.get(event)
+        state = _PLAYER_EVENT_TO_STATE.get(event)
         if state is None:
             log.debug("Spotify: ignoring unknown PLAYER_EVENT %r", event)
             return
