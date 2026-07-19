@@ -282,6 +282,12 @@
     content: ''; position: absolute; inset: -34px; border-radius: 50%; z-index: -1;
     background: radial-gradient(circle, rgba(255,138,0,.32), transparent 70%);
     filter: blur(4px);
+    transition: opacity .4s;
+  }
+  .hero-ring-wrap.is-playing::before { animation: glow-pulse 1.8s ease-in-out infinite; }
+  @keyframes glow-pulse {
+    0%, 100% { opacity: .7; transform: scale(1); }
+    50%      { opacity: 1;  transform: scale(1.1); }
   }
   .hero-ring {
     width: 176px; height: 176px; border-radius: 50%;
@@ -294,9 +300,13 @@
     background: var(--bg);
   }
   .hero-ring.state-idle    { animation: breathe 4s ease-in-out infinite; }
-  .hero-ring.state-playing { animation: spin-slow 22s linear infinite; }
+  .hero-ring.state-playing { animation: spin-slow 14s linear infinite, ring-pulse 1.8s ease-in-out infinite; }
   .hero-ring.state-pending { filter: grayscale(.55) brightness(.85); animation: breathe 2.4s ease-in-out infinite; }
   @keyframes spin-slow { to { transform: rotate(360deg); } }
+  @keyframes ring-pulse {
+    0%, 100% { filter: brightness(1) saturate(1); }
+    50%      { filter: brightness(1.2) saturate(1.35); }
+  }
 
   .hero-ring-icon {
     position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
@@ -462,6 +472,7 @@
 
   @media (prefers-reduced-motion: reduce) {
     .hero-ring.state-idle, .hero-ring.state-playing, .hero-ring.state-pending,
+    .hero-ring-wrap.is-playing::before,
     .center-ring.breathing, .dot.pending, .skel::after { animation: none !important; }
   }
 
@@ -1056,7 +1067,7 @@ function onSceneHTML() {
       </header>
       <main class="on-main">
         <section class="hero">
-          <div class="hero-ring-wrap">
+          <div class="hero-ring-wrap" id="hero-ring-wrap">
             <div class="hero-ring state-idle" id="hero-ring"></div>
             <div class="hero-ring-icon" id="hero-ring-icon"><svg class="icon" style="width:1.5em;height:1.5em"><use href="#i-music"/></svg></div>
           </div>
@@ -1094,6 +1105,7 @@ function patchOnScene() {
 
   // -- Hero: playback + power + battery
   const ring = document.getElementById('hero-ring');
+  const ringWrap = document.getElementById('hero-ring-wrap');
   const ringIcon = document.getElementById('hero-ring-icon');
   const caption = document.getElementById('hero-caption');
   const audioUp = S.audio && S.audio.connected;
@@ -1101,6 +1113,7 @@ function patchOnScene() {
   const paused = audioUp && S.spotify && S.spotify.state === 'paused';
 
   ring.className = 'hero-ring ' + (!audioUp ? 'state-pending' : playing ? 'state-playing' : 'state-idle');
+  ringWrap.classList.toggle('is-playing', !!playing);
   ringIcon.innerHTML = `<svg class="icon" style="width:1.5em;height:1.5em"><use href="#${playing ? 'i-music' : 'i-music'}"/></svg>`;
   caption.textContent = !audioUp ? 'Connecting audio…' : playing ? 'Playing' : paused ? 'Paused' : 'Ready to play';
   caption.classList.toggle('is-playing', !!playing);
