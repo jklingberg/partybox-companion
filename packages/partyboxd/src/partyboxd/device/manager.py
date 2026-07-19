@@ -129,6 +129,16 @@ _POWER_COMMAND_GRACE = 60.0
 # broken control plane into broken audio as well.
 _RECOVERY_COOLDOWN = 900.0
 
+# Minimum time between *manually requested* adapter recoveries (Portal "Reset
+# Bluetooth" button, request_adapter_reset()) — deliberately much shorter than
+# _RECOVERY_COOLDOWN above. That 900s cooldown protects against a failure mode
+# an automatic power-cycle doesn't fix looping forever unattended; a manual
+# request is a one-off human decision each time; this is only a debounce
+# against an accidental double-click, not a safety brake against a persistent
+# fault (the button only appearing in a state that needs it, and a human
+# choosing to press it, already cover that).
+_MANUAL_RECOVERY_COOLDOWN = 30.0
+
 
 class DeviceNotConnectedError(Exception):
     """Raised when a device operation is attempted while the speaker is not connected."""
@@ -291,6 +301,10 @@ class DeviceManager:
         self._last_power_command: float | None = None
         #: loop.time() of the last adapter recovery (cool-down gate).
         self._last_recovery: float | None = None
+        #: loop.time() of the last *manually requested* adapter recovery
+        #: (separate, much shorter cool-down gate — see
+        #: _MANUAL_RECOVERY_COOLDOWN and request_adapter_reset()).
+        self._last_manual_recovery: float | None = None
 
     @property
     def snapshot(self) -> StatusSnapshot:
@@ -417,6 +431,60 @@ class DeviceManager:
         # Same ADR-034 grace window as power_on (see _note_connect_failure).
         self._last_power_command = asyncio.get_running_loop().time()
         self._bus.emit(PowerChangedEvent(state="off"))
+
+    async def request_adapter_reset(
+        self,
+    ) -> Literal["ok", "failed", "cooling_down", "not_configured"]:
+        """Manually power-cycle the Bluetooth adapter, on user request.
+
+        The Portal's "Reset Bluetooth" button (shown in the ``"unreachable"``
+        scene) calls this via ``POST /api/v1/bluetooth/reset``. It runs the
+        same recovery ADR-039's automatic wedge detection uses
+        (``adapter_recover_fn``), but on demand rather than after 3 dense
+        connect failures — that heuristic only catches *dense* failure
+        bursts; a case observed live (2026-07-18) had connect failures
+        spaced minutes apart, never dense enough to trip it, leaving the
+        appliance quietly retrying forever without ever taking the one
+        action that was likely to fix it.
+
+        Rate-limited by ``_MANUAL_RECOVERY_COOLDOWN`` — a short debounce
+        against accidental double-clicks, not a safety brake (see that
+        constant's comment for why it's much shorter than the automatic
+        path's ``_RECOVERY_COOLDOWN``). Also feeds ``_last_recovery`` so the
+        automatic path doesn't immediately re-trigger right after a manual
+        one succeeds.
+
+        Returns ``"not_configured"`` if no ``adapter_recover_fn`` was
+        injected (bare ``partyboxd`` without Companion); ``"cooling_down"``
+        if called again within the debounce window; otherwise ``"ok"``/
+        ``"failed"`` reflecting whether the power-cycle itself completed.
+        Never raises — mirrors ``_maybe_recover``'s and
+        ``adapter_recover_fn``'s own "collapse every failure to a value, not
+        an exception" contract.
+        """
+        if self._adapter_recover_fn is None:
+            return "not_configured"
+        now = asyncio.get_running_loop().time()
+        if (
+            self._last_manual_recovery is not None
+            and now - self._last_manual_recovery < _MANUAL_RECOVERY_COOLDOWN
+        ):
+            return "cooling_down"
+        self._last_manual_recovery = now
+        self._last_recovery = now
+        self._connect_failures = 0
+        self._scan_errors = 0
+        log.warning("Bluetooth adapter reset requested manually (Portal)")
+        try:
+            recovered = await self._adapter_recover_fn()
+        except Exception as exc:
+            log.warning("manual adapter reset raised: %s", exc)
+            return "failed"
+        if recovered:
+            log.info("manual adapter reset completed")
+            return "ok"
+        log.warning("manual adapter reset reported failure")
+        return "failed"
 
     async def run(self) -> None:
         """Main connection loop. Runs until cancelled.

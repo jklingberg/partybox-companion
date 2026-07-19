@@ -100,6 +100,36 @@ def _capability_unavailable() -> HTTPException:
     )
 
 
+def _adapter_reset_not_configured() -> HTTPException:
+    return HTTPException(
+        status_code=501,
+        detail={
+            "error": "adapter_reset_not_configured",
+            "message": "Bluetooth adapter reset is not available on this deployment.",
+        },
+    )
+
+
+def _adapter_reset_cooling_down() -> HTTPException:
+    return HTTPException(
+        status_code=429,
+        detail={
+            "error": "adapter_reset_cooling_down",
+            "message": "A Bluetooth adapter reset was requested too recently. Try again shortly.",
+        },
+    )
+
+
+def _adapter_reset_failed() -> HTTPException:
+    return HTTPException(
+        status_code=502,
+        detail={
+            "error": "adapter_reset_failed",
+            "message": "Bluetooth adapter reset did not complete successfully.",
+        },
+    )
+
+
 # ---------------------------------------------------------------------------
 # Router factory
 # ---------------------------------------------------------------------------
@@ -281,6 +311,46 @@ def make_router(
             await manager.power_off()
         except DeviceNotConnectedError as exc:
             raise _speaker_disconnected() from exc
+
+    # ------------------------------------------------------------------
+    # POST /api/v1/bluetooth/reset
+    # ------------------------------------------------------------------
+
+    @private.post(
+        "/bluetooth/reset",
+        status_code=204,
+        tags=["speaker"],
+        summary="Manually power-cycle the Bluetooth adapter",
+    )
+    async def post_bluetooth_reset() -> None:
+        """Power-cycle the appliance's Bluetooth adapter on demand.
+
+        Intended for the ``"unreachable"`` state — BLE control down but the
+        speaker's beacon still seen — where ADR-039's automatic wedge
+        detection may not have triggered (it only catches *dense* connect
+        failure bursts, not slow/intermittent ones). Drops any live A2DP
+        audio too; use as a manual last resort, not routinely.
+
+        Rate-limited independently of the automatic recovery path — see
+        ``DeviceManager.request_adapter_reset``.
+
+        **Responses:**
+
+        | Code | Meaning |
+        |------|---------|
+        | 204 | Adapter reset completed |
+        | 401 | Missing or invalid API key |
+        | 429 | Reset requested too recently; try again shortly |
+        | 501 | Not available on this deployment (bare partyboxd, no Companion) |
+        | 502 | Reset was attempted but did not complete successfully |
+        """
+        result = await manager.request_adapter_reset()
+        if result == "not_configured":
+            raise _adapter_reset_not_configured()
+        if result == "cooling_down":
+            raise _adapter_reset_cooling_down()
+        if result == "failed":
+            raise _adapter_reset_failed()
 
     router = APIRouter()
     router.include_router(public)

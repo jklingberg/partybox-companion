@@ -933,7 +933,8 @@ const CENTER_COPY = {
   },
   'speaker-unreachable': {
     icon: 'i-bluetooth', title: 'Speaker seems to be on, but not responding',
-    body: "The speaker is broadcasting that it's powered, but its Bluetooth control link is down. Most often this is the speaker in deep standby — after a while asleep it stops accepting control connections until it's woken. Press the power button on the speaker to wake it; Companion reconnects automatically. Less often it's a temporary radio issue on the Companion side, which clears on its own within a few minutes. Still stuck? Unplug the speaker's power cable for 10 seconds and plug it back in.",
+    body: "The speaker is broadcasting that it's powered, but its Bluetooth control link is down. Most often this is the speaker in deep standby — after a while asleep it stops accepting control connections until it's woken. Press the power button on the speaker to wake it; Companion reconnects automatically. Less often it's a stuck Bluetooth adapter on the Companion side — usually resolves on its own within a few minutes, but if it's been longer than that, try resetting Bluetooth below (this also drops any audio in progress). Still stuck after that? Unplug the speaker's power cable for 10 seconds and plug it back in.",
+    resetAction: true,
   },
   contested: {
     icon: 'i-bluetooth', title: 'Playing from another device',
@@ -976,6 +977,7 @@ function centerSceneHTML(kind) {
           <p class="center-body" style="margin-top:8px">${c.body}</p>
         </div>
         ${c.action ? `<button class="btn btn-heat" id="standby-power-btn" data-action="power-on">Turn speaker on</button>` : ''}
+        ${c.resetAction ? `<button class="btn btn-ghost" id="bt-reset-btn" data-action="reset-bluetooth">Reset Bluetooth</button>` : ''}
         ${(kind === 'off' || kind === 'blocked' || kind === 'speaker-unreachable' || kind === 'contested' || kind === 'standby') ? `<div class="scene-footer-link"><span class="btn-link" data-action="open-health">Health &amp; settings</span></div>` : ''}
       </div>
     </div>`;
@@ -1292,6 +1294,7 @@ document.addEventListener('click', e => {
     'close-health': closeHealth,
     'open-pair': () => { closeHealth(); S.audio = S.audio || {}; S.audio.address = null; S.scene = Scene.PAIR; render(); },
     'spotify-restart': spotifyRestart,
+    'reset-bluetooth': resetBluetooth,
     'scan-networks': scanNetworks,
     'connect-wifi': connectWifi,
     'start-pairing': startPairing,
@@ -1512,6 +1515,28 @@ async function factoryResetConfirm() {
 async function spotifyRestart() {
   const r = await get('/api/v1/spotify/restart', false, 'POST');
   toast(r && r.status === 204 ? 'Spotify Connect is restarting…' : 'Could not restart Spotify Connect.');
+  setTimeout(() => refresh().then(render), 4000);
+}
+
+async function resetBluetooth() {
+  const btn = document.getElementById('bt-reset-btn');
+  if (btn) { btn.disabled = true; }
+  toast('Resetting Bluetooth…', { sticky: true });
+  const r = await get('/api/v1/bluetooth/reset', false, 'POST');
+  if (btn) { btn.disabled = false; }
+  // Status-specific messages: 429 (cooling down) and 501 (not available on
+  // this deployment) are worth telling apart from a generic failure — both
+  // are expected, not errors, and telling the user to "try again shortly"
+  // vs "this appliance doesn't support it" needs different next actions.
+  if (r && r.status === 204) {
+    toast('Bluetooth reset — reconnecting…');
+  } else if (r && r.status === 429) {
+    toast('Reset requested too recently — try again in a bit.');
+  } else if (r && r.status === 501) {
+    toast('Bluetooth reset is not available on this appliance.');
+  } else {
+    toast('Could not reset Bluetooth.');
+  }
   setTimeout(() => refresh().then(render), 4000);
 }
 
