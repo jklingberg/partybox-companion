@@ -124,7 +124,15 @@
     font-size: 30px;
   }
   .center-title { font-family: var(--font-display); font-weight: 600; font-size: 20px; }
-  .center-body { color: var(--muted); font-size: 14.5px; line-height: 1.65; max-width: 320px; }
+  /* margin: 0 auto centers the box itself, not just the text inside it.
+     Without it, this <p> sits flush against the left edge of its flex-item
+     parent (a plain wrapping <div> that — confirmed via computed styles —
+     stretches to the full 380px .center-card width rather than shrinking to
+     fit-content), so max-width's leftover space all lands on the right and
+     every center-scene body reads as left-aligned regardless of
+     text-align. Found 2026-07-19 chasing a "text looks left-justified"
+     report; affected every centered scene, not just the one reported. */
+  .center-body { color: var(--muted); font-size: 14.5px; line-height: 1.65; max-width: 320px; margin-left: auto; margin-right: auto; }
 
   .scene-boot         { --wash: rgba(154,151,172,.14); }
   .scene-unreachable  { --wash: rgba(90,88,112,.5); }
