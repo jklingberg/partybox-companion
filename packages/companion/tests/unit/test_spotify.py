@@ -11,6 +11,7 @@ No librespot binary is required. Tests cover:
 from __future__ import annotations
 
 import asyncio
+import logging
 import stat
 import tempfile
 from pathlib import Path
@@ -151,6 +152,17 @@ def test_apply_player_event_ignores_unrecognized(event: str) -> None:
     assert svc._state == "playing"  # unchanged
 
 
+def test_apply_player_event_logs_unknown_event(caplog: pytest.LogCaptureFixture) -> None:
+    svc = _service()
+    svc._state = "playing"
+    with caplog.at_level(logging.DEBUG, logger="companion.services.spotify"):
+        svc._apply_player_event("foobar")
+
+    assert svc._state == "playing"  # unchanged
+    assert "foobar" in caplog.text
+    assert all(record.levelno == logging.DEBUG for record in caplog.records)
+
+
 def test_apply_player_event_playing_then_paused() -> None:
     """The bug this replaces: paused must be distinguishable from playing."""
     svc = _service()
@@ -186,7 +198,19 @@ def test_ensure_runtime_files_leaves_no_tmp_file_behind(tmp_path: Path) -> None:
     assert list(tmp_path.glob("*.tmp")) == []
 
 
-async def test_start_event_server_retries_on_oserror(tmp_path: Path) -> None:
+def test_ensure_runtime_files_rejects_non_directory_path(tmp_path: Path) -> None:
+    """A regular file sitting at runtime_dir must raise a clear, specific error."""
+    blocked = tmp_path / "blocked"
+    blocked.write_text("not a directory")
+    svc = _service(runtime_dir=blocked)
+
+    with pytest.raises(NotADirectoryError, match=str(blocked)):
+        svc._ensure_runtime_files()
+
+
+async def test_start_event_server_retries_on_oserror(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     """A transient OSError while setting up the socket is retried, not raised."""
     svc = _service(runtime_dir=tmp_path)
     real_ensure = svc._ensure_runtime_files
@@ -200,11 +224,16 @@ async def test_start_event_server_retries_on_oserror(tmp_path: Path) -> None:
 
     svc._ensure_runtime_files = flaky_ensure  # type: ignore[method-assign]
 
-    with patch("companion.services.spotify.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-        server = await svc._start_event_server()
+    with caplog.at_level(logging.INFO, logger="companion.services.spotify"):
+        with patch(
+            "companion.services.spotify.asyncio.sleep", new_callable=AsyncMock
+        ) as mock_sleep:
+            server = await svc._start_event_server()
 
     assert calls["n"] == 2
     mock_sleep.assert_called_once()
+    assert "initialized" in caplog.text
+    assert "1 failed attempt" in caplog.text
     server.close()
     await server.wait_closed()
 

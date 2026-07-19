@@ -19,6 +19,28 @@ validation notes this replaced. ``--onevent`` runs a program (see
 with the event name in the ``PLAYER_EVENT`` env var. That program
 (``_librespot_onevent.py``) forwards the event over a Unix domain socket this
 service listens on — see ``_handle_event_connection``.
+
+Event flow, librespot's playback event to a client watching the Portal::
+
+    librespot
+        │  --onevent <script>, PLAYER_EVENT=playing|paused|stopped|... in env
+        ▼
+    generated shell shim (_ensure_runtime_files, runtime_dir/librespot-onevent.sh)
+        │  exec python -m companion.services._librespot_onevent
+        ▼
+    _librespot_onevent.py  (short-lived subprocess, one per event)
+        │  connects + writes PLAYER_EVENT to COMPANION_SPOTIFY_EVENT_SOCK
+        ▼
+    Unix domain socket  (runtime_dir/spotify-events.sock)
+        │  accepted by _handle_event_connection
+        ▼
+    SpotifyService._apply_player_event  →  self._state, self._running
+        │  _set_status() emits SpotifyStatusChanged on any change
+        ▼
+    EventBus  (self._bus, see subscribe()/unsubscribe())
+        │
+        ▼
+    REST (GET /api/v1/spotify) · WS (`spotify_changed`) · Portal UI
 """
 
 from __future__ import annotations
@@ -227,14 +249,16 @@ class SpotifyService:
         `finally` cleanup below, `start_unix_server` would otherwise fail
         with "address already in use" against the leftover socket file.
         """
+        attempt = 0
         while True:
             try:
                 self._ensure_runtime_files()
                 self._event_sock_path.unlink(missing_ok=True)
-                return await asyncio.start_unix_server(
+                server = await asyncio.start_unix_server(
                     self._handle_event_connection, path=str(self._event_sock_path)
                 )
             except OSError as exc:
+                attempt += 1
                 log.error(
                     "failed to set up Spotify event socket in %s: %s (retrying in %.0fs)",
                     self._runtime_dir,
@@ -242,6 +266,17 @@ class SpotifyService:
                     _RESTART_DELAY,
                 )
                 await asyncio.sleep(_RESTART_DELAY)
+            else:
+                if attempt:
+                    # Only log recovery if setup didn't succeed on the first try —
+                    # otherwise every normal start would log this alongside the
+                    # existing "Spotify service starting" line for no added value.
+                    log.info(
+                        "Spotify event socket initialized in %s after %d failed attempt(s)",
+                        self._runtime_dir,
+                        attempt,
+                    )
+                return server
 
     def _ensure_runtime_files(self) -> None:
         """Create the runtime dir and the librespot --onevent launcher script.
@@ -264,6 +299,15 @@ class SpotifyService:
         process interrupted mid-write never leaves librespot pointing at a
         truncated or half-written launcher.
         """
+        if self._runtime_dir.exists() and not self._runtime_dir.is_dir():
+            # mkdir(exist_ok=True) would raise FileExistsError here anyway, but
+            # with a message that doesn't say *why* — spelling it out saves
+            # whoever's debugging a confusing misconfiguration (e.g. runtime_dir
+            # pointed at a file left over from something else) a trip to a
+            # traceback to figure out what's actually wrong.
+            raise NotADirectoryError(
+                f"Spotify runtime_dir {self._runtime_dir} exists and is not a directory"
+            )
         self._runtime_dir.mkdir(parents=True, exist_ok=True)
         self._runtime_dir.chmod(0o700)
         script = (

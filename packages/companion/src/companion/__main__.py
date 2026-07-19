@@ -102,9 +102,18 @@ async def _gate_spotify_on_audio(audio: AudioService, spotify: SpotifyService) -
     Connect device from clients' device lists.
 
     SpotifyService.run() owns subprocess crash-recovery internally; this gate
-    does not supervise it.  If spotify.run() ever exits other than by
-    cancellation that is a violated invariant; let this coroutine propagate so
-    the Supervisor can restart it.  See ADR-026.
+    does not supervise it.  See ADR-026.
+
+    KNOWN GAP (github.com/jklingberg/partybox-companion/issues/65):
+    spotify_task below is a bare asyncio.create_task() and is only ever
+    awaited on the grace-period-timeout and cancellation paths — not on the
+    "audio stays ready" path, which is the common case.  An uncaught
+    exception from spotify.run() while audio is ready is therefore never
+    retrieved here, this coroutine keeps running as if nothing happened, and
+    the Supervisor (which only sees "spotify-audio-gate", not spotify.run()
+    itself) never restarts anything.  Despite what an earlier version of
+    this docstring claimed, an exception here does NOT currently propagate
+    to the Supervisor.  Fix tracked in the issue above.
     """
     queue = audio.subscribe()
     spotify_task: asyncio.Task[None] | None = None
