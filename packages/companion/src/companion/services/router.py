@@ -45,7 +45,7 @@ class SpotifyStatusResponse(BaseModel):
     """Response body for GET /api/v1/spotify."""
 
     running: bool
-    active: bool
+    state: Literal["stopped", "playing", "paused"]
     device_name: str
 
 
@@ -259,8 +259,9 @@ def make_services_router(
         """Current state of the Spotify Connect service.
 
         Always returns **200**. ``running`` indicates whether librespot is
-        running; ``active`` indicates whether Spotify playback is currently
-        in progress.
+        running; ``state`` is librespot's actual playback state — one of
+        ``"stopped"`` (no active session), ``"playing"``, or ``"paused"`` —
+        reported via librespot's own event hook, not inferred from logs.
 
         **Responses:**
 
@@ -271,7 +272,7 @@ def make_services_router(
         s = spotify.status
         return SpotifyStatusResponse(
             running=s.running,
-            active=s.active,
+            state=s.state,
             device_name=s.device_name,
         )
 
@@ -455,7 +456,7 @@ def make_services_router(
                     {
                         "spotify": {
                             "running": spotify_status.running,
-                            "active": spotify_status.active,
+                            "state": spotify_status.state,
                             "device_name": spotify_status.device_name,
                         },
                         "audio": {

@@ -17,6 +17,12 @@ SupplementaryGroups=systemd-journal
 # The Portal writes config.json here; systemd creates the directory before ExecStart.
 Environment=COMPANION_DATA_DIR=/var/lib/companion
 
+# Production path for ephemeral runtime state (librespot --onevent launcher
+# script + its Unix event socket — see SpotifyService). Matches
+# RuntimeDirectory=companion below, which is what actually creates this
+# tmpfs-backed directory before ExecStart.
+Environment=COMPANION_RUNTIME_DIR=/run/companion
+
 # Operator overrides: copy system/systemd/companion.env to /etc/companion/companion.env
 # and uncomment the settings you want to change. The file is silently ignored if absent.
 EnvironmentFile=-/etc/companion/companion.env

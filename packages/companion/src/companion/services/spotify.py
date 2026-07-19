@@ -7,8 +7,40 @@ subprocess cleanly.
 
 librespot is an implementation detail. The product is: this Pi appears as a
 Spotify Connect speaker. Playback control (volume, skip, queue) stays inside
-Spotify clients; the service only tracks whether librespot is running and
-whether playback is currently active.
+Spotify clients; the service only tracks whether librespot is running and its
+current playback state (stopped/playing/paused).
+
+Playback state comes from librespot's own event hook (``--onevent``), not
+from log scraping: librespot 0.8's stderr is silent across pause/resume (only
+track-load lines are logged at default verbosity), so a log-line heuristic
+can detect "started playing" but can never detect "paused" — see the M18
+validation notes this replaced. ``--onevent`` runs a program (see
+``_ensure_runtime_files``) for every playback event, including "paused",
+with the event name in the ``PLAYER_EVENT`` env var. That program
+(``_librespot_onevent.py``) forwards the event over a Unix domain socket this
+service listens on — see ``_handle_event_connection``.
+
+Event flow, librespot's playback event to a client watching the Portal::
+
+    librespot
+        │  --onevent <script>, PLAYER_EVENT=playing|paused|stopped|... in env
+        ▼
+    generated shell shim (_ensure_runtime_files, runtime_dir/librespot-onevent.sh)
+        │  exec python -m companion.services._librespot_onevent
+        ▼
+    _librespot_onevent.py  (short-lived subprocess, one per event)
+        │  connects + writes PLAYER_EVENT to COMPANION_SPOTIFY_EVENT_SOCK
+        ▼
+    Unix domain socket  (runtime_dir/spotify-events.sock)
+        │  accepted by _handle_event_connection
+        ▼
+    SpotifyService._apply_player_event  →  self._state, self._running
+        │  _set_status() emits SpotifyStatusChanged on any change
+        ▼
+    EventBus  (self._bus, see subscribe()/unsubscribe())
+        │
+        ▼
+    REST (GET /api/v1/spotify) · WS (`spotify_changed`) · Portal UI
 """
 
 from __future__ import annotations
@@ -16,10 +48,16 @@ from __future__ import annotations
 import asyncio
 import ctypes
 import logging
+import os
 import re
+import shlex
 import shutil
 import signal
+import sys
+import tempfile
+from contextlib import suppress
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
 from partyboxd.eventbus import EventBus
@@ -31,20 +69,22 @@ log = logging.getLogger(__name__)
 
 _RESTART_DELAY = 5.0
 _NOT_FOUND_RETRY = 60.0
+_EVENT_READ_TIMEOUT = 2.0
+_DEFAULT_RUNTIME_DIR = Path(tempfile.gettempdir()) / "companion"
 
-# librespot logs to stderr. These patterns detect playback state transitions.
-# The matching is intentionally broad and case-insensitive — log format can
-# vary between librespot releases. Best-effort is sufficient for a status display.
-#
-# librespot 0.8 reality (captured on hardware, M18 validation): the only
-# playback-related lines at its default verbosity are
-#   "Loading <Track> with Spotify URI <...>" and "<Track> (NNN ms) loaded" —
-# pause/stop/resume produce NO output at all, so `active` cannot transition
-# back to false from log parsing alone. The robust source of truth would be
-# the PipeWire stream state of the librespot node; deferred as a design
-# decision (status display only, no gating logic depends on `active`).
-_ACTIVE_PATTERNS = ("is now playing", "loading track", "preloading", "loading <")
-_INACTIVE_PATTERNS = ("track paused", "track stopped", "end of track", "stopped")
+type PlaybackState = Literal["stopped", "playing", "paused"]
+
+# librespot --onevent PLAYER_EVENT values that map to a playback state change.
+# Other events it emits ("changed", "loading", "preloading", "seeked",
+# "volume_set", "shuffle_changed", ...) don't affect play/pause and are
+# ignored. "session_disconnected" resets to stopped — the Spotify client that
+# was driving playback went away.
+_PLAYER_EVENT_TO_STATE: dict[str, PlaybackState] = {
+    "playing": "playing",
+    "paused": "paused",
+    "stopped": "stopped",
+    "session_disconnected": "stopped",
+}
 
 # librespot line prefix, e.g. "[2026-07-03T14:15:55Z WARN  librespot_connect::spirc]".
 # Used to surface librespot's own WARN/ERROR lines at a visible log level —
@@ -61,13 +101,13 @@ class SpotifyStatus:
     """Point-in-time view of the Spotify Connect service."""
 
     running: bool
-    active: bool
+    state: PlaybackState
     device_name: str
 
 
 @dataclass(frozen=True)
 class SpotifyStatusChanged:
-    """Emitted when running or active transitions.
+    """Emitted when running or state transitions.
 
     Lets WS subscribers (the Portal, via the merged event stream — see
     docs/adr/035-state-ownership-and-signal-pipeline.md) update their view
@@ -75,7 +115,7 @@ class SpotifyStatusChanged:
     """
 
     running: bool
-    active: bool
+    state: PlaybackState
     device_name: str
     type: Literal["spotify_changed"] = "spotify_changed"
 
@@ -96,18 +136,22 @@ class SpotifyService:
 
     While :meth:`run` is active, :attr:`status` reflects the current state.
     Subscribers receive :class:`SpotifyStatusChanged` events on every
-    running/active transition; see :meth:`subscribe`.
+    running/state transition; see :meth:`subscribe`.
     """
 
     def __init__(
         self,
         settings: SpotifySettings,
         volume_state: VolumeState | None = None,
+        runtime_dir: Path = _DEFAULT_RUNTIME_DIR,
     ) -> None:
         self._settings = settings
         self._volume_state = volume_state
+        self._runtime_dir = runtime_dir
+        self._onevent_script_path = runtime_dir / "librespot-onevent.sh"
+        self._event_sock_path = runtime_dir / "spotify-events.sock"
         self._running = False
-        self._active = False
+        self._state: PlaybackState = "stopped"
         self._proc: asyncio.subprocess.Process | None = None
         self._bus: EventBus[SpotifyEvent] = EventBus()
 
@@ -117,7 +161,7 @@ class SpotifyService:
         return self._settings
 
     def subscribe(self) -> asyncio.Queue[SpotifyEvent]:
-        """Subscribe to running/active changes.
+        """Subscribe to running/state changes.
 
         Returns a queue pre-populated with the **current state** as its
         first event, followed by :class:`SpotifyStatusChanged` events for
@@ -129,7 +173,7 @@ class SpotifyService:
         q = self._bus.subscribe()
         q.put_nowait(
             SpotifyStatusChanged(
-                running=self._running, active=self._active, device_name=self._settings.connect_name
+                running=self._running, state=self._state, device_name=self._settings.connect_name
             )
         )
         return q
@@ -143,7 +187,7 @@ class SpotifyService:
         """Current point-in-time service state. Never blocks."""
         return SpotifyStatus(
             running=self._running,
-            active=self._active,
+            state=self._state,
             device_name=self._settings.connect_name,
         )
 
@@ -169,6 +213,7 @@ class SpotifyService:
     async def run(self) -> None:
         """Start librespot and restart after unexpected exits. Runs until cancelled."""
         log.info("Spotify service starting (device_name=%r)", self._settings.connect_name)
+        event_server = await self._start_event_server()
         try:
             while True:
                 await self._run_once()
@@ -176,10 +221,124 @@ class SpotifyService:
             log.info("Spotify service stopping")
             await self._terminate()
             raise
+        finally:
+            event_server.close()
+            await event_server.wait_closed()
+            self._event_sock_path.unlink(missing_ok=True)
 
     # ------------------------------------------------------------------
     # internals
     # ------------------------------------------------------------------
+
+    async def _start_event_server(self) -> asyncio.Server:
+        """Create the runtime dir/launcher script and bind the --onevent socket.
+
+        Retries on OSError (e.g. the runtime dir isn't writable yet at early
+        boot) instead of raising. This matters here specifically:
+        SpotifyService.run() is launched via a bare ``asyncio.create_task()``
+        inside ``_gate_spotify_on_audio`` (see ``__main__.py``), not awaited
+        by the Supervisor directly — an uncaught exception here would be
+        silently dropped (surfacing only as an unretrieved-task-exception
+        warning) rather than triggering a restart. Retrying keeps
+        SpotifyService self-healing on its own, per its own docstring
+        ("owns subprocess crash-recovery internally"), without depending on
+        that propagation path.
+
+        Removing any stale socket file before binding also covers the crash
+        case: if a prior companion process died without reaching the
+        `finally` cleanup below, `start_unix_server` would otherwise fail
+        with "address already in use" against the leftover socket file.
+        """
+        attempt = 0
+        while True:
+            try:
+                self._ensure_runtime_files()
+                self._event_sock_path.unlink(missing_ok=True)
+                server = await asyncio.start_unix_server(
+                    self._handle_event_connection, path=str(self._event_sock_path)
+                )
+            except OSError as exc:
+                attempt += 1
+                log.error(
+                    "failed to set up Spotify event socket in %s: %s (retrying in %.0fs)",
+                    self._runtime_dir,
+                    exc,
+                    _RESTART_DELAY,
+                )
+                await asyncio.sleep(_RESTART_DELAY)
+            else:
+                if attempt:
+                    # Only log recovery if setup didn't succeed on the first try —
+                    # otherwise every normal start would log this alongside the
+                    # existing "Spotify service starting" line for no added value.
+                    log.info(
+                        "Spotify event socket initialized in %s after %d failed attempt(s)",
+                        self._runtime_dir,
+                        attempt,
+                    )
+                return server
+
+    def _ensure_runtime_files(self) -> None:
+        """Create the runtime dir and the librespot --onevent launcher script.
+
+        librespot's ``--onevent`` takes a single executable path — it cannot
+        invoke ``python -m ...`` directly — so this writes a tiny shell shim
+        that execs the real hook (:mod:`companion.services._librespot_onevent`)
+        via the current interpreter. Regenerated on every start so a Python
+        interpreter path change (e.g. venv rebuild) doesn't leave a stale shim.
+
+        The runtime dir is chmod'd 0700: it holds the event socket and this
+        executable script, and should not be readable by other local users.
+        On the appliance this is already true (RuntimeDirectoryMode=0700 in
+        companion.service), but ``mkdir(exist_ok=True)`` does not update the
+        mode of a pre-existing directory, and the dev-mode default (a temp
+        dir) has no such guarantee — so it's set explicitly here regardless.
+
+        The script itself is written to a temp file and atomically renamed
+        into place (same filesystem, since both live in runtime_dir) so a
+        process interrupted mid-write never leaves librespot pointing at a
+        truncated or half-written launcher.
+        """
+        if self._runtime_dir.exists() and not self._runtime_dir.is_dir():
+            # mkdir(exist_ok=True) would raise FileExistsError here anyway, but
+            # with a message that doesn't say *why* — spelling it out saves
+            # whoever's debugging a confusing misconfiguration (e.g. runtime_dir
+            # pointed at a file left over from something else) a trip to a
+            # traceback to figure out what's actually wrong.
+            raise NotADirectoryError(
+                f"Spotify runtime_dir {self._runtime_dir} exists and is not a directory"
+            )
+        self._runtime_dir.mkdir(parents=True, exist_ok=True)
+        self._runtime_dir.chmod(0o700)
+        script = (
+            "#!/bin/sh\n"
+            f"exec {shlex.quote(sys.executable)} -m companion.services._librespot_onevent\n"
+        )
+        tmp_path = self._onevent_script_path.with_name(self._onevent_script_path.name + ".tmp")
+        tmp_path.write_text(script)
+        tmp_path.chmod(0o755)
+        tmp_path.replace(self._onevent_script_path)
+
+    async def _handle_event_connection(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        """Handle one connection from the librespot onevent hook (see module docstring)."""
+        try:
+            line = await asyncio.wait_for(reader.readline(), timeout=_EVENT_READ_TIMEOUT)
+            self._apply_player_event(line.decode(errors="replace").strip())
+        except TimeoutError:
+            pass
+        finally:
+            writer.close()
+            with suppress(OSError):
+                await writer.wait_closed()
+
+    def _apply_player_event(self, event: str) -> None:
+        state = _PLAYER_EVENT_TO_STATE.get(event)
+        if state is None:
+            log.debug("Spotify: ignoring unknown PLAYER_EVENT %r", event)
+            return
+        self._set_status(running=self._running, state=state)
 
     async def _run_once(self) -> None:
         if shutil.which("librespot") is None:
@@ -187,17 +346,19 @@ class SpotifyService:
                 "librespot not found — install it to enable Spotify Connect (retrying in %.0fs)",
                 _NOT_FOUND_RETRY,
             )
-            self._set_status(running=False, active=False)
+            self._set_status(running=False, state="stopped")
             await asyncio.sleep(_NOT_FOUND_RETRY)
             return
 
         cmd = self._build_command()
+        env = {**os.environ, "COMPANION_SPOTIFY_EVENT_SOCK": str(self._event_sock_path)}
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.PIPE,
                 preexec_fn=self._preexec,
+                env=env,
             )
         except OSError as exc:
             log.error("failed to start librespot: %s (retrying in %.0fs)", exc, _RESTART_DELAY)
@@ -205,7 +366,7 @@ class SpotifyService:
             return
 
         self._proc = proc
-        self._set_status(running=True, active=False)
+        self._set_status(running=True, state="stopped")
         log.info(
             "Spotify service started (pid=%d, device=%r)",
             proc.pid,
@@ -216,7 +377,7 @@ class SpotifyService:
 
         rc = proc.returncode
         self._proc = None
-        self._set_status(running=False, active=False)
+        self._set_status(running=False, state="stopped")
 
         if rc == 0:
             log.info("librespot exited cleanly")
@@ -229,7 +390,12 @@ class SpotifyService:
             await asyncio.sleep(_RESTART_DELAY)
 
     async def _monitor(self, proc: asyncio.subprocess.Process) -> None:
-        """Stream stderr until the process exits, inferring playback state."""
+        """Stream stderr until the process exits.
+
+        Playback state arrives separately via the --onevent socket (see
+        _handle_event_connection); this loop only surfaces librespot's own
+        log lines and infers the output volume.
+        """
         stderr = proc.stderr
         if stderr is None:
             await proc.wait()
@@ -244,7 +410,6 @@ class SpotifyService:
                 log.error("librespot: %s", line)
             else:
                 log.warning("librespot: %s", line)
-            self._infer_playback_state(line)
             self._infer_volume(line)
 
         await proc.wait()
@@ -255,17 +420,6 @@ class SpotifyService:
         m = _VOLUME_RE.search(line)
         if m is not None:
             self._volume_state.update(int(m.group(1)), "spotify")
-
-    def _infer_playback_state(self, line: str) -> None:
-        lower = line.lower()
-        if any(p in lower for p in _ACTIVE_PATTERNS):
-            if not self._active:
-                self._set_status(running=self._running, active=True)
-                log.info("Spotify playback became active")
-        elif any(p in lower for p in _INACTIVE_PATTERNS):
-            if self._active:
-                self._set_status(running=self._running, active=False)
-                log.info("Spotify playback stopped")
 
     async def _terminate(self) -> None:
         proc = self._proc
@@ -281,17 +435,17 @@ class SpotifyService:
                 pass
         finally:
             self._proc = None
-            self._set_status(running=False, active=False)
+            self._set_status(running=False, state="stopped")
 
-    def _set_status(self, *, running: bool, active: bool) -> None:
-        """Update running/active and emit SpotifyStatusChanged if either changed."""
-        if running == self._running and active == self._active:
+    def _set_status(self, *, running: bool, state: PlaybackState) -> None:
+        """Update running/state and emit SpotifyStatusChanged if either changed."""
+        if running == self._running and state == self._state:
             return
         self._running = running
-        self._active = active
+        self._state = state
         self._bus.emit(
             SpotifyStatusChanged(
-                running=running, active=active, device_name=self._settings.connect_name
+                running=running, state=state, device_name=self._settings.connect_name
             )
         )
 
@@ -314,6 +468,9 @@ class SpotifyService:
             "--bitrate",
             str(self._settings.bitrate),
             "--disable-audio-cache",
+            "--onevent",
+            str(self._onevent_script_path),
+            "--emit-sink-events",
         ]
         if self._settings.backend is not None:
             cmd += ["--backend", self._settings.backend]

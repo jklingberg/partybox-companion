@@ -54,9 +54,10 @@ def _make_client(status: SpotifyStatus, tmp_path: Path | None = None) -> AsyncCl
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
 
-_STOPPED = SpotifyStatus(running=False, active=False, device_name="PartyBox")
-_READY = SpotifyStatus(running=True, active=False, device_name="PartyBox")
-_PLAYING = SpotifyStatus(running=True, active=True, device_name="Living Room")
+_STOPPED = SpotifyStatus(running=False, state="stopped", device_name="PartyBox")
+_READY = SpotifyStatus(running=True, state="stopped", device_name="PartyBox")
+_PLAYING = SpotifyStatus(running=True, state="playing", device_name="Living Room")
+_PAUSED = SpotifyStatus(running=True, state="paused", device_name="Living Room")
 
 
 # ---------------------------------------------------------------------------
@@ -70,7 +71,7 @@ async def test_spotify_stopped() -> None:
     assert r.status_code == 200
     body = r.json()
     assert body["running"] is False
-    assert body["active"] is False
+    assert body["state"] == "stopped"
     assert body["device_name"] == "PartyBox"
 
 
@@ -80,7 +81,7 @@ async def test_spotify_ready() -> None:
     assert r.status_code == 200
     body = r.json()
     assert body["running"] is True
-    assert body["active"] is False
+    assert body["state"] == "stopped"
 
 
 async def test_spotify_playing() -> None:
@@ -89,7 +90,17 @@ async def test_spotify_playing() -> None:
     assert r.status_code == 200
     body = r.json()
     assert body["running"] is True
-    assert body["active"] is True
+    assert body["state"] == "playing"
+    assert body["device_name"] == "Living Room"
+
+
+async def test_spotify_paused() -> None:
+    async with _make_client(_PAUSED) as client:
+        r = await client.get("/api/v1/spotify")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["running"] is True
+    assert body["state"] == "paused"
     assert body["device_name"] == "Living Room"
 
 
@@ -116,11 +127,11 @@ async def test_spotify_endpoint_is_public() -> None:
 
 
 async def test_spotify_response_shape() -> None:
-    """Response must contain exactly running, active, device_name."""
+    """Response must contain exactly running, state, device_name."""
     async with _make_client(_READY) as client:
         r = await client.get("/api/v1/spotify")
     body = r.json()
-    assert set(body.keys()) == {"running", "active", "device_name"}
+    assert set(body.keys()) == {"running", "state", "device_name"}
 
 
 # ---------------------------------------------------------------------------
@@ -228,7 +239,7 @@ async def test_debug_bundle_services_json_has_spotify(tmp_path: Path) -> None:
     with zipfile.ZipFile(BytesIO(r.content)) as zf:
         services = json.loads(zf.read("services.json"))
     assert services["spotify"]["running"] is True
-    assert services["spotify"]["active"] is True
+    assert services["spotify"]["state"] == "playing"
 
 
 async def test_debug_bundle_services_json_has_audio(tmp_path: Path) -> None:
