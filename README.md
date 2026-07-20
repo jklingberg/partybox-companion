@@ -1,26 +1,63 @@
 # partybox-companion
 
-Turn any JBL PartyBox into a true WiFi speaker — no cloud, no subscription, no app required.
+**Turn your JBL PartyBox into a real WiFi speaker.**
 
-Plug a Raspberry Pi into your PartyBox. Flash an SD card. Visit `http://partybox.local`. Done.
+Add Spotify Connect. Control it from a web page on your own network. Nothing leaves your LAN.
+
+No cloud · No subscriptions · No proprietary app
 
 > This is an independent community-developed project. It is not affiliated with, endorsed by, or sponsored by JBL or HARMAN International.
 
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 ---
 
-## What it does
+![Companion Portal walkthrough: dashboard, renaming the Spotify Connect device in Settings, and the System health screen](docs/images/portal-demo.gif)
 
-A Raspberry Pi sits next to your PartyBox and communicates with it over Bluetooth. The companion upgrades the speaker with features the factory firmware never provided:
+## Why
 
-- **Spotify Connect** — stream from any Spotify client via [librespot](https://github.com/librespot-org/librespot)
-- **AirPlay** — stream from Apple devices via [shairport-sync](https://github.com/mikebrady/shairport-sync)
-- **Companion Portal** — configure, monitor, and troubleshoot the appliance at `http://partybox.local`
-- **REST API** — open HTTP API for scripts, automations, and third-party integrations
-- **Bluetooth management** — auto-reconnects after power cycles, connects reliably
-- **Power management** — turn the speaker on/off, monitor battery status
-- **Home Assistant** — integrates as a standard HTTP client; no special support required
+JBL PartyBox speakers sound great but ship as Bluetooth-only appliances: no Spotify Connect, and a companion app that phones home to JBL's cloud for features that have nothing to do with cloud services. partybox-companion replaces that app entirely. Plug a Raspberry Pi into the speaker, flash an SD card, and the PartyBox becomes a proper network speaker — one that shows up in Spotify's device list like any other WiFi speaker, controllable from a phone, and manageable from a plain web page on your own network. Nothing leaves your LAN.
 
-## Hardware
+## Features
+
+- **Spotify Connect** — stream from any Spotify client, no separate app needed ([librespot](https://github.com/librespot-org/librespot))
+- **Companion Portal** — a clean web app for setup, status, and troubleshooting — no install, no account
+- **REST API** — script it, automate it, or plug it into Home Assistant as a plain HTTP integration
+- **Power & battery control** — turn the speaker on/off and check battery level remotely
+- **Stays connected** — reconnects automatically after power cycles and Bluetooth hiccups
+- **AirPlay** — *on the roadmap* for post-v1.0 ([docs/roadmap.md](docs/roadmap.md))
+
+## Quick Start
+
+Up and running in about five minutes:
+
+1. **Flash** the appliance image to an SD card and boot the Pi.
+2. **Connect** — join the `PartyBox Companion Setup` WiFi network and pick your home WiFi.
+3. **Open** the Companion Portal at `http://partybox.local`.
+4. **Pair** — hold the Bluetooth button on the PartyBox until it flashes, then tap **Start Pairing**.
+
+That's it. The appliance now shows up as **PartyBox Companion** in your Spotify Connect device list.
+
+<details>
+<summary>Common first-install snags</summary>
+
+- **Spotify Connect appears only after pairing succeeds.** The appliance hides itself from Spotify clients until it can actually play audio, so "no Spotify device" almost always means step 4 hasn't completed.
+- **`partybox.local` doesn't always resolve.** It depends on your router and device supporting mDNS, not on anything the appliance controls. Try `http://partybox`, or fall back to the Pi's IP address.
+- **No sound, but everything shows connected?** Another Bluetooth device — often a phone that auto-reconnected — may be holding the speaker's audio channel. Disconnect it and play again.
+- **Speaker refuses to pair, or keeps reconnecting to an old phone?** This resets the *speaker's* own Bluetooth state, not Companion's — try the lighter option first: hold the **Bluetooth** button on the PartyBox for 10+ seconds to drop its current pairing and make it ready for a new one. If that's not enough, a full factory reset of the speaker (pairing, light patterns, EQ — everything) is holding **Play** + **Light** together for 10+ seconds until you hear a confirmation tone. Neither of these touches the Companion Portal's own "Factory reset" in Settings, which only resets the appliance side.
+
+</details>
+
+To run the appliance directly from a source checkout instead of flashing an image:
+
+```bash
+# Companion Portal + REST API, default port 8080 (a plain `uv run` has no
+# permission to bind port 80 — the flashed appliance image grants that via
+# systemd, so it defaults to 80 there without any extra configuration)
+uv run partybox-companion
+```
+
+## Supported hardware
 
 | Component | Minimum | Target |
 |-----------|---------|--------|
@@ -29,80 +66,59 @@ A Raspberry Pi sits next to your PartyBox and communicates with it over Bluetoot
 | Bluetooth | Built-in or USB dongle | Built-in |
 | Speaker | JBL PartyBox 520 | Any supported PartyBox model |
 
-Standard Linux Bluetooth APIs only (BlueZ). Not Raspberry Pi specific — runs on any ARM/x86 Linux SBC.
+Just standard Linux Bluetooth (BlueZ) underneath, so it isn't Raspberry Pi specific — any ARM/x86 Linux SBC works.
 
-### Hardware validation matrix
+| Raspberry Pi | Speaker | Status |
+|---|---|---|
+| Pi 3 B+ | JBL PartyBox 520 | ✅ Validated end-to-end |
+| Pi 5 | JBL PartyBox 520 | ✅ Validated end-to-end |
 
-The table above lists *requirements*. This table tracks known Pi + controller + speaker combinations. The Bluetooth controller on the host matters as much as the speaker: controller quirks are host-specific and are not something the SDK can paper over (see [ADR-028](docs/adr/028-audio-readiness-model.md)).
+Other Pi models and other PartyBox models are expected to work — the design is capability-based and doesn't branch on model — but are untested. See [docs/model-support.md](docs/model-support.md) for how capability detection works, and please [report your hardware](CONTRIBUTING.md) if you try a combination not listed here.
 
-| Raspberry Pi | BT controller | Speaker | Status | Notes |
-|---|---|---|---|---|
-| Pi 3 B+ | Broadcom (on-board) | JBL PartyBox 520 | ✅ Working | Full appliance validation suite run (RC13) |
-| Pi 5 | Broadcom (on-board) | JBL PartyBox 520 | ✅ Working | Provisioning, pairing, and Spotify Connect streaming verified end-to-end (RC14); full validation suite not yet run |
+### Powering the Pi from the speaker
 
-Legend: ✅ Verified working (run end-to-end on our hardware) · ❌ Verified not working (tested, fails on our hardware)
+On the PartyBox 520, the rear USB-C port is a real USB-C PD power source, not just a charge-my-phone afterthought — it can power the Pi directly, so a separate USB power supply for the Pi isn't necessary. Per JBL's own spec sheet, it outputs:
 
-Other Pi models (Zero 2 W, Pi 4) and other PartyBox models are expected to work but are **untested** — the design is capability-based and does not branch on model. If you run a combination not listed here, please report it (see [CONTRIBUTING.md](CONTRIBUTING.md)); captures from an untested combination are valuable.
+| Profile | Voltage / current |
+|---|---|
+| PDO | 5V/3A, 9V/3A, 15V/2A, 20V/1.5A |
+| PPS | 5–11V/2.7A, 5–16V/1.85A |
 
-## How it works
+Whether that covers your Pi:
 
-```
-JBL PartyBox 520
-      ▲  BLE GATT (control)  +  Bluetooth Classic A2DP (audio)
-      │
-┌──────────────────────────────────────────────┐
-│  partybox-companion                          │
-│                                              │
-│  partybox  ─────────────────────────────┐   │
-│  (BLE transport · protocol · device)    │   │
-│                                         │   │
-│  partyboxd ─────────────────────────────┘   │
-│  (HTTP server · REST API · WebSocket)       │
-│                                             │
-│  companion                                  │
-│  (Portal · service orchestration · librespot)│
-└──────────────────────────────────────────────┘
-                     │
-              http://partybox.local
-                     │
-         ┌───────────┼───────────┐
-         ▼           ▼           ▼
-      Portal    REST API    WebSocket
-         │           │
-      Browser    HA / scripts / apps
-```
+| Raspberry Pi | Official power requirement | Powered by the 520's USB-C? |
+|---|---|---|
+| Zero 2 W | 5V/1.2–2.5A, Micro-USB | ✅ Comfortably — needs a USB-C-to-Micro-USB cable |
+| 3 B+ | 5V/2.5A, Micro-USB | ✅ Comfortably — needs a USB-C-to-Micro-USB cable |
+| 4 | 5.1V/3A, USB-C | ✅ Works — its 5V/3A profile is what most 5V/3A PD supplies provide anyway |
+| 5 | 5V/5A recommended, USB-C | ⚠️ Boots and runs, but under the recommended supply — expect the low-voltage warning icon and USB peripherals capped to 600mA |
 
-See [docs/architecture.md](docs/architecture.md) for full design.
+Only the 520 is verified here (it's the only model this project tests against). Other current models we checked — PartyBox 310, PartyBox Ultimate — only expose a plain 5V/2.1A USB output with no PD ladder: enough for a Zero 2 W, marginal for a 3 B+, not enough for a 4 or 5. If you've measured a different model, a PR to this table is welcome.
 
-## Quick Start
+## Companion Portal
 
-1. Flash the appliance image to an SD card and boot the Raspberry Pi.
-2. Join the **`PartyBox Companion Setup`** WiFi network from your phone or laptop and pick your home WiFi in the captive portal. The setup network disappears while the Pi joins your WiFi — success and failure look the same from your device. If the setup network **reappears** after a minute, the join failed (usually a mistyped password): reconnect to it and the portal shows the reason so you can retry.
-3. Open the Companion Portal at `http://partybox.local` from a device on your home network. **Neither this nor the fallback below is guaranteed to work on every network** — both depend on your router and device, not on anything the appliance controls, and either can stop resolving later even if it worked at first (a router reboot, guest WiFi, or a device without Bonjour/mDNS support are common causes — not an appliance fault). If it doesn't resolve, try `http://partybox` (works when your router auto-registers DHCP hostnames); if neither works, use the Pi's IP address from your router's device list — that always works and is worth noting down.
-4. **Pair the speaker.** The Portal shows a *Pair your speaker* screen until this is done: hold the Bluetooth button on the PartyBox until its LEDs flash (pairing mode), then tap **Start Pairing**. The scan can take up to 60 seconds. JBL's pairing window is short — put the speaker in pairing mode right before tapping the button.
-5. Done — the appliance now appears as **PartyBox Companion** in Spotify Connect and AirPlay device lists.
+The Portal is a single-page web app served by the appliance itself — no separate install, no account, no companion mobile app. Open `http://partybox.local` from any device on your network to:
 
-Three things that trip up new installs:
+- Check speaker and connection status at a glance
+- Configure the Spotify Connect device name
+- Re-run WiFi provisioning or speaker pairing
+- Download a debug bundle for troubleshooting
 
-- **Spotify Connect appears only after pairing succeeds.** The appliance deliberately hides itself from Spotify and AirPlay clients until it can actually play audio, so "no Spotify device" almost always means step 4 hasn't completed. (BLE control — power, battery — connects automatically without pairing; only the audio link needs it.)
-- **Pairing is stored on the SD card, not in the image** (`/var/lib/companion/config.json`). After reflashing, or when moving to a new Pi or a new card, redo step 4 even if the same speaker worked before.
-- **No sound, but everything shows connected?** Disconnect other Bluetooth devices from the speaker — especially your phone, which often auto-reconnects from earlier use. When another device holds the speaker's audio channel, the speaker silently discards the appliance's stream while every status still reads connected and playing. Turn off Bluetooth on the phone (or unpair the speaker there) and play again.
+## REST API & SDK
 
-To run the appliance directly from a source checkout:
+Everything the Portal does is backed by a documented HTTP API, usable directly from scripts, Home Assistant, or any HTTP client:
 
 ```bash
-# Start the full appliance (Companion Portal + REST API on port 80)
-COMPANION_PORT=80 uv run partybox-companion
+curl http://partybox.local/api/v1/health
+curl -H "X-Api-Key: your-key" http://partybox.local/api/v1/speaker
+curl -X POST -H "X-Api-Key: your-key" http://partybox.local/api/v1/power/on
 ```
 
-The Companion Portal is then accessible at `http://partybox.local` (see the
-note on step 3 above if that doesn't resolve). Manage the
-appliance from there or via the [REST API](docs/api/v1.md).
+Authentication is opt-in and off by default; set it with `PARTYBOXD_API__API_KEY=your-key` when starting the daemon, then use the same value as `your-key` above. Interactive docs are served at `http://partybox.local/api/docs`; full reference in [docs/api/v1.md](docs/api/v1.md).
 
-## REST API
+The Bluetooth layer is also a standalone Python SDK, usable without the daemon or appliance:
 
 ```python
-# SDK — use directly from Python without the daemon
 import asyncio
 from partybox import Scanner
 
@@ -120,15 +136,17 @@ async def main():
 asyncio.run(main())
 ```
 
-```bash
-# Or use the REST API — substitute http://partybox or the Pi's IP if
-# partybox.local doesn't resolve on your network (see Quick Start, step 3)
-curl http://partybox.local/api/v1/health
-curl -H "X-Api-Key: your-key" http://partybox.local/api/v1/speaker
-curl -X POST -H "X-Api-Key: your-key" http://partybox.local/api/v1/power/on
-```
+## How it's built
 
-OpenAPI docs available at `http://partybox.local/api/docs`; full reference in [docs/api/v1.md](docs/api/v1.md).
+partybox-companion is three Python packages layered strictly one way — a Bluetooth SDK, a headless HTTP daemon built on it, and an appliance layer that adds the Portal and streaming services on top:
+
+| Package                            | PyPI name            | Description                                                           |
+| ---------------------------------- | -------------------- | --------------------------------------------------------------------- |
+| [`partybox`](packages/partybox/)   | `partybox`           | Bluetooth SDK. Depends only on `bleak`. Usable standalone.            |
+| [`partyboxd`](packages/partyboxd/) | `partyboxd`          | Headless daemon. REST API + WebSocket. No UI, no services.            |
+| [`companion`](packages/companion/) | `partybox-companion` | Full appliance. Companion Portal, Spotify Connect, WiFi provisioning. |
+
+Speaker control runs over BLE GATT rather than classic Bluetooth SPP — see [docs/architecture.md](docs/architecture.md) for the full design and [docs/adr/](docs/adr/) for the reasoning behind it. The protocol itself is an independent implementation developed through interoperability analysis; details live in [docs/reverse-engineering/](docs/reverse-engineering/).
 
 ## Development
 
@@ -145,30 +163,16 @@ uv run ruff check .
 uv run mypy src/  # run from each package directory
 
 # Tests
-uv run pytest packages/partybox/
-uv run pytest packages/partyboxd/
-uv run pytest packages/companion/
+uv run pytest packages/partybox/   -m "not hardware"
+uv run pytest packages/partyboxd/  -m "not hardware"
+uv run pytest packages/companion/  -m "not hardware"
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide, including how to contribute captures for untested speaker models.
 
-## Packages
+## Project status
 
-| Package | PyPI name | Description |
-|---------|-----------|-------------|
-| [`partybox`](packages/partybox/) | `partybox` | Bluetooth SDK. Depends only on `bleak`. Usable without the daemon. |
-| [`partyboxd`](packages/partyboxd/) | `partyboxd` | Headless daemon. HTTP API + WebSocket. No UI, no services. |
-| [`companion`](packages/companion/) | `partybox-companion` | Full appliance. Companion Portal, Spotify Connect + Bluetooth audio + WiFi provisioning orchestration. |
-
-## Protocol compatibility
-
-partybox-companion includes an independent implementation of the PartyBox Bluetooth protocol, developed through interoperability analysis. Protocol documentation and contributor notes live in [docs/reverse-engineering/](docs/reverse-engineering/). Contributions across models are welcome.
-
-## Status
-
-Approaching v1.0. The protocol is understood, the daemon and Companion Portal
-are functional, and the appliance runs on real hardware (Spotify Connect over
-Bluetooth A2DP with BLE control). Remaining work is release hardening.
+partybox-companion runs end-to-end on real hardware — Spotify Connect streaming over Bluetooth A2DP with BLE control, WiFi provisioning, and the Companion Portal, all validated together on a Raspberry Pi and JBL PartyBox 520. Core functionality is complete. What's left before v1.0 is release hardening: broader hardware validation and final polish.
 
 See [CHANGELOG.md](CHANGELOG.md) for progress and [docs/roadmap.md](docs/roadmap.md) for what's deferred past v1.0.
 
