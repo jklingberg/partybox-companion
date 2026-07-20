@@ -1,0 +1,22 @@
+[project]
+name = "companion-demo"
+version = "0.1.0"
+description = "Deterministic Playwright walkthrough of the Companion Portal, for recording README screenshots and GIFs"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "playwright>=1.47",
+]
+
+[project.scripts]
+companion-demo = "companion_demo:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+include = ["src/companion_demo.py"]
+
+[tool.hatch.build.targets.wheel.sources]
+"src" = ""
