@@ -238,13 +238,24 @@ class AudioService:
         Distinct from :attr:`audio_ready`, which only says the link exists:
         BlueZ's ``MediaTransport1`` goes ``active`` when the AVDTP stream
         starts and back to ``idle`` a few seconds after playback stops, so
-        this is the "audio is flowing right now" signal. AudioFocusService
-        uses it to relax its scan cadence during playback — active LE
-        scanning on the shared controller steals radio slots from the live
-        stream (observed as periodic stutter, 2026-07-17). ``pending`` (the
-        stream is being acquired) counts as active so a scan never lands
-        right as playback starts. All failure shapes collapse to False;
-        callers treat the signal as advisory.
+        this is the "audio is flowing right now" signal. Both
+        ``AudioFocusService`` and ``DeviceManager`` (via an injected
+        ``streaming_fn``) use it to skip radio-sensitive work outright while
+        audio is flowing — active LE scanning, and even a routine GATT
+        liveness probe, on the shared controller steals radio slots from the
+        live stream (observed as periodic stutter, 2026-07-17 and
+        2026-07-21). ``pending`` (the stream is being acquired) counts as
+        active so a check never lands right as playback starts. All failure
+        shapes collapse to False; callers treat the signal as advisory.
+
+        **Cost — not free, but bounded.** This is not a cheap in-memory
+        lookup: it spawns a subprocess and makes a D-Bus round trip (see
+        ``_run_subprocess``), bounded by that helper's existing 10s timeout
+        for non-"connect" commands. Both current callers poll it
+        infrequently (every 10-60s) specifically because of this cost — do
+        not call it from a tight loop, and if a future caller needs a hot
+        path, cache the result rather than lowering this method's own cost
+        expectations.
         """
         if not self._audio_ready or self._address is None:
             return False

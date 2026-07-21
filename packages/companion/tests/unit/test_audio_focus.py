@@ -139,52 +139,79 @@ async def test_scans_are_skipped_while_pairing_is_active() -> None:
         await task
 
 
-async def test_streaming_relaxes_cadence_but_scans_continue() -> None:
-    # While streaming_fn reports True the loop must pace itself at
-    # streaming_interval (interval would stall this test) — and must keep
-    # scanning at all: "playing but rendering silence because another source
-    # holds the speaker" is the flagship state this service exists to expose.
-    scan = _ScriptedScan([FDDF_PHONE_CONNECTED, FDDF_PHONE_CONNECTED, FDDF_PHONE_CONNECTED])
+async def test_scans_are_skipped_outright_while_streaming() -> None:
+    """The scan must be skipped OUTRIGHT (not merely paced) while
+    streaming_fn reports True. An earlier relaxed-cadence approach (120s,
+    then 300s) still produced audible clicks every few minutes — a
+    2026-07-21 btmon capture proved the cost is the scan start/stop mode
+    switch itself, not scan duration, so no interval short of "never" avoids
+    it. The user judged that unacceptable; see class docstring "Scan cost"."""
+    scan = _ScriptedScan([FDDF_COMPANION_ONLY])
 
     async def streaming() -> bool:
         return True
 
     service = AudioFocusService(
-        lambda: _ADDRESS,
-        lambda: False,
-        scan_fn=scan,
-        interval=30.0,
-        streaming_fn=streaming,
-        streaming_interval=0.01,
+        lambda: _ADDRESS, lambda: False, scan_fn=scan, interval=0.01, streaming_fn=streaming
+    )
+
+    task = asyncio.create_task(service.run())
+    await asyncio.sleep(0.05)
+    assert scan.calls == []
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+
+
+async def test_focus_frozen_not_decayed_while_streaming() -> None:
+    """Pausing scans for the duration of playback must freeze the last
+    reading, not walk it toward UNKNOWN — same trade-off as the
+    ble_connected_fn gate."""
+    scan = _ScriptedScan([FDDF_PHONE_CONNECTED])
+    streaming_active = False
+
+    async def streaming() -> bool:
+        return streaming_active
+
+    service = AudioFocusService(
+        lambda: _ADDRESS, lambda: False, scan_fn=scan, interval=0.01, streaming_fn=streaming
     )
     done = asyncio.Event()
 
     async def watch() -> None:
         await _wait_for_focus(service, AudioFocus.CONTESTED)
-        while len(scan.calls) < 2:  # a second scan proves the sleep was 0.01
-            await asyncio.sleep(0.005)
         done.set()
 
     watcher = asyncio.create_task(watch())
-    await _drive(service, done)
+    task = asyncio.create_task(service.run())
+    try:
+        await asyncio.wait_for(done.wait(), timeout=2.0)
+    finally:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
     await watcher
     assert service.focus is AudioFocus.CONTESTED
-    assert len(scan.calls) >= 2
+
+    streaming_active = True
+    calls_before = len(scan.calls)
+    task = asyncio.create_task(service.run())
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+    assert len(scan.calls) == calls_before  # no new scan while streaming
+    assert service.focus is AudioFocus.CONTESTED  # frozen, not decayed
 
 
-async def test_not_streaming_uses_normal_cadence() -> None:
+async def test_not_streaming_scans_normally() -> None:
     scan = _ScriptedScan([FDDF_COMPANION_ONLY, FDDF_COMPANION_ONLY])
 
     async def streaming() -> bool:
         return False
 
     service = AudioFocusService(
-        lambda: _ADDRESS,
-        lambda: False,
-        scan_fn=scan,
-        interval=0.01,
-        streaming_fn=streaming,
-        streaming_interval=30.0,  # would stall the test if wrongly chosen
+        lambda: _ADDRESS, lambda: False, scan_fn=scan, interval=0.01, streaming_fn=streaming
     )
     done = asyncio.Event()
 

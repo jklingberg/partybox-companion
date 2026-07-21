@@ -30,12 +30,21 @@ rather than crying wolf.
 **Scan cost — the radio is shared.** LE discovery competes with the A2DP
 stream for the same controller's airtime: with audio flowing, a 12 s scan
 window every 60 s produced clearly audible periodic stutter (2026-07-17
-incident). The scan window is therefore a tight cap, and while the transport
-is actively streaming (*streaming_fn*) the cadence stretches from
-``_SCAN_INTERVAL`` to ``_STREAMING_SCAN_INTERVAL``. Scanning never stops
-entirely during playback: "playing but rendering silence because another
-source holds the speaker" is precisely the state this service exists to
-expose, so contested detection must stay live — just cheaper.
+incident). Shrinking the window to 3 s and relaxing the cadence to 120 s,
+then 300 s, cut click frequency each time but never made an individual click
+gentler — a 2026-07-21 btmon capture proved the cost is the scan start/stop
+mode switch itself (BlueZ issuing ``LE Set Random Address`` on this BCM4345
+combo controller lined up, to the millisecond, with a ~440ms cluster of A2DP
+TX gaps), not scan duration. No interval short of "never" avoids that, and
+the user judged clicks every few minutes still unacceptable. Scanning is
+therefore skipped OUTRIGHT while ``streaming_fn`` reports audio actively
+flowing — the same trade-off ``ble_connected_fn`` already makes for the
+"BLE control link down" case (see its section below): "playing but
+rendering silence because another source holds the speaker" goes
+undetected for the duration of the current track, in exchange for that
+track playing without interruption. ``audio_focus`` freshness is the
+deliberate casualty; don't relax this back to a cadence-based approach
+without re-litigating the severity finding above.
 """
 
 from __future__ import annotations
@@ -55,7 +64,20 @@ from companion.services.bluez_dbus import parse_fddf_payload
 log = logging.getLogger(__name__)
 
 _SCAN_INTERVAL = 60.0
-_STREAMING_SCAN_INTERVAL = 120.0  # relaxed cadence while A2DP audio is flowing
+# Re-check cadence while streaming_fn gates scanning off entirely (see
+# streaming_fn below) — how often to poll whether playback has stopped, not
+# a scan interval itself. Shrinking _SCAN_WINDOW (12s -> 3s, 2026-07-17) cut
+# click FREQUENCY but not per-click SEVERITY: a 2026-07-21 btmon capture
+# caught a "hard" click at the exact millisecond BlueZ issued LE Set Random
+# Address (the scan-start signature) and measured ~440ms of clustered TX
+# gaps (114+196+129ms) around it — on this BCM4345 combo controller, the
+# cost is the scan start/stop MODE SWITCH itself, not scanning duration, so
+# no window/interval short of "never" fully avoids an audible click.
+# Relaxing cadence to 300s (first tried the same day) still produced
+# audible clicks every few minutes, which the user judged unacceptable —
+# scanning is skipped OUTRIGHT while streaming instead, same trade-off as
+# ble_connected_fn below.
+_STREAMING_STATE_RECHECK = 10.0
 # The helper exits early on the first matching advert (adverts arrive every
 # ~1 s), so the window is a worst-case cap, not a fixed duration. The cap
 # matters most while audio streams: A2DP starves advert reception, the scan
@@ -103,11 +125,20 @@ class AudioFocusService:
     traffic never competes with the pairing flow's own discovery windows.
 
     *streaming_fn* returns True while the A2DP transport is actively carrying
-    audio (see ``AudioService.transport_active``); the loop then paces itself
-    at *streaming_interval* instead of *interval* so scans steal as little
-    radio time as possible from the live stream. ``None`` means "never
-    streaming" (scan at *interval* always). The callable must not raise —
-    collapse failures to False.
+    audio (see ``AudioService.transport_active``); the loop then skips
+    scanning OUTRIGHT, exactly like *ble_connected_fn* below — see that
+    parameter's docstring for the freshness trade-off this implies, and the
+    class docstring's "Scan cost" section for why per-click severity, not
+    just frequency, forced this from an initial relaxed-cadence approach.
+    ``None`` means "never streaming" (scan at *interval* always). The
+    callable must not raise — collapse failures to False. It is polled once
+    per loop iteration (at most every *interval*/``_STREAMING_STATE_RECHECK``
+    seconds — never in a tight loop), which is what makes
+    ``AudioService.transport_active``'s own subprocess-and-D-Bus cost
+    (documented on that method) acceptable here; an implementation must stay
+    in that same ballpark (fast, side-effect-free state lookup, not
+    unbounded I/O) or both this loop and ``DeviceManager``'s health-check
+    loop stall for as long as it takes to return.
 
     *ble_connected_fn*, when provided, gates scanning on DeviceManager
     holding its control connection: scans are skipped entirely while it does
@@ -145,7 +176,6 @@ class AudioFocusService:
         scan_fn: ScanFn | None = None,
         interval: float = _SCAN_INTERVAL,
         streaming_fn: StreamingFn | None = None,
-        streaming_interval: float = _STREAMING_SCAN_INTERVAL,
         ble_connected_fn: Callable[[], bool] | None = None,
     ) -> None:
         self._address_fn = address_fn
@@ -153,7 +183,6 @@ class AudioFocusService:
         self._scan_fn: ScanFn = scan_fn if scan_fn is not None else _run_scan_subprocess
         self._interval = interval
         self._streaming_fn = streaming_fn
-        self._streaming_interval = streaming_interval
         self._ble_connected_fn = ble_connected_fn
         self._focus = AudioFocus.UNKNOWN
         self._misses = 0
@@ -196,6 +225,12 @@ class AudioFocusService:
                 # its last reading) rather than decayed toward UNKNOWN.
                 await asyncio.sleep(_BLE_DOWN_RECHECK)
                 continue
+            if self._streaming_fn is not None and await self._streaming_fn():
+                # Skip the scan outright — see streaming_fn in the class
+                # docstring ("Scan cost"). Same frozen-focus trade-off as the
+                # ble_connected_fn gate above.
+                await asyncio.sleep(_STREAMING_STATE_RECHECK)
+                continue
 
             raw = await self._scan_fn(address)
             if raw is None:
@@ -228,13 +263,7 @@ class AudioFocusService:
                             raw.hex(),
                         )
                     self._set_focus(focus)
-            await asyncio.sleep(await self._next_interval())
-
-    async def _next_interval(self) -> float:
-        """Cadence for the next cycle: relaxed while audio is streaming."""
-        if self._streaming_fn is not None and await self._streaming_fn():
-            return self._streaming_interval
-        return self._interval
+            await asyncio.sleep(self._interval)
 
     def _set_focus(self, focus: AudioFocus) -> None:
         if focus == self._focus:
