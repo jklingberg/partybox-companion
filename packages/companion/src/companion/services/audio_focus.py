@@ -77,7 +77,7 @@ _SCAN_INTERVAL = 60.0
 # audible clicks every few minutes, which the user judged unacceptable —
 # scanning is skipped OUTRIGHT while streaming instead, same trade-off as
 # ble_connected_fn below.
-_STREAMING_RECHECK = 10.0
+_STREAMING_STATE_RECHECK = 10.0
 # The helper exits early on the first matching advert (adverts arrive every
 # ~1 s), so the window is a worst-case cap, not a fixed duration. The cap
 # matters most while audio streams: A2DP starves advert reception, the scan
@@ -131,7 +131,14 @@ class AudioFocusService:
     class docstring's "Scan cost" section for why per-click severity, not
     just frequency, forced this from an initial relaxed-cadence approach.
     ``None`` means "never streaming" (scan at *interval* always). The
-    callable must not raise — collapse failures to False.
+    callable must not raise — collapse failures to False. It is polled once
+    per loop iteration (at most every *interval*/``_STREAMING_STATE_RECHECK``
+    seconds — never in a tight loop), which is what makes
+    ``AudioService.transport_active``'s own subprocess-and-D-Bus cost
+    (documented on that method) acceptable here; an implementation must stay
+    in that same ballpark (fast, side-effect-free state lookup, not
+    unbounded I/O) or both this loop and ``DeviceManager``'s health-check
+    loop stall for as long as it takes to return.
 
     *ble_connected_fn*, when provided, gates scanning on DeviceManager
     holding its control connection: scans are skipped entirely while it does
@@ -222,7 +229,7 @@ class AudioFocusService:
                 # Skip the scan outright — see streaming_fn in the class
                 # docstring ("Scan cost"). Same frozen-focus trade-off as the
                 # ble_connected_fn gate above.
-                await asyncio.sleep(_STREAMING_RECHECK)
+                await asyncio.sleep(_STREAMING_STATE_RECHECK)
                 continue
 
             raw = await self._scan_fn(address)

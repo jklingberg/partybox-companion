@@ -293,7 +293,14 @@ class DeviceManager:
         Spotify (SDK boundary — see CLAUDE.md), so this stays an injected
         callable exactly like *adapter_recover_fn*; standalone partyboxd
         passes ``None`` and keeps the fixed 15s cadence. Must not raise —
-        callers collapse failures to "not streaming".
+        callers collapse failures to "not streaming". Called at most once
+        every ``_HEALTH_CHECK_INTERVAL``/``_STREAMING_HEALTH_CHECK_INTERVAL``
+        seconds (never in a tight loop): companion's implementation
+        (``AudioService.transport_active``) spawns a subprocess and makes a
+        D-Bus round trip rather than a plain in-memory lookup, bounded by
+        that method's own 10s timeout — an implementation must stay in that
+        ballpark, or this health-check loop stalls for as long as it takes
+        to return.
         """
         self._settings = settings
         self._snapshot: StatusSnapshot = _DISCONNECTED
