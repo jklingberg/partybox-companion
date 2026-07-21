@@ -38,6 +38,8 @@ Up and running in about five minutes:
 
 That's it. The appliance now shows up as **PartyBox** in your Spotify Connect device list.
 
+See [docs/installation.md](docs/installation.md) for the full walkthrough, with more detail on each step and troubleshooting.
+
 <details>
 <summary>Common first-install snags</summary>
 

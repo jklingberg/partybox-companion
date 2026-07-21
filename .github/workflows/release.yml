@@ -108,49 +108,19 @@ jobs:
             ## Installation
 
             1. Download `${{ steps.meta.outputs.artifact }}`
-            2. Open [Raspberry Pi Imager](https://www.raspberrypi.com/software/)
-            3. **Device** → Select your device version
-            4. **OS** → Use Custom → select the downloaded file
-            5. **Storage** → select your SD card
-            6. Write the image, insert the card, and power on your Raspberry Pi —
-               the first boot takes 30–60 seconds
-            7. Open your device's WiFi network list, join **PartyBox Companion Setup**,
-               and wait for the captive portal to show up
-            8. Select your WiFi SSID from the list and provide the password — the
-               setup network disappears while the Pi joins your WiFi. If it reappears
-               after a minute, the join failed (usually a mistyped password):
-               reconnect and retry
-            9. Open **http://partybox.local** in a browser on that WiFi network
-               (if the name doesn't resolve, use the Pi's IP address from your
-               router's device list — it registers with hostname `partybox`)
-            10. Pair your speaker from the Portal (see **Pair your speaker** below) —
-                Spotify Connect and AirPlay appear only after pairing succeeds
+            2. Flash it to a microSD card with [Raspberry Pi Imager](https://www.raspberrypi.com/software/)
+               (**OS** → Use Custom → select the downloaded file)
+            3. Insert the card and power on your Raspberry Pi
+
+            Full walkthrough — WiFi setup, opening the Portal, and pairing your
+            speaker — in [docs/installation.md](https://github.com/jklingberg/partybox-companion/blob/main/docs/installation.md).
 
             ### Requirements
 
-            - Raspberry Pi 4 or Pi 5 (ARM64)
+            - Raspberry Pi 3 B+ or newer
             - MicroSD card — 8 GB minimum, 16 GB recommended
-            - JBL PartyBox speaker
+            - JBL PartyBox speaker (PartyBox 520 is the only model currently tested)
             - 2.4 GHz or 5 GHz WiFi network
-
-            ### Pair your speaker
-
-            A fresh install has never paired with your speaker — pairing is stored
-            on the SD card, so redo this after every reflash:
-
-            1. Open the Portal; it shows a **Pair your speaker** screen until pairing is done
-            2. Hold the Bluetooth button on the PartyBox until its LEDs flash (pairing mode)
-            3. Tap **Start Pairing** right away — JBL's pairing window is short;
-               the scan can take up to 60 seconds
-
-            The appliance appears in Spotify Connect and AirPlay device lists **only
-            after pairing succeeds** — it hides itself until it can actually play audio.
-            "No Spotify device" almost always means this step hasn't completed.
-
-            **No sound, but everything shows connected?** Disconnect other Bluetooth
-            devices from the speaker — especially your phone, which often auto-reconnects
-            from earlier use and silently holds the speaker's audio channel. Turn off
-            Bluetooth on the phone (or unpair the speaker there) and play again.
 
             ---
 
