@@ -368,6 +368,7 @@ async def _run(
         daemon_settings.speaker,
         adapter_recover_fn=reset_adapter,
         stale_reclaim_fn=disconnect_stale_speaker_links,
+        streaming_fn=audio.transport_active,
     )
 
     provisioning = ProvisioningService(companion_settings.wifi.interface)

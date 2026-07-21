@@ -44,6 +44,18 @@ log = logging.getLogger(__name__)
 # fires (e.g. after a bluetoothd restart — see _drain_with_health_check).
 _HEALTH_CHECK_INTERVAL = 15.0
 
+# Relaxed health-check cadence while A2DP audio is actively streaming (see
+# *streaming_fn* below). A speaker that is audibly playing is definitionally
+# not in standby, so the battery/firmware liveness probe this interval gates
+# has nothing new to tell us in that window — but it still costs a GATT
+# write + notification round-trip on the shared BLE/BR-EDR controller every
+# cycle. Confirmed by direct btmon correlation (2026-07-21) as an audible
+# click source on its own, independent of and in addition to the FDDF scan
+# fixed the day before: writes/notifications landed exactly every ~15.2s,
+# matching this interval to the decisecond, with zero relation to any
+# AudioFocusService activity in the same window.
+_STREAMING_HEALTH_CHECK_INTERVAL = 60.0
+
 # Upper bound on the probe itself. A wedged Bluetooth stack can hang an
 # ATT write instead of failing it; an unbounded probe would then hang the
 # health check that exists to detect exactly that state.
@@ -248,6 +260,7 @@ class DeviceManager:
         *,
         adapter_recover_fn: Callable[[], Awaitable[bool]] | None = None,
         stale_reclaim_fn: Callable[[], Awaitable[bool]] | None = None,
+        streaming_fn: Callable[[], Awaitable[bool]] | None = None,
     ) -> None:
         """*adapter_recover_fn*, when provided, is called after
         ``_WEDGE_CONNECT_FAILURES`` dense connect failures (see
@@ -271,6 +284,16 @@ class DeviceManager:
         holds no active control connection (both call sites live in the
         scan/connect path, which runs only while ``_device is None``), so a
         reclaim can never disconnect the manager's own live link.
+
+        *streaming_fn*, when provided, is consulted once per health-check
+        cycle in :meth:`_drain_with_health_check`: while it returns True the
+        cycle waits ``_STREAMING_HEALTH_CHECK_INTERVAL`` instead of
+        ``_HEALTH_CHECK_INTERVAL`` before running the next liveness probe —
+        see the constant's docstring. Partyboxd has no notion of A2DP or
+        Spotify (SDK boundary — see CLAUDE.md), so this stays an injected
+        callable exactly like *adapter_recover_fn*; standalone partyboxd
+        passes ``None`` and keeps the fixed 15s cadence. Must not raise —
+        callers collapse failures to "not streaming".
         """
         self._settings = settings
         self._snapshot: StatusSnapshot = _DISCONNECTED
@@ -286,6 +309,7 @@ class DeviceManager:
         self._retry_delay = settings.reconnect_delay
         self._adapter_recover_fn = adapter_recover_fn
         self._stale_reclaim_fn = stale_reclaim_fn
+        self._streaming_fn = streaming_fn
         #: Consecutive clean-but-empty scans (reset by any scan that finds
         #: the speaker; see _note_empty_scan).
         self._empty_scans = 0
@@ -581,11 +605,18 @@ class DeviceManager:
         is equally stale in that situation, so the check is an actual ATT
         round-trip: :meth:`PartyBoxDevice.verify_connection` fails on a dead
         link even when no disconnect was ever signalled.
+
+        The wait timeout is ``_STREAMING_HEALTH_CHECK_INTERVAL`` instead of
+        ``_HEALTH_CHECK_INTERVAL`` while *streaming_fn* reports True — see
+        that constant's docstring and ``__init__``'s *streaming_fn* section.
         """
         while True:
+            interval = _HEALTH_CHECK_INTERVAL
+            if self._streaming_fn is not None and await self._streaming_fn():
+                interval = _STREAMING_HEALTH_CHECK_INTERVAL
             drain = asyncio.create_task(device.drain_until_disconnect())
             try:
-                done, _ = await asyncio.wait({drain}, timeout=_HEALTH_CHECK_INTERVAL)
+                done, _ = await asyncio.wait({drain}, timeout=interval)
             except asyncio.CancelledError:
                 # Shutdown lands here (asyncio.wait does not cancel its
                 # awaitables). Reap the drain task, or the cleanup
