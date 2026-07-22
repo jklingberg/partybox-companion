@@ -94,6 +94,32 @@ its own fixed thresholds: nobody outside this debugging context has a
 principled basis to pick a different number, and the constant should move if
 and when evidence says so (as it did here), not via an operator-facing knob.
 
+**`ConfirmedDisconnectError` is exported publicly**, from both `partybox` and
+`partybox.bluetooth`, rather than kept as an internal detail shared only
+between `partybox` and `partyboxd`. Considered keeping it unexported until an
+external consumer actually needs the distinction, which would have been the
+more conservative choice — narrower surface, easier to change later. Decided
+against it for consistency: every other member of this exception hierarchy
+(`ConnectionLostError`, `ConnectionFailedError`, `NotConnectedError`) is
+already public, `partybox` is a real SDK boundary per this project's layering
+rules (not an internal-only module), and the type is a strict refinement — a
+caller that only catches the base `ConnectionLostError` behaves identically
+whether or not the subclass is exported. Making it public costs nothing
+structurally and avoids the asymmetry of "this one exception in the hierarchy
+is exported, that one isn't" for reasons a future reader would have to
+rediscover.
+
+**Health-check retry budget is a failure count (2), not a time budget.**
+Considered making it time-based instead (e.g. "tolerate up to N seconds of
+probe trouble, however many cycles that spans") rather than a fixed count of
+cycles. Kept the count-based form: it directly mirrors the already-established
+`_LIVENESS_MISS_LIMIT` pattern one layer down, and a count is simpler to
+reason about against `_HEALTH_CHECK_INTERVAL`/`_STREAMING_HEALTH_CHECK_INTERVAL`
+without introducing a second, independent timeout axis. A time-based budget
+would behave more consistently across the streaming vs. non-streaming interval
+difference (60s vs 15s) — worth revisiting if that difference ever causes the
+count-based limit to feel wrong in practice, but no evidence yet that it does.
+
 ## Alternatives considered
 
 - **Increase `_PROBE_TIMEOUT` instead of adding a retry.** Rejected: slows
@@ -121,6 +147,26 @@ and when evidence says so (as it did here), not via an operator-facing knob.
   `partybox.bluetooth`) — a caller that only catches the base
   `ConnectionLostError` is unaffected (inheritance), but a caller that wants
   to distinguish the two circumstances now can.
+- **This is a Linux/BlueZ-specific optimization, not a cross-platform one.**
+  The D-Bus-error escalation path in `_connection_lost()` only ever fires on
+  the BlueZ/D-Bus backend: it's gated on `isinstance(exc, BleakDBusError)`,
+  and `BleakDBusError` is itself D-Bus-specific — bleak's macOS
+  (CoreBluetooth) and Windows (WinRT) backends raise their own distinct
+  exception types that are never instances of `BleakDBusError`, so on those
+  platforms this branch is structurally unreachable and every failure stays a
+  plain `ConnectionLostError`. That's a safe default, not a bug: those
+  backends just get less precision (no confirmed-vs-transient distinction),
+  never a wrong one — nothing there gets *mis*-escalated. The `_lost`-flag
+  path (bleak's own `disconnected_callback`) is the one part of
+  `ConfirmedDisconnectError` that already works identically on every
+  platform. The three D-Bus error names checked
+  (`org.freedesktop.DBus.Error.UnknownObject`/`ServiceUnknown` are D-Bus
+  spec-level, not BlueZ-specific, and stable by definition;
+  `org.bluez.Error.NotConnected` is BlueZ's own and has been stable across
+  this project's tested BlueZ versions to date) are expected to keep working
+  across BlueZ upgrades, but this hasn't been verified against every BlueZ
+  release, and this codebase currently only runs on the Pi's Linux/BlueZ
+  stack in practice — this is documented here rather than left implicit.
 - **Known gap, not addressed here:** a real disconnect racing with an
   in-flight `verify_connection()`/`_poll_liveness()` call could, depending on
   exactly which error bleak surfaces for that specific timing, be classified
@@ -132,7 +178,8 @@ and when evidence says so (as it did here), not via an operator-facing knob.
   `_HEALTH_CHECK_INTERVAL`/`_STREAMING_HEALTH_CHECK_INTERVAL` (~15s/~60s), not
   the full retry budget. Not fixed in this PR — would require re-checking the
   transport's internal `_lost` state from outside its own encapsulation, which
-  wasn't judged worth the coupling for a narrow, already-bounded race.
+  wasn't judged worth the coupling for a narrow, already-bounded race. Tracked
+  in #73 so it isn't forgotten once v1.0 ships.
 - **Not yet confirmed end-to-end.** The original failure is intermittent;
   there had not yet been a second natural occurrence, post-fix, to directly
   observe "would have disconnected under the old code, tolerated under the
