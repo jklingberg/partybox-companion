@@ -32,6 +32,7 @@ or coding model, including ones with less context than the original reviewer:
 | [06-ux-review.md](06-ux-review.md) | Portal and onboarding UX findings, including two real bugs |
 | [07-product-strategy.md](07-product-strategy.md) | Positioning, risks, growth, business opportunities |
 | [08-roadmap-v2.md](08-roadmap-v2.md) | Proposed v1.0 → v2.0 sequencing |
+| [09-hardware-and-resource-efficiency.md](09-hardware-and-resource-efficiency.md) | Hardware-safety and CPU/RAM/battery/Bluetooth-traffic audit (added 2026-07-22) |
 
 ## One-paragraph verdict
 
@@ -47,3 +48,20 @@ model, and (5) an audio path that routes through another user's login session.
 None of these are hard to fix; all of them are the kind of thing that turns
 into a reputation event after launch instead of a code review comment before
 it.
+
+## Addenda
+
+- **2026-07-22 — Hardware safety & resource efficiency pass**
+  ([09-hardware-and-resource-efficiency.md](09-hardware-and-resource-efficiency.md)),
+  done after 14 more commits had landed on `main` (audio-focus detection, the
+  WirePlumber volume fix, real Spotify playback state, manual Bluetooth
+  reset). Verdict: nothing found can damage the PartyBox hardware — the
+  write surface is three ATT-flow-controlled opcodes with no firmware-update
+  path, and power cycling self-limits to ADR-034's own ~40 s floor. The real
+  findings are resource waste (subprocess-per-D-Bus-call CPU churn, a fixed
+  15 s dual-probe liveness cadence, A2DP paging a beacon-less "off" speaker
+  forever) that is invisible on the Pi 5/mains-powered dev setup and decisive
+  on the stated Pi Zero 2 W / battery-adjacent target. Two findings restate
+  [ARCH-01](01-architecture-review.md#arch-01)/[ARCH-02](01-architecture-review.md#arch-02)
+  with quantified cost rather than opening new ones; the rest are new
+  `PERF-*` IDs.
