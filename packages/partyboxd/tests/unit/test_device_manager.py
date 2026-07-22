@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import AsyncMock
 
 import pytest
-from partybox import ConnectionFailedError, ScanResult
+from partybox import ConnectionFailedError, ConnectionLostError, ScanResult
 from partybox.bluetooth.mock import MockTransport
+from partybox.bluetooth.transport import NotConnectedError
 from partybox.device.partybox import PartyBoxDevice
 from partybox.protocol.codec import encode
 from partybox.protocol.messages import BatteryStatusRequest, FirmwareVersionRequest
@@ -18,6 +20,7 @@ from partyboxd.device.events import (
     SpeakerStateChangedEvent,
 )
 from partyboxd.device.manager import (
+    _HEALTH_CHECK_FAILURE_LIMIT,
     _RECONNECT_MAX,
     _WEDGE_WINDOW,
     DeviceManager,
@@ -162,6 +165,109 @@ async def test_refresh_tolerates_firmware_error() -> None:
 
     snap = manager.snapshot
     assert snap.firmware is None
+
+
+# ---------------------------------------------------------------------------
+# _drain_with_health_check tolerance (2026-07-22 live incident: a healthy
+# transport got torn down over one slow/unresponsive probe cycle)
+# ---------------------------------------------------------------------------
+
+
+async def _hanging_drain() -> None:
+    """Stand-in for drain_until_disconnect() that never completes on its own
+    within a test's lifetime — the health-check branch is what's under test,
+    not the passive-disconnect branch."""
+    await asyncio.Event().wait()
+
+
+async def test_health_check_tolerates_one_transient_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A single ConnectionLostError/TimeoutError from the probe cycle must not
+    disconnect a connection that recovers on the very next cycle."""
+    monkeypatch.setattr("partyboxd.device.manager._HEALTH_CHECK_INTERVAL", 0.01)
+    manager = _make_manager()
+    transport = MockTransport(address="AA:BB:CC:DD:EE:FF")
+    await transport.connect()
+    device = PartyBoxDevice._from_transport(transport)
+    monkeypatch.setattr(device, "drain_until_disconnect", _hanging_drain)
+
+    calls = 0
+
+    async def flaky_verify() -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise TimeoutError()
+
+    monkeypatch.setattr(device, "verify_connection", flaky_verify)
+    monkeypatch.setattr(manager, "_poll_liveness", AsyncMock())
+
+    task = asyncio.create_task(manager._drain_with_health_check(device))
+    await asyncio.sleep(0.05)  # let a few cycles run: fail once, then recover
+
+    assert not task.done()  # tolerated — did not disconnect
+    assert calls >= 2  # the retry actually happened
+    assert manager._health_check_failures == 0  # reset by the successful cycle
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+async def test_health_check_disconnects_after_repeated_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Consecutive failures reaching _HEALTH_CHECK_FAILURE_LIMIT must still
+    end the connection — tolerance is bounded, not infinite."""
+    monkeypatch.setattr("partyboxd.device.manager._HEALTH_CHECK_INTERVAL", 0.01)
+    manager = _make_manager()
+    transport = MockTransport(address="AA:BB:CC:DD:EE:FF")
+    await transport.connect()
+    device = PartyBoxDevice._from_transport(transport)
+    monkeypatch.setattr(device, "drain_until_disconnect", _hanging_drain)
+
+    calls = 0
+
+    async def always_fails() -> None:
+        nonlocal calls
+        calls += 1
+        raise TimeoutError()
+
+    monkeypatch.setattr(device, "verify_connection", always_fails)
+    monkeypatch.setattr(manager, "_poll_liveness", AsyncMock())
+
+    with pytest.raises(ConnectionLostError):
+        await manager._drain_with_health_check(device)
+    assert calls == _HEALTH_CHECK_FAILURE_LIMIT  # no more attempts than the limit
+
+
+async def test_health_check_does_not_retry_not_connected_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """NotConnectedError means the transport already knows there's nothing
+    to probe — retrying it would be pointless, so it must raise immediately,
+    unlike the tolerated ConnectionLostError/TimeoutError cases above."""
+    monkeypatch.setattr("partyboxd.device.manager._HEALTH_CHECK_INTERVAL", 0.01)
+    manager = _make_manager()
+    transport = MockTransport(address="AA:BB:CC:DD:EE:FF")
+    await transport.connect()
+    device = PartyBoxDevice._from_transport(transport)
+    monkeypatch.setattr(device, "drain_until_disconnect", _hanging_drain)
+
+    calls = 0
+
+    async def not_connected() -> None:
+        nonlocal calls
+        calls += 1
+        raise NotConnectedError()
+
+    monkeypatch.setattr(device, "verify_connection", not_connected)
+    monkeypatch.setattr(manager, "_poll_liveness", AsyncMock())
+
+    with pytest.raises(NotConnectedError):
+        await manager._drain_with_health_check(device)
+    assert calls == 1  # no retry
 
 
 # ---------------------------------------------------------------------------

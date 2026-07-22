@@ -61,6 +61,21 @@ _STREAMING_HEALTH_CHECK_INTERVAL = 60.0
 # health check that exists to detect exactly that state.
 _PROBE_TIMEOUT = 10.0
 
+# Consecutive health-check cycle failures (verify_connection() timing out, or
+# _poll_liveness() re-raising ConnectionLostError/NotConnectedError) tolerated
+# before the connection is actually torn down. A live btmon capture
+# (2026-07-22) caught this cycle disconnecting a connection whose transport
+# was demonstrably healthy throughout — every write in the window got an ATT
+# Write Response in 60-80ms, right up to the moment our own code issued the
+# HCI Disconnect. The GATT *application* layer (the speaker's protocol
+# responses) had gone quiet, but the *link* had not, and a single missed
+# cycle was enough to tear down a connection that a moment's patience might
+# have kept alive. Same tolerance-for-transient-unresponsiveness reasoning as
+# _LIVENESS_MISS_LIMIT, applied one level up: a genuinely dead link still
+# gets caught within two cycles, a momentarily-slow GATT server no longer
+# costs a multi-minute reconnect over one bad probe.
+_HEALTH_CHECK_FAILURE_LIMIT = 2
+
 # Consecutive liveness-probe misses (battery, falling back to firmware)
 # before the speaker is marked asleep. It stops answering control queries in
 # standby while staying BLE-connected, so a sustained run of misses on every
@@ -308,6 +323,10 @@ class DeviceManager:
         self._bus: EventBus[DeviceEvent] = EventBus()
         #: Consecutive liveness-probe misses on the current connection.
         self._liveness_misses = 0
+        #: Consecutive health-check cycle failures on the current connection
+        #: (see _HEALTH_CHECK_FAILURE_LIMIT) — distinct from _liveness_misses,
+        #: which tracks the speaker being asleep, not the probe itself failing.
+        self._health_check_failures = 0
         #: Set while `_device` is non-None; lets callers await a reconnect
         #: instead of failing instantly during a transient BLE drop.
         self._connected_event = asyncio.Event()
@@ -616,7 +635,14 @@ class DeviceManager:
         The wait timeout is ``_STREAMING_HEALTH_CHECK_INTERVAL`` instead of
         ``_HEALTH_CHECK_INTERVAL`` while *streaming_fn* reports True — see
         that constant's docstring and ``__init__``'s *streaming_fn* section.
+
+        A cycle that fails with ``ConnectionLostError``/``TimeoutError`` is
+        retried up to ``_HEALTH_CHECK_FAILURE_LIMIT`` times before actually
+        disconnecting — see that constant's docstring. ``NotConnectedError``
+        is never retried: it means the transport itself already knows there
+        is nothing to probe.
         """
+        self._health_check_failures = 0
         while True:
             interval = _HEALTH_CHECK_INTERVAL
             if self._streaming_fn is not None and await self._streaming_fn():
@@ -646,11 +672,26 @@ class DeviceManager:
             await asyncio.gather(drain, return_exceptions=True)
             try:
                 await asyncio.wait_for(device.verify_connection(), timeout=_PROBE_TIMEOUT)
-            except (ConnectionLostError, NotConnectedError, TimeoutError) as exc:
+                await self._poll_liveness(device)
+            except NotConnectedError:
+                raise
+            except (ConnectionLostError, TimeoutError) as exc:
+                self._health_check_failures += 1
+                if self._health_check_failures < _HEALTH_CHECK_FAILURE_LIMIT:
+                    log.warning(
+                        "health probe failed (%d/%d), retrying next cycle: %s",
+                        self._health_check_failures,
+                        _HEALTH_CHECK_FAILURE_LIMIT,
+                        exc,
+                    )
+                    continue
                 raise ConnectionLostError(
-                    f"connection health probe failed (bluetoothd restart?): {exc}"
+                    f"connection health probe failed after "
+                    f"{_HEALTH_CHECK_FAILURE_LIMIT} consecutive attempts "
+                    f"(bluetoothd restart?): {exc}"
                 ) from exc
-            await self._poll_liveness(device)
+            else:
+                self._health_check_failures = 0
 
     async def _poll_liveness(self, device: PartyBoxDevice) -> None:
         """Probe whether the speaker is awake by trying battery, then firmware.
