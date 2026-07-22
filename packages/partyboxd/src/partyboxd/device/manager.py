@@ -19,6 +19,7 @@ from typing import Literal
 
 from partybox import (
     BatteryStatusResponse,
+    ConfirmedDisconnectError,
     ConnectionFailedError,
     ConnectionLostError,
     PartyBoxDevice,
@@ -62,18 +63,16 @@ _STREAMING_HEALTH_CHECK_INTERVAL = 60.0
 _PROBE_TIMEOUT = 10.0
 
 # Consecutive health-check cycle failures (verify_connection() timing out, or
-# _poll_liveness() re-raising ConnectionLostError/NotConnectedError) tolerated
-# before the connection is actually torn down. A live btmon capture
-# (2026-07-22) caught this cycle disconnecting a connection whose transport
-# was demonstrably healthy throughout — every write in the window got an ATT
-# Write Response in 60-80ms, right up to the moment our own code issued the
-# HCI Disconnect. The GATT *application* layer (the speaker's protocol
-# responses) had gone quiet, but the *link* had not, and a single missed
-# cycle was enough to tear down a connection that a moment's patience might
-# have kept alive. Same tolerance-for-transient-unresponsiveness reasoning as
-# _LIVENESS_MISS_LIMIT, applied one level up: a genuinely dead link still
-# gets caught within two cycles, a momentarily-slow GATT server no longer
-# costs a multi-minute reconnect over one bad probe.
+# _poll_liveness() re-raising ConnectionLostError) tolerated before the
+# connection is actually torn down. The link and the GATT application layer
+# can fail independently — a probe going unanswered doesn't prove the link
+# itself is dead (see ConfirmedDisconnectError for the cases where it does).
+# Same tolerance-for-transient-unresponsiveness reasoning as
+# _LIVENESS_MISS_LIMIT, applied one level up, and same value: not
+# Portal-configurable, for the same reason ADR-038 gives its own fixed
+# thresholds — nobody outside this debugging context has a principled basis
+# to pick a different number. See ADR-040 for the incident and evidence
+# behind this decision.
 _HEALTH_CHECK_FAILURE_LIMIT = 2
 
 # Consecutive liveness-probe misses (battery, falling back to firmware)
@@ -323,10 +322,6 @@ class DeviceManager:
         self._bus: EventBus[DeviceEvent] = EventBus()
         #: Consecutive liveness-probe misses on the current connection.
         self._liveness_misses = 0
-        #: Consecutive health-check cycle failures on the current connection
-        #: (see _HEALTH_CHECK_FAILURE_LIMIT) — distinct from _liveness_misses,
-        #: which tracks the speaker being asleep, not the probe itself failing.
-        self._health_check_failures = 0
         #: Set while `_device` is non-None; lets callers await a reconnect
         #: instead of failing instantly during a transient BLE drop.
         self._connected_event = asyncio.Event()
@@ -639,10 +634,16 @@ class DeviceManager:
         A cycle that fails with ``ConnectionLostError``/``TimeoutError`` is
         retried up to ``_HEALTH_CHECK_FAILURE_LIMIT`` times before actually
         disconnecting — see that constant's docstring. ``NotConnectedError``
-        is never retried: it means the transport itself already knows there
-        is nothing to probe.
+        and ``ConfirmedDisconnectError`` are never retried: both mean there is
+        nothing left to probe, confirmed rather than merely failed once.
+
+        The failure counter is a local, not ``self.`` state: it exists only
+        for the duration of one call (one connection's health-checking), so
+        it can't go stale across connections or reconnects by construction —
+        no separate reset step to remember, regardless of how this method or
+        its callers are refactored later.
         """
-        self._health_check_failures = 0
+        failures = 0
         while True:
             interval = _HEALTH_CHECK_INTERVAL
             if self._streaming_fn is not None and await self._streaming_fn():
@@ -673,14 +674,29 @@ class DeviceManager:
             try:
                 await asyncio.wait_for(device.verify_connection(), timeout=_PROBE_TIMEOUT)
                 await self._poll_liveness(device)
-            except NotConnectedError:
+            except NotConnectedError, ConfirmedDisconnectError:
+                # Neither is worth retrying: NotConnectedError means the
+                # transport already knows there's nothing to probe;
+                # ConfirmedDisconnectError means the platform has already
+                # confirmed the link is gone (bleak's disconnected-callback
+                # fired, or the device/characteristic D-Bus object no longer
+                # exists) — not merely that this one attempt failed. Must be
+                # caught ahead of the plain ConnectionLostError branch below,
+                # since ConfirmedDisconnectError is a subclass of it.
                 raise
             except (ConnectionLostError, TimeoutError) as exc:
-                self._health_check_failures += 1
-                if self._health_check_failures < _HEALTH_CHECK_FAILURE_LIMIT:
+                failures += 1
+                if failures < _HEALTH_CHECK_FAILURE_LIMIT:
+                    # WARNING, not DEBUG: this line has already proven its
+                    # diagnostic value once (see ADR-040) and is inherently
+                    # bounded to at most one per failure episode by
+                    # _HEALTH_CHECK_FAILURE_LIMIT — a chronically
+                    # borderline-slow speaker would still log it every
+                    # cycle, but that's a real, worsening condition worth
+                    # seeing, not noise to suppress.
                     log.warning(
                         "health probe failed (%d/%d), retrying next cycle: %s",
-                        self._health_check_failures,
+                        failures,
                         _HEALTH_CHECK_FAILURE_LIMIT,
                         exc,
                     )
@@ -691,7 +707,7 @@ class DeviceManager:
                     f"(bluetoothd restart?): {exc}"
                 ) from exc
             else:
-                self._health_check_failures = 0
+                failures = 0
 
     async def _poll_liveness(self, device: PartyBoxDevice) -> None:
         """Probe whether the speaker is awake by trying battery, then firmware.

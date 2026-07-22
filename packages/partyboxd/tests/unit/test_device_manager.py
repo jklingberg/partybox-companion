@@ -6,7 +6,12 @@ import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
-from partybox import ConnectionFailedError, ConnectionLostError, ScanResult
+from partybox import (
+    ConfirmedDisconnectError,
+    ConnectionFailedError,
+    ConnectionLostError,
+    ScanResult,
+)
 from partybox.bluetooth.mock import MockTransport
 from partybox.bluetooth.transport import NotConnectedError
 from partybox.device.partybox import PartyBoxDevice
@@ -208,7 +213,47 @@ async def test_health_check_tolerates_one_transient_failure(
 
     assert not task.done()  # tolerated — did not disconnect
     assert calls >= 2  # the retry actually happened
-    assert manager._health_check_failures == 0  # reset by the successful cycle
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+async def test_health_check_failure_counter_resets_on_success_not_cumulative(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The failure counter must reset after every successful cycle, not
+    accumulate across separate, non-consecutive incidents — two *isolated*
+    single failures (each followed by a recovery) must never add up to
+    _HEALTH_CHECK_FAILURE_LIMIT and disconnect, even though their total count
+    across the connection's lifetime exceeds it."""
+    monkeypatch.setattr("partyboxd.device.manager._HEALTH_CHECK_INTERVAL", 0.01)
+    manager = _make_manager()
+    transport = MockTransport(address="AA:BB:CC:DD:EE:FF")
+    await transport.connect()
+    device = PartyBoxDevice._from_transport(transport)
+    monkeypatch.setattr(device, "drain_until_disconnect", _hanging_drain)
+
+    calls = 0
+
+    async def flaky_verify() -> None:
+        nonlocal calls
+        calls += 1
+        if calls in (1, 3):  # two isolated failures, never back-to-back
+            raise TimeoutError()
+
+    monkeypatch.setattr(device, "verify_connection", flaky_verify)
+    monkeypatch.setattr(manager, "_poll_liveness", AsyncMock())
+
+    task = asyncio.create_task(manager._drain_with_health_check(device))
+    await asyncio.sleep(0.05)
+
+    assert not task.done()  # would have disconnected if the counter didn't reset
+    assert calls >= 4
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
 
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -268,6 +313,79 @@ async def test_health_check_does_not_retry_not_connected_error(
     with pytest.raises(NotConnectedError):
         await manager._drain_with_health_check(device)
     assert calls == 1  # no retry
+
+
+async def test_health_check_does_not_retry_confirmed_disconnect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ConfirmedDisconnectError means the platform already confirmed the link
+    is gone (bleak's disconnected-callback fired, or the D-Bus object no
+    longer exists) — not merely that one probe attempt failed. Must raise
+    immediately, same as NotConnectedError, even though it is itself a
+    ConnectionLostError subclass and would otherwise match the tolerated
+    branch. Review feedback on #72 (round 2)."""
+    monkeypatch.setattr("partyboxd.device.manager._HEALTH_CHECK_INTERVAL", 0.01)
+    manager = _make_manager()
+    transport = MockTransport(address="AA:BB:CC:DD:EE:FF")
+    await transport.connect()
+    device = PartyBoxDevice._from_transport(transport)
+    monkeypatch.setattr(device, "drain_until_disconnect", _hanging_drain)
+
+    calls = 0
+
+    async def confirmed_gone() -> None:
+        nonlocal calls
+        calls += 1
+        raise ConfirmedDisconnectError()
+
+    monkeypatch.setattr(device, "verify_connection", confirmed_gone)
+    monkeypatch.setattr(manager, "_poll_liveness", AsyncMock())
+
+    with pytest.raises(ConfirmedDisconnectError):
+        await manager._drain_with_health_check(device)
+    assert calls == 1  # no retry
+
+
+async def test_health_check_tolerates_failure_then_passive_disconnect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A retried probe cycle must not swallow a real disconnect that arrives
+    via the *passive* path (drain_until_disconnect() itself completing)
+    while the retry is in flight — the two branches must compose cleanly."""
+    monkeypatch.setattr("partyboxd.device.manager._HEALTH_CHECK_INTERVAL", 0.01)
+    manager = _make_manager()
+    transport = MockTransport(address="AA:BB:CC:DD:EE:FF")
+    await transport.connect()
+    device = PartyBoxDevice._from_transport(transport)
+
+    drain_calls = 0
+
+    async def drain_once_then_disconnect() -> None:
+        nonlocal drain_calls
+        drain_calls += 1
+        if drain_calls == 1:
+            await asyncio.Event().wait()  # first cycle: nothing passive happens
+        raise ConnectionLostError("peer disconnected mid-drain")
+
+    monkeypatch.setattr(device, "drain_until_disconnect", drain_once_then_disconnect)
+
+    calls = 0
+
+    async def flaky_verify() -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise TimeoutError()
+
+    monkeypatch.setattr(device, "verify_connection", flaky_verify)
+    monkeypatch.setattr(manager, "_poll_liveness", AsyncMock())
+
+    with pytest.raises(ConnectionLostError):
+        await manager._drain_with_health_check(device)
+    # Resolved via the passive drain branch on the second loop iteration,
+    # after the health check tolerated one transient failure on the first.
+    assert calls == 1
+    assert drain_calls == 2
 
 
 # ---------------------------------------------------------------------------

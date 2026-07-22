@@ -30,6 +30,7 @@ except PackageNotFoundError:
 from partybox.bluetooth.scanner import DiscoveryError
 from partybox.bluetooth.transport import (
     BluetoothError,
+    ConfirmedDisconnectError,
     ConnectionFailedError,
     ConnectionLostError,
     NotConnectedError,
@@ -54,6 +55,7 @@ __all__ = [
     "BatteryStatusResponse",
     "BluetoothError",
     "ChargingStatus",
+    "ConfirmedDisconnectError",
     "ConnectionFailedError",
     "ConnectionLostError",
     "DeviceInfoCapability",
