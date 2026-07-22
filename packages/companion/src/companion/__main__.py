@@ -403,6 +403,12 @@ async def _run(
                 with suppress(asyncio.CancelledError):
                     await supervisor_task
 
+    # Shared across every router below so factory-reset, config PUT,
+    # debug/bundle, and (once past provisioning) wifi/connect all respect the
+    # same API key partyboxd's private routes use — see SEC-02/SEC-04
+    # (docs/adr/041-host-origin-allowlist.md).
+    auth = make_auth_dependency(daemon_settings)
+
     app = create_daemon_app(
         manager,
         daemon_settings,
@@ -411,7 +417,7 @@ async def _run(
         extra_event_sources=[audio, spotify, pairing, audio_focus],
         lifespan=_lifespan,
     )
-    app.include_router(make_portal_router(companion_settings, config_store))
+    app.include_router(make_portal_router(companion_settings, config_store, auth=auth))
     app.include_router(
         make_services_router(
             spotify,
@@ -421,10 +427,10 @@ async def _run(
             audio=audio,
             pairing=pairing,
             supervisor=supervisor,
-            auth=make_auth_dependency(daemon_settings),
+            auth=auth,
         )
     )
-    app.include_router(make_wifi_router(provisioning))
+    app.include_router(make_wifi_router(provisioning, auth=auth))
     app.add_middleware(CaptivePortalMiddleware, provisioning=provisioning)
 
     server_config = uvicorn.Config(

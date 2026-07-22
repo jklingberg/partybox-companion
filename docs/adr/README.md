@@ -49,3 +49,5 @@ New ADRs should be added when a significant design decision is made. Superseded 
 | [037](037-health-details-endpoint.md) | `GET /api/v1/health/details` — Exposing Supervisor Health | Accepted |
 | [038](038-idle-battery-shutdown.md) | Idle Battery Shutdown | Accepted |
 | [039](039-ble-controller-wedge-self-heal.md) | Runtime Self-Heal of a Wedged Bluetooth Controller | Accepted |
+| [040](040-health-check-probe-tolerance.md) | Health-Check Probe Tolerance and Confirmed-vs-Transient Disconnects | Accepted |
+| [041](041-host-origin-allowlist.md) | Host/Origin Allowlist for CSRF and DNS-Rebinding Defense | Accepted |

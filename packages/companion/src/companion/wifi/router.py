@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from collections.abc import Awaitable, Callable
+
+from fastapi import APIRouter, Depends, Header
 from pydantic import BaseModel
 
-from companion.services.provisioning import ProvisioningService
+from companion.services.provisioning import ProvisioningService, ProvisioningState
 
 
 class WifiStatusResponse(BaseModel):
@@ -30,13 +32,31 @@ class WifiConnectRequest(BaseModel):
     password: str | None = None
 
 
-def make_wifi_router(provisioning: ProvisioningService) -> APIRouter:
+def make_wifi_router(
+    provisioning: ProvisioningService,
+    auth: Callable[..., Awaitable[None]] | None = None,
+) -> APIRouter:
     """Return an APIRouter with WiFi provisioning endpoints.
 
-    All endpoints are unauthenticated -- provisioning runs before any API key
-    is configured and before the appliance has network connectivity.
+    ``GET /status`` and ``GET /networks`` stay unauthenticated -- they're
+    read-only and provisioning runs before any API key can be entered.
+
+    ``POST /connect`` requires *auth* (when configured) once the appliance is
+    on its home network (``ProvisioningState.CONNECTED``) -- an unauthenticated
+    caller that already knows the LAN can otherwise redirect the appliance to
+    an attacker's WiFi network (SEC-02). Auth is bypassed in every other
+    state (``unprovisioned``, ``ap_active``, ``connecting``) so the
+    provisioning flow itself -- run before any API key can be supplied,
+    over the appliance's own open AP -- keeps working with no key entry step.
     """
     router = APIRouter(prefix="/api/v1/wifi", tags=["wifi"])
+
+    async def require_auth_once_connected(
+        x_api_key: str | None = Header(default=None, alias="X-Api-Key"),
+    ) -> None:
+        if auth is None or provisioning.status.state != ProvisioningState.CONNECTED:
+            return
+        await auth(x_api_key)
 
     @router.get(
         "/status",
@@ -78,6 +98,7 @@ def make_wifi_router(provisioning: ProvisioningService) -> APIRouter:
         "/connect",
         status_code=204,
         summary="Submit WiFi credentials",
+        dependencies=[Depends(require_auth_once_connected)],
     )
     async def post_wifi_connect(body: WifiConnectRequest) -> None:
         """Submit an SSID and optional password to connect to a WiFi network.
@@ -85,6 +106,12 @@ def make_wifi_router(provisioning: ProvisioningService) -> APIRouter:
         Returns 204 immediately. Poll ``GET /api/v1/wifi/status`` to track
         progress. On failure, the service restores the AP and sets ``reason``
         and ``message`` on the status endpoint.
+
+        Requires authentication once the appliance is already on its home
+        network (SEC-02) -- an unauthenticated call could otherwise redirect
+        it onto an attacker-controlled WiFi network. Unauthenticated during
+        the provisioning flow itself (``unprovisioned``/``ap_active``/
+        ``connecting``), which runs before any API key can be entered.
         """
         await provisioning.request_connect(body.ssid, body.password)
 

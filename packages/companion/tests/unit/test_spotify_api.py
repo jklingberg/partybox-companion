@@ -15,6 +15,8 @@ from companion.services.router import make_services_router
 from companion.services.spotify import SpotifyStatus
 from httpx import ASGITransport, AsyncClient
 from partyboxd.api import create_app as create_daemon_app
+from partyboxd.api.auth import make_auth_dependency
+from partyboxd.config import ApiSettings
 from partyboxd.config import Settings as DaemonSettings
 from partyboxd.device.manager import StatusSnapshot
 
@@ -33,7 +35,13 @@ def _make_manager() -> MagicMock:
     return manager
 
 
-def _make_client(status: SpotifyStatus, tmp_path: Path | None = None) -> AsyncClient:
+def _make_client(
+    status: SpotifyStatus,
+    tmp_path: Path | None = None,
+    *,
+    daemon_settings: DaemonSettings | None = None,
+    with_auth: bool = False,
+) -> AsyncClient:
     spotify = MagicMock()
     type(spotify).status = PropertyMock(return_value=status)
     spotify.settings = SpotifySettings(connect_name=status.device_name, bitrate=320)
@@ -49,8 +57,13 @@ def _make_client(status: SpotifyStatus, tmp_path: Path | None = None) -> AsyncCl
 
     store = ConfigStore(cfg_path)
 
-    app = create_daemon_app(_make_manager(), DaemonSettings())
-    app.include_router(make_services_router(spotify, store))
+    settings = daemon_settings or DaemonSettings()
+    app = create_daemon_app(_make_manager(), settings)
+    app.include_router(
+        make_services_router(
+            spotify, store, auth=make_auth_dependency(settings) if with_auth else None
+        )
+    )
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
 
@@ -302,6 +315,8 @@ def _reset_client(
     sink_address: str | None = None,
     audio: MagicMock | None = None,
     pairing: MagicMock | None = None,
+    daemon_settings: DaemonSettings | None = None,
+    with_auth: bool = False,
 ) -> tuple[AsyncClient, MagicMock, ConfigStore]:
     spotify = MagicMock()
     type(spotify).status = PropertyMock(return_value=_READY)
@@ -318,8 +333,17 @@ def _reset_client(
         )
     )
 
-    app = create_daemon_app(_make_manager(), DaemonSettings())
-    app.include_router(make_services_router(spotify, store, audio=audio, pairing=pairing))
+    settings = daemon_settings or DaemonSettings()
+    app = create_daemon_app(_make_manager(), settings)
+    app.include_router(
+        make_services_router(
+            spotify,
+            store,
+            audio=audio,
+            pairing=pairing,
+            auth=make_auth_dependency(settings) if with_auth else None,
+        )
+    )
     client = AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
     return client, spotify, store
 
@@ -385,3 +409,52 @@ async def test_factory_reset_resilient_to_bond_removal_failure(tmp_path: Path) -
     # Config is still wiped even though bond removal raised.
     assert store.read() == PortalConfig()
     spotify.update_settings.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Auth (SEC-02/SEC-04) — factory-reset and debug/bundle respect the API key
+# ---------------------------------------------------------------------------
+
+
+async def test_factory_reset_requires_auth_when_configured(tmp_path: Path) -> None:
+    settings = DaemonSettings(api=ApiSettings(api_key="secret"))
+    client, _, _ = _reset_client(tmp_path, daemon_settings=settings, with_auth=True)
+    async with client:
+        r = await client.post("/api/v1/factory-reset")
+    assert r.status_code == 401
+
+
+async def test_factory_reset_accepts_valid_api_key(tmp_path: Path) -> None:
+    settings = DaemonSettings(api=ApiSettings(api_key="secret"))
+    client, _, _ = _reset_client(tmp_path, daemon_settings=settings, with_auth=True)
+    async with client:
+        r = await client.post("/api/v1/factory-reset", headers={"X-Api-Key": "secret"})
+    assert r.status_code == 204
+
+
+async def test_factory_reset_unauthenticated_by_default(tmp_path: Path) -> None:
+    """No API key configured -> factory-reset stays reachable from the Portal."""
+    client, _, _ = _reset_client(tmp_path)
+    async with client:
+        r = await client.post("/api/v1/factory-reset")
+    assert r.status_code == 204
+
+
+async def test_debug_bundle_requires_auth_when_configured(tmp_path: Path) -> None:
+    settings = DaemonSettings(api=ApiSettings(api_key="secret"))
+    async with _make_client(_READY, tmp_path, daemon_settings=settings, with_auth=True) as client:
+        r = await client.get("/api/v1/debug/bundle")
+    assert r.status_code == 401
+
+
+async def test_debug_bundle_accepts_valid_api_key(tmp_path: Path) -> None:
+    settings = DaemonSettings(api=ApiSettings(api_key="secret"))
+    async with _make_client(_READY, tmp_path, daemon_settings=settings, with_auth=True) as client:
+        r = await client.get("/api/v1/debug/bundle", headers={"X-Api-Key": "secret"})
+    assert r.status_code == 200
+
+
+async def test_debug_bundle_unauthenticated_by_default(tmp_path: Path) -> None:
+    async with _make_client(_READY, tmp_path) as client:
+        r = await client.get("/api/v1/debug/bundle")
+    assert r.status_code == 200

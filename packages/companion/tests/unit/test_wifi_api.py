@@ -15,6 +15,9 @@ from companion.services.provisioning import (
 from companion.wifi.router import make_wifi_router
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from partyboxd.api.auth import make_auth_dependency
+from partyboxd.config import ApiSettings
+from partyboxd.config import Settings as DaemonSettings
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -37,9 +40,17 @@ def _make_service(
     return svc
 
 
-def _make_client(svc: MagicMock) -> AsyncClient:
+def _make_client(
+    svc: MagicMock,
+    *,
+    daemon_settings: DaemonSettings | None = None,
+    with_auth: bool = False,
+) -> AsyncClient:
     app = FastAPI()
-    app.include_router(make_wifi_router(svc))
+    settings = daemon_settings or DaemonSettings()
+    app.include_router(
+        make_wifi_router(svc, auth=make_auth_dependency(settings) if with_auth else None)
+    )
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
 
@@ -192,3 +203,73 @@ async def test_connect_password_not_logged(caplog: pytest.LogCaptureFixture) -> 
                 json={"ssid": "HomeNet", "password": "supersecret"},
             )
     assert "supersecret" not in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# POST /api/v1/wifi/connect — auth (SEC-02)
+#
+# Once the appliance is CONNECTED to its home network, an unauthenticated
+# wifi/connect call could redirect it onto an attacker's WiFi. During the
+# provisioning states themselves (unprovisioned/ap_active/connecting), no API
+# key can have been entered yet, so auth is bypassed there.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_connect_requires_auth_once_connected() -> None:
+    settings = DaemonSettings(api=ApiSettings(api_key="secret"))
+    svc = _make_service(state=ProvisioningState.CONNECTED)
+    async with _make_client(svc, daemon_settings=settings, with_auth=True) as client:
+        r = await client.post("/api/v1/wifi/connect", json={"ssid": "HomeNet"})
+    assert r.status_code == 401
+    svc.request_connect.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_connect_accepts_valid_api_key_once_connected() -> None:
+    settings = DaemonSettings(api=ApiSettings(api_key="secret"))
+    svc = _make_service(state=ProvisioningState.CONNECTED)
+    async with _make_client(svc, daemon_settings=settings, with_auth=True) as client:
+        r = await client.post(
+            "/api/v1/wifi/connect",
+            json={"ssid": "HomeNet"},
+            headers={"X-Api-Key": "secret"},
+        )
+    assert r.status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_connect_open_during_ap_active_even_with_key_configured() -> None:
+    settings = DaemonSettings(api=ApiSettings(api_key="secret"))
+    svc = _make_service(state=ProvisioningState.AP_ACTIVE, ap_ip="10.42.0.1")
+    async with _make_client(svc, daemon_settings=settings, with_auth=True) as client:
+        r = await client.post("/api/v1/wifi/connect", json={"ssid": "HomeNet"})
+    assert r.status_code == 204
+    svc.request_connect.assert_awaited_once_with("HomeNet", None)
+
+
+@pytest.mark.asyncio
+async def test_connect_open_while_unprovisioned_even_with_key_configured() -> None:
+    settings = DaemonSettings(api=ApiSettings(api_key="secret"))
+    svc = _make_service(state=ProvisioningState.UNPROVISIONED)
+    async with _make_client(svc, daemon_settings=settings, with_auth=True) as client:
+        r = await client.post("/api/v1/wifi/connect", json={"ssid": "HomeNet"})
+    assert r.status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_connect_open_while_connecting_even_with_key_configured() -> None:
+    settings = DaemonSettings(api=ApiSettings(api_key="secret"))
+    svc = _make_service(state=ProvisioningState.CONNECTING)
+    async with _make_client(svc, daemon_settings=settings, with_auth=True) as client:
+        r = await client.post("/api/v1/wifi/connect", json={"ssid": "HomeNet"})
+    assert r.status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_connect_unauthenticated_by_default_when_connected() -> None:
+    """No API key configured -> wifi/connect stays reachable with no key."""
+    svc = _make_service(state=ProvisioningState.CONNECTED)
+    async with _make_client(svc) as client:
+        r = await client.post("/api/v1/wifi/connect", json={"ssid": "HomeNet"})
+    assert r.status_code == 204
