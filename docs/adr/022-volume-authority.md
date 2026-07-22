@@ -149,3 +149,42 @@ both the REST API and the physical speaker would see disagreements.
 **Confirmed updates always (including Phase 1).**
 Rejected: there is nothing to confirm against while BLE is unavailable.
 Optimistic is the only option in Phase 1.
+
+## Addendum: PipeWire actuator (2026-07-22, ARCH-04/INC-2)
+
+Phase 1 as originally written had a gap: `POST /api/v1/volume` wrote
+`VolumeState` but nothing translated that write into an actual change in
+audible output. Both the API and the "unified volume" model were
+hardware-inert until BLE volume landed — flagged as `ARCH-04` in the
+2026-07-11 Technical Founder Review and cross-referenced to `INC-2`
+(docs/validation/runs/2026-07-02-rc13.md), the confirmed defect where
+WirePlumber's ~40% default sink volume made music quieter than the
+speaker's own native sounds.
+
+**A real actuator exists today, no BLE opcode required:** the PipeWire sink
+node created for the A2DP connection. `companion.services.pipewire_volume`
+wraps `wpctl` (`get-volume`/`set-volume` against `@DEFAULT_AUDIO_SINK@` —
+the appliance has exactly one audio output) and is now wired into both
+directions:
+
+1. `POST /api/v1/volume` actuates via PipeWire after the (still-inert) BLE
+   attempt. `VolumeState.source` records `"pipewire"` when the actuator
+   confirms success, falling back to the prior optimistic `"api"` write
+   only when PipeWire itself is unreachable (e.g. audio not connected yet).
+2. `GET /api/v1/volume` reads PipeWire's live level as the second-priority
+   source (after BLE, before the `VolumeState` fallback) — a real readback,
+   not a replay of the last write.
+3. `AudioService` pins the sink to 100% on every fresh A2DP connect
+   (`pin_volume_fn`, called once per False→True `audio_ready` transition —
+   see `companion/services/audio.py`), closing INC-2 at the code layer.
+   This is intentionally redundant with the image-level WirePlumber
+   `device.routes.default-sink-volume = 1.0` override (ADR-028 § "Volume
+   floor from mixin.stateless"), which fixes the same symptom via config —
+   the explicit pin does not depend on that config surviving a future image
+   change, and is what the RC13 punch list and this review both asked for
+   directly.
+
+`"pipewire"` is added to `VolumeSource` alongside the sources listed above.
+This does not change the Phase 2 plan: BLE hardware volume, once the opcode
+is confirmed, remains the authoritative source and supersedes PipeWire the
+same way it was always meant to supersede optimistic API writes.

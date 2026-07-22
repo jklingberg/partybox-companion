@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from unittest.mock import AsyncMock, MagicMock, PropertyMock
 
 import pytest
@@ -55,9 +56,19 @@ def _make_spotify() -> MagicMock:
     return spotify
 
 
+async def _pipewire_get_volume_unavailable() -> int | None:
+    return None
+
+
+async def _pipewire_set_volume_fails(_percent: int) -> bool:
+    return False
+
+
 def _make_client(
     manager: MagicMock | None = None,
     volume_state: VolumeState | None = None,
+    pipewire_get_volume: Callable[[], Awaitable[int | None]] = _pipewire_get_volume_unavailable,
+    pipewire_set_volume: Callable[[int], Awaitable[bool]] = _pipewire_set_volume_fails,
 ) -> AsyncClient:
     import tempfile
     from pathlib import Path
@@ -68,7 +79,14 @@ def _make_client(
     store = ConfigStore(store_path)
     app = create_daemon_app(manager or _make_manager(), DaemonSettings())
     app.include_router(
-        make_services_router(_make_spotify(), store, manager=manager, volume_state=volume_state)
+        make_services_router(
+            _make_spotify(),
+            store,
+            manager=manager,
+            volume_state=volume_state,
+            pipewire_get_volume=pipewire_get_volume,
+            pipewire_set_volume=pipewire_set_volume,
+        )
     )
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
@@ -128,6 +146,32 @@ async def test_get_volume_no_manager_no_state_returns_null() -> None:
         r = await client.get("/api/v1/volume")
     assert r.status_code == 200
     assert r.json() == {"level": None, "source": None}
+
+
+async def test_get_volume_falls_back_to_pipewire_when_ble_returns_none() -> None:
+    """PipeWire is the real actuator (ADR-022/ARCH-04) — it ranks above the
+    last-known VolumeState, since it reflects live output, not a stale write."""
+    manager = _make_manager(get_volume_result=None)
+    vs = VolumeState()
+    vs.update(55, "spotify")
+
+    async def pipewire_get() -> int | None:
+        return 88
+
+    async with _make_client(manager, vs, pipewire_get_volume=pipewire_get) as client:
+        r = await client.get("/api/v1/volume")
+    assert r.status_code == 200
+    assert r.json() == {"level": 88, "source": "pipewire"}
+
+
+async def test_get_volume_falls_back_to_pipewire_when_no_manager() -> None:
+    async def pipewire_get() -> int | None:
+        return 33
+
+    async with _make_client(None, VolumeState(), pipewire_get_volume=pipewire_get) as client:
+        r = await client.get("/api/v1/volume")
+    assert r.status_code == 200
+    assert r.json() == {"level": 33, "source": "pipewire"}
 
 
 # ---------------------------------------------------------------------------
@@ -198,4 +242,48 @@ async def test_post_volume_boundary_values_accepted(level: int) -> None:
         r = await client.post("/api/v1/volume", json={"level": level})
     assert r.status_code == 204
     assert vs.level == level
+    assert vs.source == "api"
+
+
+# ---------------------------------------------------------------------------
+# POST /api/v1/volume — PipeWire actuator (ARCH-04/INC-2)
+# ---------------------------------------------------------------------------
+
+
+async def test_post_volume_actuates_pipewire() -> None:
+    """The core ARCH-04 fix: POST must actually call the PipeWire actuator,
+    not just record an in-memory value nothing reads back from hardware."""
+    calls: list[int] = []
+
+    async def pipewire_set(percent: int) -> bool:
+        calls.append(percent)
+        return True
+
+    async with _make_client(None, VolumeState(), pipewire_set_volume=pipewire_set) as client:
+        r = await client.post("/api/v1/volume", json={"level": 73})
+    assert r.status_code == 204
+    assert calls == [73]
+
+
+async def test_post_volume_updates_state_with_pipewire_source_on_success() -> None:
+    async def pipewire_set(_percent: int) -> bool:
+        return True
+
+    vs = VolumeState()
+    async with _make_client(None, vs, pipewire_set_volume=pipewire_set) as client:
+        await client.post("/api/v1/volume", json={"level": 60})
+    assert vs.level == 60
+    assert vs.source == "pipewire"
+
+
+async def test_post_volume_falls_back_to_api_source_when_pipewire_fails() -> None:
+    """When the PipeWire actuator can't reach a real sink (e.g. audio not
+    connected yet), the write is still recorded — optimistically, with
+    source "api" — rather than silently discarded (the write-only-endpoint
+    bug this issue fixes for the *other* half: when neither actuator works)."""
+    vs = VolumeState()
+    async with _make_client(None, vs) as client:  # default pipewire stub fails
+        r = await client.post("/api/v1/volume", json={"level": 15})
+    assert r.status_code == 204
+    assert vs.level == 15
     assert vs.source == "api"

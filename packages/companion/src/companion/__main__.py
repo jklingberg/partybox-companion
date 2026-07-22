@@ -39,6 +39,7 @@ from companion.services.audio import AudioService
 from companion.services.audio_focus import AudioFocusService
 from companion.services.le_reclaim import disconnect_stale_speaker_links
 from companion.services.pairing import PairingService, PairingState
+from companion.services.pipewire_volume import set_volume as pipewire_set_volume
 from companion.services.provisioning import ProvisioningService
 from companion.services.router import make_services_router
 from companion.services.spotify import SpotifyService
@@ -169,6 +170,21 @@ async def _forward_ble_volume(manager: DeviceManager, volume_state: VolumeState)
                 volume_state.update(event.percent, "ble")
     finally:
         manager.unsubscribe(queue)
+
+
+async def _pin_bluez_sink_volume() -> None:
+    """Pin the PipeWire sink to 100% right after a fresh A2DP connect.
+
+    Fixes INC-2 (docs/validation/runs/2026-07-02-rc13.md): WirePlumber
+    defaults every newly-created A2DP sink node to ~40% volume
+    (docs/adr/028-audio-readiness-model.md § "Volume floor from
+    mixin.stateless"), so music played quieter than the speaker's own native
+    sounds on every fresh install. Explicit here (rather than relying solely
+    on the image-level WirePlumber config override) per ARCH-04's
+    recommendation — this is the actuator ``AudioService`` calls via
+    ``pin_volume_fn``; failures are logged and swallowed by the caller.
+    """
+    await pipewire_set_volume(100)
 
 
 async def _recheck_audio_on_standby(manager: DeviceManager, audio: AudioService) -> None:
@@ -345,6 +361,7 @@ async def _run(
         # from audio.run(), well after _run() finishes constructing
         # everything and hands off to the supervisor.
         speaker_state_fn=lambda: manager.snapshot.speaker_state,
+        pin_volume_fn=_pin_bluez_sink_volume,
     )
     pairing = PairingService(config_store, audio)
     audio_focus = AudioFocusService(

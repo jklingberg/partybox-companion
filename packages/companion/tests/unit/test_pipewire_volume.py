@@ -1,0 +1,159 @@
+"""Unit tests for the PipeWire volume actuator (companion.services.pipewire_volume)."""
+
+from __future__ import annotations
+
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from companion.services import pipewire_volume
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _mock_proc(stdout: bytes = b"", stderr: bytes = b"", returncode: int = 0) -> MagicMock:
+    proc = MagicMock()
+    proc.returncode = returncode
+    proc.communicate = AsyncMock(return_value=(stdout, stderr))
+    return proc
+
+
+# ---------------------------------------------------------------------------
+# set_volume()
+# ---------------------------------------------------------------------------
+
+
+async def test_set_volume_returns_true_on_success() -> None:
+    with patch(
+        "companion.services.pipewire_volume.asyncio.create_subprocess_exec",
+        return_value=_mock_proc(),
+    ):
+        assert await pipewire_volume.set_volume(50) is True
+
+
+async def test_set_volume_passes_default_sink_and_fraction() -> None:
+    exec_mock = AsyncMock(return_value=_mock_proc())
+    with patch("companion.services.pipewire_volume.asyncio.create_subprocess_exec", exec_mock):
+        await pipewire_volume.set_volume(50)
+    exec_mock.assert_awaited_once_with(
+        "wpctl",
+        "set-volume",
+        "@DEFAULT_AUDIO_SINK@",
+        "0.50",
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+
+async def test_set_volume_100_percent_maps_to_full_fraction() -> None:
+    exec_mock = AsyncMock(return_value=_mock_proc())
+    with patch("companion.services.pipewire_volume.asyncio.create_subprocess_exec", exec_mock):
+        await pipewire_volume.set_volume(100)
+    args = exec_mock.await_args.args
+    assert args[3] == "1.00"
+
+
+async def test_set_volume_returns_false_on_nonzero_exit() -> None:
+    with patch(
+        "companion.services.pipewire_volume.asyncio.create_subprocess_exec",
+        return_value=_mock_proc(returncode=1, stderr=b"no default sink"),
+    ):
+        assert await pipewire_volume.set_volume(50) is False
+
+
+async def test_set_volume_returns_false_when_wpctl_missing() -> None:
+    with patch(
+        "companion.services.pipewire_volume.asyncio.create_subprocess_exec",
+        side_effect=OSError("wpctl not found"),
+    ):
+        assert await pipewire_volume.set_volume(50) is False
+
+
+async def test_set_volume_returns_false_on_timeout() -> None:
+    proc = MagicMock()
+    proc.communicate = AsyncMock(side_effect=TimeoutError)
+    with patch(
+        "companion.services.pipewire_volume.asyncio.create_subprocess_exec",
+        return_value=proc,
+    ):
+        assert await pipewire_volume.set_volume(50) is False
+
+
+@pytest.mark.parametrize("percent", [-1, 101])
+async def test_set_volume_rejects_out_of_range(percent: int) -> None:
+    with pytest.raises(ValueError):
+        await pipewire_volume.set_volume(percent)
+
+
+@pytest.mark.parametrize("percent", [0, 100])
+async def test_set_volume_accepts_boundary_values(percent: int) -> None:
+    with patch(
+        "companion.services.pipewire_volume.asyncio.create_subprocess_exec",
+        return_value=_mock_proc(),
+    ):
+        assert await pipewire_volume.set_volume(percent) is True
+
+
+# ---------------------------------------------------------------------------
+# get_volume()
+# ---------------------------------------------------------------------------
+
+
+async def test_get_volume_parses_wpctl_output() -> None:
+    with patch(
+        "companion.services.pipewire_volume.asyncio.create_subprocess_exec",
+        return_value=_mock_proc(stdout=b"Volume: 0.53\n"),
+    ):
+        assert await pipewire_volume.get_volume() == 53
+
+
+async def test_get_volume_parses_muted_suffix() -> None:
+    with patch(
+        "companion.services.pipewire_volume.asyncio.create_subprocess_exec",
+        return_value=_mock_proc(stdout=b"Volume: 0.75 [MUTED]\n"),
+    ):
+        assert await pipewire_volume.get_volume() == 75
+
+
+async def test_get_volume_rounds_to_nearest_percent() -> None:
+    with patch(
+        "companion.services.pipewire_volume.asyncio.create_subprocess_exec",
+        return_value=_mock_proc(stdout=b"Volume: 1.00\n"),
+    ):
+        assert await pipewire_volume.get_volume() == 100
+
+
+async def test_get_volume_returns_none_on_nonzero_exit() -> None:
+    with patch(
+        "companion.services.pipewire_volume.asyncio.create_subprocess_exec",
+        return_value=_mock_proc(returncode=1),
+    ):
+        assert await pipewire_volume.get_volume() is None
+
+
+async def test_get_volume_returns_none_when_wpctl_missing() -> None:
+    with patch(
+        "companion.services.pipewire_volume.asyncio.create_subprocess_exec",
+        side_effect=OSError("wpctl not found"),
+    ):
+        assert await pipewire_volume.get_volume() is None
+
+
+async def test_get_volume_returns_none_on_timeout() -> None:
+    proc = MagicMock()
+    proc.communicate = AsyncMock(side_effect=TimeoutError)
+    with patch(
+        "companion.services.pipewire_volume.asyncio.create_subprocess_exec",
+        return_value=proc,
+    ):
+        assert await pipewire_volume.get_volume() is None
+
+
+async def test_get_volume_returns_none_on_unparseable_output() -> None:
+    with patch(
+        "companion.services.pipewire_volume.asyncio.create_subprocess_exec",
+        return_value=_mock_proc(stdout=b"no default sink found\n"),
+    ):
+        assert await pipewire_volume.get_volume() is None
