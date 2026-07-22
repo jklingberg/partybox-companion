@@ -21,9 +21,10 @@ from typing import Final
 from bleak import BleakClient, BleakScanner
 from bleak.backends.characteristic import BleakGATTCharacteristic
 from bleak.backends.device import BLEDevice
-from bleak.exc import BleakError
+from bleak.exc import BleakDBusError, BleakError
 
 from .transport import (
+    ConfirmedDisconnectError,
     ConnectionFailedError,
     ConnectionLostError,
     ControlTransport,
@@ -42,6 +43,32 @@ DEFAULT_CONNECT_TIMEOUT = 20.0
 # bleak surfaces transport failures as BleakError; the underlying D-Bus/socket
 # layer can also raise these. Treat them all as connection trouble.
 _TRANSPORT_ERRORS = (BleakError, OSError, TimeoutError, EOFError)
+
+# D-Bus error names meaning BlueZ has already torn down the device or
+# characteristic object — the link is confirmed gone, not a momentarily slow
+# peer, so retrying (as a caller tolerating a transient ConnectionLostError
+# might) is certain to fail identically until a fresh connect(). See
+# ConfirmedDisconnectError and ADR-040.
+_CONFIRMED_GONE_DBUS_ERRORS = frozenset(
+    {
+        "org.freedesktop.DBus.Error.UnknownObject",
+        "org.freedesktop.DBus.Error.ServiceUnknown",
+        "org.bluez.Error.NotConnected",
+    }
+)
+
+
+def _connection_lost(address: str, verb: str, exc: BaseException) -> ConnectionLostError:
+    """Build the right ConnectionLostError variant for a failed I/O call.
+
+    A BleakDBusError naming one of _CONFIRMED_GONE_DBUS_ERRORS means the
+    device/characteristic object is already gone — confirmed, not a
+    transient failure. Everything else stays a plain ConnectionLostError.
+    """
+    if isinstance(exc, BleakDBusError) and exc.dbus_error in _CONFIRMED_GONE_DBUS_ERRORS:
+        return ConfirmedDisconnectError(f"{verb} {address} failed: {exc}")
+    return ConnectionLostError(f"{verb} {address} failed: {exc}")
+
 
 # Ceiling on a single GATT operation (write/read/subscribe). BlueZ answers a
 # write-with-response within a couple of seconds on a live link; a call that
@@ -190,7 +217,7 @@ class BleakTransport(ControlTransport):
                 timeout=_GATT_IO_TIMEOUT,
             )
         except _TRANSPORT_ERRORS as exc:
-            raise ConnectionLostError(f"write to {self._address} failed: {exc}") from exc
+            raise _connection_lost(self._address, "write to", exc) from exc
 
     async def read(self, uuid: str) -> bytes:
         client = self._require_connected()
@@ -199,7 +226,7 @@ class BleakTransport(ControlTransport):
                 await asyncio.wait_for(client.read_gatt_char(uuid), timeout=_GATT_IO_TIMEOUT)
             )
         except _TRANSPORT_ERRORS as exc:
-            raise ConnectionLostError(f"read from {self._address} failed: {exc}") from exc
+            raise _connection_lost(self._address, "read from", exc) from exc
 
     def has_service(self, uuid: str) -> bool:
         if self._client is None:
@@ -216,7 +243,9 @@ class BleakTransport(ControlTransport):
         if item is None:
             # Sentinel from disconnect()/_on_disconnect.
             if self._lost:
-                raise ConnectionLostError(f"connection to {self._address} lost")
+                # bleak's own disconnected-callback already fired — a
+                # confirmed disconnect, not merely this call failing.
+                raise ConfirmedDisconnectError(f"connection to {self._address} lost")
             raise NotConnectedError(f"disconnected from {self._address}")
         return item
 
@@ -252,7 +281,9 @@ class BleakTransport(ControlTransport):
 
     def _require_connected(self) -> BleakClient:
         if self._lost:
-            raise ConnectionLostError(f"connection to {self._address} lost")
+            # bleak's own disconnected-callback already fired — a confirmed
+            # disconnect, not merely this call failing.
+            raise ConfirmedDisconnectError(f"connection to {self._address} lost")
         if self._client is None:
             raise NotConnectedError(f"not connected to {self._address}")
         return self._client

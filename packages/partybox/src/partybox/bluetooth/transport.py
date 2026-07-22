@@ -40,6 +40,36 @@ class ConnectionLostError(BluetoothError):
     Distinct from :class:`NotConnectedError`: the connection *was* live and was
     lost mid-session (the speaker powered off, went out of range, etc.). The
     device layer uses this signal to trigger reconnection.
+
+    Covers two circumstances a caller may want to tell apart — see
+    :class:`ConfirmedDisconnectError` for the one that's unambiguous:
+
+    - A single I/O call (write/read) failed or timed out. This can be
+      transient (a slow or momentarily-busy peer) and might succeed on retry.
+    - The disconnect has *already* been confirmed some other way (bleak's own
+      disconnected-callback fired, or the platform reports the underlying
+      object no longer exists). Retrying cannot help; the link is gone until
+      a fresh :meth:`ControlTransport.connect`.
+
+    Plain ``ConnectionLostError`` (this class, not the subclass below) is
+    raised for the first, ambiguous-but-possibly-transient case, so existing
+    ``except ConnectionLostError`` handlers keep working unchanged.
+    """
+
+
+class ConfirmedDisconnectError(ConnectionLostError):
+    """A :class:`ConnectionLostError` for a disconnect already confirmed by
+    the platform, not merely a failed I/O attempt.
+
+    Raised when bleak's disconnected-callback already fired, or the backend
+    reports the device/characteristic object itself no longer exists (BlueZ
+    D-Bus ``UnknownObject`` and similar) — signals that mean the link is
+    definitively gone, as opposed to "this one write/read attempt failed",
+    which stays a plain :class:`ConnectionLostError`. A caller retrying a
+    failed probe before giving up (see ``partyboxd``'s health-check
+    tolerance) should not retry this — the object is confirmed gone, not
+    momentarily slow. Still a :class:`ConnectionLostError` for callers that
+    don't need the distinction.
     """
 
 

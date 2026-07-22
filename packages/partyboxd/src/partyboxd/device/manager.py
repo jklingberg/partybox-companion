@@ -19,6 +19,7 @@ from typing import Literal
 
 from partybox import (
     BatteryStatusResponse,
+    ConfirmedDisconnectError,
     ConnectionFailedError,
     ConnectionLostError,
     PartyBoxDevice,
@@ -60,6 +61,19 @@ _STREAMING_HEALTH_CHECK_INTERVAL = 60.0
 # ATT write instead of failing it; an unbounded probe would then hang the
 # health check that exists to detect exactly that state.
 _PROBE_TIMEOUT = 10.0
+
+# Consecutive health-check cycle failures (verify_connection() timing out, or
+# _poll_liveness() re-raising ConnectionLostError) tolerated before the
+# connection is actually torn down. The link and the GATT application layer
+# can fail independently — a probe going unanswered doesn't prove the link
+# itself is dead (see ConfirmedDisconnectError for the cases where it does).
+# Same tolerance-for-transient-unresponsiveness reasoning as
+# _LIVENESS_MISS_LIMIT, applied one level up, and same value: not
+# Portal-configurable, for the same reason ADR-038 gives its own fixed
+# thresholds — nobody outside this debugging context has a principled basis
+# to pick a different number. See ADR-040 for the incident and evidence
+# behind this decision.
+_HEALTH_CHECK_FAILURE_LIMIT = 2
 
 # Consecutive liveness-probe misses (battery, falling back to firmware)
 # before the speaker is marked asleep. It stops answering control queries in
@@ -616,7 +630,20 @@ class DeviceManager:
         The wait timeout is ``_STREAMING_HEALTH_CHECK_INTERVAL`` instead of
         ``_HEALTH_CHECK_INTERVAL`` while *streaming_fn* reports True — see
         that constant's docstring and ``__init__``'s *streaming_fn* section.
+
+        A cycle that fails with ``ConnectionLostError``/``TimeoutError`` is
+        retried up to ``_HEALTH_CHECK_FAILURE_LIMIT`` times before actually
+        disconnecting — see that constant's docstring. ``NotConnectedError``
+        and ``ConfirmedDisconnectError`` are never retried: both mean there is
+        nothing left to probe, confirmed rather than merely failed once.
+
+        The failure counter is a local, not ``self.`` state: it exists only
+        for the duration of one call (one connection's health-checking), so
+        it can't go stale across connections or reconnects by construction —
+        no separate reset step to remember, regardless of how this method or
+        its callers are refactored later.
         """
+        failures = 0
         while True:
             interval = _HEALTH_CHECK_INTERVAL
             if self._streaming_fn is not None and await self._streaming_fn():
@@ -646,11 +673,41 @@ class DeviceManager:
             await asyncio.gather(drain, return_exceptions=True)
             try:
                 await asyncio.wait_for(device.verify_connection(), timeout=_PROBE_TIMEOUT)
-            except (ConnectionLostError, NotConnectedError, TimeoutError) as exc:
+                await self._poll_liveness(device)
+            except NotConnectedError, ConfirmedDisconnectError:
+                # Neither is worth retrying: NotConnectedError means the
+                # transport already knows there's nothing to probe;
+                # ConfirmedDisconnectError means the platform has already
+                # confirmed the link is gone (bleak's disconnected-callback
+                # fired, or the device/characteristic D-Bus object no longer
+                # exists) — not merely that this one attempt failed. Must be
+                # caught ahead of the plain ConnectionLostError branch below,
+                # since ConfirmedDisconnectError is a subclass of it.
+                raise
+            except (ConnectionLostError, TimeoutError) as exc:
+                failures += 1
+                if failures < _HEALTH_CHECK_FAILURE_LIMIT:
+                    # WARNING, not DEBUG: this line has already proven its
+                    # diagnostic value once (see ADR-040) and is inherently
+                    # bounded to at most one per failure episode by
+                    # _HEALTH_CHECK_FAILURE_LIMIT — a chronically
+                    # borderline-slow speaker would still log it every
+                    # cycle, but that's a real, worsening condition worth
+                    # seeing, not noise to suppress.
+                    log.warning(
+                        "health probe failed (%d/%d), retrying next cycle: %s",
+                        failures,
+                        _HEALTH_CHECK_FAILURE_LIMIT,
+                        exc,
+                    )
+                    continue
                 raise ConnectionLostError(
-                    f"connection health probe failed (bluetoothd restart?): {exc}"
+                    f"connection health probe failed after "
+                    f"{_HEALTH_CHECK_FAILURE_LIMIT} consecutive attempts "
+                    f"(bluetoothd restart?): {exc}"
                 ) from exc
-            await self._poll_liveness(device)
+            else:
+                failures = 0
 
     async def _poll_liveness(self, device: PartyBoxDevice) -> None:
         """Probe whether the speaker is awake by trying battery, then firmware.

@@ -20,6 +20,7 @@ from .mock import MockTransport
 from .scanner import DiscoveryError, DiscoveryResult, PartyBoxCandidate, Scanner
 from .transport import (
     BluetoothError,
+    ConfirmedDisconnectError,
     ConnectionFailedError,
     ConnectionLostError,
     ControlTransport,
@@ -32,6 +33,7 @@ __all__ = [
     "TX_CHAR_UUID",
     "BleakTransport",
     "BluetoothError",
+    "ConfirmedDisconnectError",
     "ConnectionFailedError",
     "ConnectionLostError",
     "ControlTransport",
