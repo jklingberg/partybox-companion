@@ -8,4 +8,5 @@ PartyBox Companion COMPANION_VERSION
   Logs     sudo journalctl -u companion -f
   Config   sudo nano /etc/companion/companion.env
 
-  Default SSH login: pi / raspberry  (change with: passwd)
+  SSH: disabled by default -- enable it and add a key from the Portal
+       (Settings -> SSH access) at the address above.

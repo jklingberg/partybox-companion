@@ -328,7 +328,7 @@ The Pi runs the full `partybox-companion` appliance. The appliance venv at
 site-packages — so for Python-only changes, rsync the source directly and restart
 the service. No reinstall is required.
 
-**SSH access:** `ssh pi@partybox.local` (mDNS, preferred) or `ssh pi@partybox` (router DNS). See [CLAUDE.md](../CLAUDE.md) for the credential and `sshpass` details used in this project.
+**SSH access:** `ssh pi@partybox.local` (mDNS, preferred) or `ssh pi@partybox` (router DNS), once enabled and key-provisioned via the Portal (Settings → SSH access) — SSH ships disabled by default with no fixed password on every image ([ADR-042](adr/042-ssh-hardening.md)). See [CLAUDE.md](../CLAUDE.md) for the one-time enable flow.
 
 **Deploy changed source files:**
 

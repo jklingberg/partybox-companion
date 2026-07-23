@@ -120,24 +120,32 @@ The appliance Pi is normally reachable at `pi@partybox.local` (mDNS) or `pi@part
 
 If either stops resolving, don't treat it as an appliance fault — first try the other, then fall back to the Pi's IP address (check your router's device list, or a reservation if one is configured) and use that IP directly for the SSH/rsync/curl commands below in place of `partybox.local`.
 
-The default credentials are `pi` / `raspberry` (set by `install.sh`). Use `sshpass` for non-interactive access — it is installed in the devcontainer:
+**SSH ships disabled on every image, with no default password** ([ADR-042](docs/adr/042-ssh-hardening.md) — the `pi`/`raspberry` shared credential and `PasswordAuthentication yes` this section used to document are gone; this applies to dev-flashed images exactly like release ones, there is no build flag that restores the old behavior). Before any SSH/rsync command below will work on a given device, one time per device:
+
+1. Open the Portal (`http://partybox.local`) → **Settings → SSH access**.
+2. Turn the toggle on, and either paste your public key or enter your GitHub username and click **Import** (fetches `https://github.com/<username>.keys`, the same public endpoint `ssh-import-id`/cloud-init use — requires the appliance already be on WiFi, since it needs outbound internet).
+3. Click **Apply SSH settings**.
+
+After that, connect with your own key — no password, no `sshpass`:
 
 ```bash
 # One-off command
-sshpass -p raspberry ssh -o StrictHostKeyChecking=no pi@partybox.local "<command>"
+ssh -o StrictHostKeyChecking=no pi@partybox.local "<command>"
 
 # rsync
-sshpass -p raspberry rsync -e "ssh -o StrictHostKeyChecking=no" -av --delete <src> pi@partybox.local:<dst>
+rsync -e "ssh -o StrictHostKeyChecking=no" -av --delete <src> pi@partybox.local:<dst>
 ```
 
 `StrictHostKeyChecking=no` avoids an interactive host-key prompt on first contact.
+
+The `pi` account still has a password, but it's random per device (generated on first real boot, never at image-build time — see ADR-042) and is for the **physical/UART console only**; it is never accepted over SSH (which stays key-only whenever it's enabled at all). If you need it, it's printed to `/etc/issue`, visible on the serial console or a directly attached keyboard/monitor.
 
 ### `pi` vs `companion`: two separate users
 
 SSH always connects as `pi`, but the appliance service runs as `companion` — a **different, more restricted account**. This is deliberate (see [ADR-019](docs/adr/019-distribution-approach.md)), not an oversight, so don't try to "fix" it by running things as `pi` or `root` — expect the split and work with `sudo` instead.
 
 - `pi` — interactive login user (`useradd -m -s /bin/bash -G sudo pi`), passwordless sudo, has a home directory, owns the WirePlumber/PipeWire audio session at `/run/user/1000/`.
-- `companion` — system account (`useradd --system --no-create-home --shell /usr/sbin/nologin`), **no shell, cannot log in**. Runs `companion.service` under systemd hardening (`NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome=read-only`) plus `CAP_NET_BIND_SERVICE` to bind port 80. It has **no sudoers grants at all** — `NoNewPrivileges` blocks the setuid escalation `sudo` needs, so one would silently fail to run anyway. A `systemctl --user -M pi@ restart wireplumber` sudo grant was proposed early on for `AudioService` to self-heal WirePlumber, but was never actually implemented and the doc claim lingered stale until corrected (see `docs/validation/runs/2026-07-02-rc13.md`); detection-only remains the real v1.0 posture there. Where `companion` genuinely needs a privileged operation, it goes through **D-Bus + a narrow polkit rule** installed by `install.sh` instead: `org.freedesktop.NetworkManager.*` for provisioning ([ADR-021](docs/adr/021-network-provisioning.md)) and `org.freedesktop.login1.power-off`(-multiple-sessions) for the idle-battery-shutdown watcher ([ADR-038](docs/adr/038-idle-battery-shutdown.md)).
+- `companion` — system account (`useradd --system --no-create-home --shell /usr/sbin/nologin`), **no shell, cannot log in**. Runs `companion.service` under systemd hardening (`NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome=read-only`) plus `CAP_NET_BIND_SERVICE` to bind port 80. It has **no sudoers grants at all** — `NoNewPrivileges` blocks the setuid escalation `sudo` needs, so one would silently fail to run anyway. A `systemctl --user -M pi@ restart wireplumber` sudo grant was proposed early on for `AudioService` to self-heal WirePlumber, but was never actually implemented and the doc claim lingered stale until corrected (see `docs/validation/runs/2026-07-02-rc13.md`); detection-only remains the real v1.0 posture there. Where `companion` genuinely needs a privileged operation, it goes through **D-Bus + a narrow polkit rule** installed by `install.sh` instead: `org.freedesktop.NetworkManager.*` for provisioning ([ADR-021](docs/adr/021-network-provisioning.md)), `org.freedesktop.login1.power-off`(-multiple-sessions) for the idle-battery-shutdown watcher ([ADR-038](docs/adr/038-idle-battery-shutdown.md)), and `org.freedesktop.systemd1.manage-units` — scoped to exactly the `companion-ssh-apply.service` unit name — for the Portal's SSH access toggle ([ADR-042](docs/adr/042-ssh-hardening.md)).
 
 Ownership map — files under these paths are **not** readable/writable by `pi` without `sudo`:
 
@@ -168,9 +176,11 @@ The appliance venv lives at `/opt/partybox-companion/` and is a `--no-editable` 
 
 Site-packages is **root-owned** on release images, so the remote rsync must run under sudo (`--rsync-path="sudo rsync"`); a plain rsync fails with `Permission denied (13)`.
 
+SSH must already be enabled and your key added via the Portal (see "SSH access" above) before any of this works.
+
 ```bash
-SSH="sshpass -p raspberry ssh -o StrictHostKeyChecking=no"
-RSYNC="sshpass -p raspberry rsync -e 'ssh -o StrictHostKeyChecking=no' --rsync-path='sudo rsync'"
+SSH="ssh -o StrictHostKeyChecking=no"
+RSYNC="rsync -e 'ssh -o StrictHostKeyChecking=no' --rsync-path='sudo rsync'"
 
 # Deploy companion package changes
 $RSYNC -a --delete --exclude='__pycache__' packages/companion/src/companion/ \
@@ -193,7 +203,7 @@ This is sufficient for Python source changes. For dependency changes (`pyproject
 ### Service and log commands
 
 ```bash
-SSH="sshpass -p raspberry ssh -o StrictHostKeyChecking=no"
+SSH="ssh -o StrictHostKeyChecking=no"
 
 # Service status
 $SSH pi@partybox.local "systemctl status companion"

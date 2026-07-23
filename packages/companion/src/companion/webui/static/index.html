@@ -603,6 +603,36 @@
       <button class="btn btn-ghost" data-action="close-settings">Cancel</button>
     </div>
 
+    <div class="section" id="ssh-section">
+      <div class="section-title">SSH access</div>
+      <div class="field-hint" style="margin-bottom:14px">
+        Off by default. Turn this on to connect over SSH using a key you provide
+        below — password login is never available, on or off.
+      </div>
+      <div class="field" style="flex-direction:row;align-items:center;justify-content:space-between;margin-top:0">
+        <label for="ssh-enabled-toggle" style="text-transform:none;font-size:14px;font-weight:500;color:var(--ink)">Enable SSH</label>
+        <input type="checkbox" id="ssh-enabled-toggle" />
+      </div>
+      <div class="field">
+        <label for="ssh-key-input">Authorized public key(s)</label>
+        <textarea id="ssh-key-input" rows="3" placeholder="ssh-ed25519 AAAA... (one per line)"
+          style="resize:vertical;min-height:46px;background:var(--bg);border:1px solid var(--border);border-radius:var(--r-sm);color:var(--ink);padding:12px 14px;font-size:13px;font-family:ui-monospace,monospace;width:100%"></textarea>
+        <span class="field-hint">Paste one or more authorized_keys lines, or import below. Leave blank to keep whatever key(s) are already configured.</span>
+      </div>
+      <div class="field" style="flex-direction:row;gap:8px;margin-top:0;align-items:flex-end">
+        <div style="flex:1">
+          <label for="ssh-github-user">Or import from GitHub</label>
+          <input type="text" id="ssh-github-user" placeholder="GitHub username" autocomplete="off" />
+        </div>
+        <button class="btn btn-sm" id="btn-ssh-github-import" data-action="ssh-github-import" style="height:46px">Import</button>
+      </div>
+      <div class="flow-msg info" id="ssh-msg" style="text-align:left;margin-top:8px"></div>
+      <div class="btn-row" style="margin-top:14px">
+        <button class="btn btn-heat" data-action="save-ssh">Apply SSH settings</button>
+      </div>
+      <div class="field-hint" id="ssh-status-line" style="margin-top:10px"></div>
+    </div>
+
     <div class="section section-danger">
       <div class="section-title">Danger zone</div>
       <div class="field-hint" style="margin-bottom:14px">
@@ -705,6 +735,10 @@ const S = {
   healthDetails: null,
   wifi: null,
   config: { spotify_connect_name: 'PartyBox', spotify_bitrate: 320 },
+  //: SSH access status ({enabled, has_key, applied_at, error} | null) --
+  //: fetched on demand when the Settings sheet opens (auth-gated, so it
+  //: isn't part of the unauthenticated main refresh() cycle).
+  ssh: null,
   apiKey: localStorage.getItem('_pb_key') || null,
   ws: null,
   fetchFailed: false,
@@ -810,6 +844,7 @@ function bootMock() {
   S.config  = MOCK_CONFIG;
   S.battery = MOCK_BATTERY;
   S.healthDetails = MOCK_HEALTH_DETAILS;
+  S.ssh = { enabled: false, has_key: false, applied_at: null, error: null };
 
   if (MOCK_STATE === 'off') { S.health = { ...MOCK_HEALTH, ble_connected: false, speaker_state: 'off', audio_ready: false }; S.battery = null; }
   if (MOCK_STATE === 'blocked') { S.health = { ...MOCK_HEALTH, ble_connected: false, speaker_state: 'off' }; S.battery = null; }
@@ -1469,6 +1504,8 @@ document.addEventListener('click', e => {
     'open-settings': openSettings,
     'close-settings': closeSettings,
     'save-settings': saveSettings,
+    'ssh-github-import': sshGithubImport,
+    'save-ssh': saveSsh,
     'factory-reset-start': factoryResetStart,
     'factory-reset-cancel': factoryResetCancel,
     'factory-reset-confirm': factoryResetConfirm,
@@ -1611,14 +1648,22 @@ function startReconcilePoll() {
 // ==========================================================================
 // Settings sheet
 // ==========================================================================
-function openSettings() {
+async function openSettings() {
   document.getElementById('set-spotify-name').value = S.config.spotify_connect_name || '';
   const br = String(S.config.spotify_bitrate || 320);
   const sel = document.getElementById('set-bitrate');
   for (const opt of sel.options) opt.selected = opt.value === br;
   document.getElementById('settings-about').textContent =
     'partybox-companion' + (S.health ? ' · v' + S.health.version : '');
+
+  document.getElementById('ssh-key-input').value = '';
+  document.getElementById('ssh-github-user').value = '';
+  setFlowMsg('ssh-msg', '', '');
   document.getElementById('settings-overlay').classList.remove('hidden');
+
+  if (!MOCK) await loadSshStatus();
+  document.getElementById('ssh-enabled-toggle').checked = !!(S.ssh && S.ssh.enabled);
+  renderSshStatusLine();
 }
 function closeSettings() {
   document.getElementById('settings-overlay').classList.add('hidden');
@@ -1662,6 +1707,88 @@ async function saveSettings() {
   closeSettings();
   await refresh();
   render();
+}
+
+// -- SSH access (ADR-042) --------------------------------------------------
+function renderSshStatusLine() {
+  const el = document.getElementById('ssh-status-line');
+  if (!el) return;
+  if (!S.ssh) { el.textContent = ''; return; }
+  if (S.ssh.error) { el.textContent = 'Last apply failed: ' + S.ssh.error; return; }
+  el.textContent = S.ssh.enabled
+    ? (S.ssh.has_key ? 'SSH is enabled.' : 'SSH is enabled, but no key is configured yet — it will not accept connections.')
+    : 'SSH is disabled.';
+}
+
+async function loadSshStatus() {
+  const r = await get('/api/v1/ssh/status', true);
+  if (r && r.ok) S.ssh = await r.json();
+}
+
+function authHeaders(extra) {
+  return { ...(S.apiKey ? { 'X-Api-Key': S.apiKey } : {}), ...extra };
+}
+
+async function sshGithubImport() {
+  const username = document.getElementById('ssh-github-user').value.trim();
+  if (!username) return;
+  const btn = document.getElementById('btn-ssh-github-import');
+  btn.disabled = true;
+  btn.textContent = 'Importing…';
+  try {
+    const r = await fetch('/api/v1/ssh/github-import', {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ username }),
+    });
+    if (r.status === 401) { showAuth(); return; }
+    if (!r.ok) {
+      const body = await r.json().catch(() => null);
+      setFlowMsg('ssh-msg', 'err', (body && body.detail) || `Could not import keys for ${username}.`);
+      return;
+    }
+    const data = await r.json();
+    const input = document.getElementById('ssh-key-input');
+    const existing = input.value.trim();
+    input.value = existing ? existing + '\n' + data.keys.join('\n') : data.keys.join('\n');
+    const n = data.keys.length;
+    setFlowMsg('ssh-msg', 'ok', `Imported ${n} key${n === 1 ? '' : 's'} from GitHub user ${username}. Review below, then Apply.`);
+  } catch (_) {
+    setFlowMsg('ssh-msg', 'err', 'Could not reach github.com.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Import';
+  }
+}
+
+async function saveSsh() {
+  const enabled = document.getElementById('ssh-enabled-toggle').checked;
+  const keyText = document.getElementById('ssh-key-input').value.trim();
+  // A blank textarea means "leave the previously configured key(s) alone",
+  // not "clear them" — omitting the field entirely is how the API
+  // distinguishes the two (see PUT /api/v1/ssh/settings).
+  const body = { enabled };
+  if (keyText) body.authorized_keys = keyText.split('\n').map(l => l.trim()).filter(Boolean);
+
+  try {
+    const r = await fetch('/api/v1/ssh/settings', {
+      method: 'PUT',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(body),
+    });
+    if (r.status === 401) { showAuth(); return; }
+    if (!r.ok) {
+      const errBody = await r.json().catch(() => null);
+      setFlowMsg('ssh-msg', 'err', (errBody && errBody.detail) || 'Could not apply SSH settings.');
+      return;
+    }
+    S.ssh = await r.json();
+    renderSshStatusLine();
+    setFlowMsg('ssh-msg', 'ok', 'Applied.');
+    toast('SSH settings applied.');
+  } catch (_) {
+    setFlowMsg('ssh-msg', 'err', 'Could not apply SSH settings.');
+  }
 }
 
 // Factory reset is a two-step in-sheet flow (typed confirmation) rather than

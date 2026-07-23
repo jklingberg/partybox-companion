@@ -1,0 +1,19 @@
+[Unit]
+Description=Generate a random per-device local-console password on first boot
+Documentation=https://github.com/jklingberg/partybox-companion
+# See ADR-042 and image/config/partybox-firstboot.sh. Must run and complete
+# before any getty offers a login prompt, so the generated password is in
+# /etc/issue by the time anyone can actually log in.
+ConditionPathExists=!/var/lib/companion/.firstboot-done
+DefaultDependencies=no
+After=local-fs.target
+Before=sysinit.target getty.target serial-getty@ttyAMA0.service getty@tty1.service
+Wants=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/partybox-firstboot
+
+[Install]
+WantedBy=sysinit.target
