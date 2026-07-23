@@ -739,7 +739,7 @@ const timers = {};
 
 const MOCK = location.search.includes('mock');
 const MOCK_PROVISION = location.search.includes('provision');
-const MOCK_STATE = new URLSearchParams(location.search).get('state'); // off|standby|pair|on|blocked|speaker-unreachable|contested|powering|bt-reconnecting
+const MOCK_STATE = new URLSearchParams(location.search).get('state'); // off|standby|pair|on|mains-only|audio-degraded|blocked|speaker-unreachable|contested|powering|bt-reconnecting|degraded
 
 const MOCK_HEALTH  = { status: 'ok', version: '0.2.0-dev', ble_connected: true, audio_ready: true, speaker_state: 'on', audio_focus: 'exclusive' };
 const MOCK_HEALTH_DETAILS = { tasks: [
@@ -833,6 +833,16 @@ function bootMock() {
     S.powerPending = 'off';
   }
   if (MOCK_STATE === 'pair') { S.audio = { connected: false, address: null, pairing_state: 'idle' }; }
+  // Mains-powered speaker, no battery capability at all (S.battery stays
+  // null even though the speaker is on) — regression coverage for #76
+  // (UX-01): the power toggle must read health.speaker_state, not battery
+  // presence, or it always thinks a battery-less speaker is "asleep".
+  if (MOCK_STATE === 'mains-only') { S.battery = null; }
+  // Speaker on and paired, but the A2DP link is currently down (WirePlumber
+  // degraded / profile-unavailable / flap cooldown — ADR-028) — regression
+  // coverage for #76 (UX-02): the ON scene must not claim "Ready to play"
+  // while audio.connected is false.
+  if (MOCK_STATE === 'audio-degraded') { S.audio = { ...MOCK_AUDIO, connected: false }; }
   if (MOCK_STATE === 'degraded') {
     S.healthDetails = { tasks: [
       ...MOCK_HEALTH_DETAILS.tasks.slice(0, -1),
@@ -1239,6 +1249,14 @@ function patchOnScene() {
   const ringWrap = document.getElementById('hero-ring-wrap');
   const ringIcon = document.getElementById('hero-ring-icon');
   const caption = document.getElementById('hero-caption');
+  // deriveScene() reaches Scene.ON once speaker_state === 'on' and audio is
+  // paired, *before* considering whether the A2DP link is actually up right
+  // now (that's cheaper than adding a dedicated scene for a same-screen
+  // detail — see #76 UX-02). This caption is what makes that honest: it
+  // must stay authoritative over "Ready to play" whenever audio.connected
+  // is false, e.g. WirePlumber degraded / profile-unavailable / flap
+  // cooldown (ADR-028) — never hardcode "Ready to play" as this scene's
+  // static/default text again.
   const audioUp = S.audio && S.audio.connected;
   const playing = audioUp && S.spotify && S.spotify.state === 'playing';
   const paused = audioUp && S.spotify && S.spotify.state === 'paused';
@@ -1287,8 +1305,13 @@ function patchOnScene() {
     // every signal on our side still reads healthy (see audio_focus in
     // healthItems() below). Saying "Playing via Spotify Connect"
     // unconditionally here was a confident claim we can't actually back up
-    // in that case.
-    if (S.health && S.health.audio_focus === 'contested') {
+    // in that case. Same reasoning applies, first, to the A2DP link itself
+    // being down (audioUp — see #76 UX-02): librespot can be genuinely
+    // playing into a sink that never reaches the speaker at all.
+    if (!audioUp) {
+      detail.textContent = "Spotify Connect is playing, but the speaker's audio link is down — reconnecting…";
+      detail.className = 'source-detail is-problem';
+    } else if (S.health && S.health.audio_focus === 'contested') {
       detail.textContent = 'Spotify Connect is playing, but another device is also connected — you may be hearing that device instead.';
       detail.className = 'source-detail is-problem';
     } else {
@@ -1358,9 +1381,18 @@ function healthItems() {
   }
 
   const sp = S.spotify;
+  const audioUp = S.audio && S.audio.connected;
   if (!sp || !sp.running) {
     items.push({ name: 'Spotify Connect', icon: 'i-music', state: 'err', shortIssue: 'stopped',
       text: 'Stopped', action: { label: 'Restart', fn: 'spotify-restart' } });
+  } else if (sp.state === 'playing' && !audioUp) {
+    // Same "Playing via Spotify Connect" claim the source card guards
+    // against (#76 UX-02) — librespot reports playing, but with the A2DP
+    // link down that audio never reaches the speaker. The Bluetooth Audio
+    // row above already surfaces the real cause ('pending'/"Connecting…"),
+    // so this row must not sit next to it reading a contradicting green "ok".
+    items.push({ name: 'Spotify Connect', icon: 'i-music', state: 'warn', shortIssue: 'not reaching speaker',
+      text: 'Playing, but not reaching the speaker — Bluetooth Audio is still connecting' });
   } else {
     items.push({ name: 'Spotify Connect', icon: 'i-music', state: 'ok', shortIssue: '',
       text: sp.state === 'playing' ? 'Playing' : sp.state === 'paused' ? 'Paused' : 'Ready' });
@@ -1433,7 +1465,7 @@ document.addEventListener('click', e => {
   const action = t.dataset.action;
   const handlers = {
     'power-on': () => sendPower('on'),
-    'power-toggle': () => sendPower(audioAwake() ? 'off' : 'on'),
+    'power-toggle': () => sendPower(powerToggleCommand()),
     'open-settings': openSettings,
     'close-settings': closeSettings,
     'save-settings': saveSettings,
@@ -1453,13 +1485,22 @@ document.addEventListener('click', e => {
   if (handlers[action]) handlers[action]();
 });
 
-function audioAwake() {
-  return S.battery && typeof S.battery.level === 'number';
-}
-
 // ==========================================================================
 // Power control
 // ==========================================================================
+
+// power-toggle is only wired in the ON scene — deriveScene() reaches
+// Scene.ON only when health.speaker_state === 'on' — so this always
+// resolves to 'off' in practice. Named explicitly (rather than inlined at
+// the call site) so that invariant has one place to be documented and one
+// place a test can pin down, instead of living only as a comment next to
+// an inline arrow function. Reads the daemon's authoritative signal rather
+// than re-deriving "awake" from battery presence (ADR-033/ADR-035), which
+// mislabeled mains-only speakers with no battery (#76).
+function powerToggleCommand() {
+  return S.health && S.health.speaker_state === 'on' ? 'off' : 'on';
+}
+
 let powerPendingTimer = null;
 
 async function sendPower(cmd) {
