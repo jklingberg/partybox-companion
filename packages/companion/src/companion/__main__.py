@@ -33,7 +33,7 @@ from partyboxd.device.events import SpeakerStateChangedEvent, VolumeChangedEvent
 
 from companion.config import AudioSettings, CompanionSettings, SpotifySettings
 from companion.config_store import ConfigStore
-from companion.services import login1_dbus
+from companion.services import login1_dbus, pipewire_volume
 from companion.services.adapter_recovery import reset_adapter
 from companion.services.audio import AudioService
 from companion.services.audio_focus import AudioFocusService
@@ -345,6 +345,7 @@ async def _run(
         # from audio.run(), well after _run() finishes constructing
         # everything and hands off to the supervisor.
         speaker_state_fn=lambda: manager.snapshot.speaker_state,
+        pin_volume_fn=lambda: pipewire_volume.pin_sink_volume(volume_state.level),
     )
     pairing = PairingService(config_store, audio)
     audio_focus = AudioFocusService(

@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 
 from companion.config import SpotifySettings
 from companion.config_store import ConfigStore
+from companion.services import pipewire_volume
 from companion.services.audio import AudioService
 from companion.services.pairing import PairingService, PairingState
 from companion.services.spotify import SpotifyService
@@ -155,6 +156,8 @@ def make_services_router(
     pairing: PairingService | None = None,
     supervisor: Supervisor | None = None,
     auth: Callable[..., Awaitable[None]] | None = None,
+    pipewire_get_volume: Callable[[], Awaitable[int | None]] = pipewire_volume.get_volume,
+    pipewire_set_volume: Callable[[int], Awaitable[bool]] = pipewire_volume.set_volume,
 ) -> APIRouter:
     """Return an APIRouter with service-status and diagnostics endpoints.
 
@@ -504,9 +507,10 @@ def make_services_router(
     async def get_volume() -> VolumeResponse:
         """Current logical speaker volume (0-100).
 
-        Tries the hardware (BLE) first; falls back to the last known
-        software volume when the speaker is disconnected or the BLE opcode
-        is not yet confirmed.
+        Tries the hardware (BLE) first; then the PipeWire sink actuator that
+        actually drives audible output while BLE volume is unconfirmed (see
+        ADR-022); finally falls back to the last known software volume if
+        neither is available.
 
         **Responses:**
 
@@ -523,6 +527,10 @@ def make_services_router(
                     source = "ble"
             except DeviceNotConnectedError:
                 pass
+        if level is None:
+            level = await pipewire_get_volume()
+            if level is not None:
+                source = "pipewire"
         if level is None and volume_state is not None:
             level = volume_state.level
             source = volume_state.source
@@ -540,9 +548,12 @@ def make_services_router(
     async def post_volume(body: VolumeBody) -> None:
         """Set the logical speaker volume (0-100).
 
-        Attempts to write volume to the speaker hardware via BLE. While the
-        BLE volume opcode is not yet confirmed, the value is stored in the
-        appliance's in-memory volume state and reflected by GET /api/v1/volume.
+        Attempts to write volume to the speaker hardware via BLE first, then
+        actuates via the PipeWire sink node — the mechanism that actually
+        changes audible output while the BLE volume opcode is unconfirmed
+        (see ADR-022). ``VolumeState.source`` records "pipewire" when that
+        succeeded, or "api" as a last-resort optimistic write when neither
+        actuator is available (e.g. audio not connected yet).
 
         **Responses:**
 
@@ -561,7 +572,8 @@ def make_services_router(
                     status_code=400,
                     detail={"error": "invalid_level", "message": str(exc)},
                 ) from exc
+        actuated = await pipewire_set_volume(body.level)
         if volume_state is not None:
-            volume_state.update(body.level, "api")
+            volume_state.update(body.level, "pipewire" if actuated else "api")
 
     return router

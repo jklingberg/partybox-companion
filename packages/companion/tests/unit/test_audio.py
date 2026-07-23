@@ -697,6 +697,129 @@ async def test_unsubscribe_unknown_queue_is_idempotent() -> None:
 
 
 # ---------------------------------------------------------------------------
+# pin_volume_fn — ARCH-04/INC-2: pin the sink to 100% on a fresh A2DP connect
+# ---------------------------------------------------------------------------
+
+
+async def test_pin_volume_fn_called_once_on_fresh_connect() -> None:
+    """The injected actuator fires exactly once per False→True transition —
+    not on every _CHECK_INTERVAL confirmation of an already-stable link."""
+    pin_calls = 0
+
+    async def pin() -> None:
+        nonlocal pin_calls
+        pin_calls += 1
+
+    svc = AudioService(AudioSettings(sink_address="AA:BB:CC:DD:EE:FF"), pin_volume_fn=pin)
+
+    call_count = 0
+
+    async def fake_exec(*args: object, **kwargs: object) -> MagicMock:
+        return _mock_proc(b"true")  # already connected every time
+
+    async def fake_wait_retry(delay: float, *, interrupt_on_recheck: bool = False) -> bool:
+        nonlocal call_count
+        call_count += 1
+        if call_count >= 2:
+            raise asyncio.CancelledError
+        return False
+
+    with (
+        patch("companion.services.audio.asyncio.create_subprocess_exec", side_effect=fake_exec),
+        patch.object(svc, "_wait_retry", side_effect=fake_wait_retry),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await svc.run()
+
+    assert pin_calls == 1
+
+
+async def test_pin_volume_fn_called_after_explicit_connect() -> None:
+    """The actuator also fires on the _connect() success path, not only the
+    "already connected at startup" branch covered above — and only after the
+    settle sleep, since the PipeWire sink node isn't guaranteed to exist
+    until MediaTransport1 shows up (same race the settle sleep itself
+    guards against)."""
+    pin_calls = 0
+
+    async def pin() -> None:
+        nonlocal pin_calls
+        pin_calls += 1
+
+    svc = AudioService(AudioSettings(sink_address="AA:BB:CC:DD:EE:FF"), pin_volume_fn=pin)
+
+    call_results = [_mock_proc(b"false"), _mock_proc(b"ok")]
+
+    async def fake_exec(*args: object, **kwargs: object) -> MagicMock:
+        if not call_results:
+            raise asyncio.CancelledError
+        return call_results.pop(0)
+
+    sleep_calls = 0
+
+    async def fake_sleep(delay: float) -> None:
+        nonlocal sleep_calls
+        sleep_calls += 1
+
+    with (
+        patch("companion.services.audio.asyncio.create_subprocess_exec", side_effect=fake_exec),
+        patch("companion.services.audio.asyncio.sleep", side_effect=fake_sleep),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await svc.run()
+
+    assert sleep_calls == 1
+    assert pin_calls == 1
+
+
+async def test_pin_volume_fn_not_called_without_transition() -> None:
+    """No actuator, no crash — and _set_audio_ready(True) called again with
+    no state change must not re-invoke it."""
+    svc = _service()
+    svc._audio_ready = True  # already ready
+    assert svc._set_audio_ready(True) is False  # not a transition
+
+
+async def test_pin_volume_failure_does_not_crash_run_loop() -> None:
+    """A failing actuator (PipeWire not ready, wpctl missing) is swallowed —
+    the connect loop must still reach audio_ready=True rather than propagate
+    the error out of run() (cancellation afterwards always flips it back to
+    False, per the existing CancelledError handler — that's unrelated to
+    the actuator and is asserted elsewhere)."""
+
+    async def failing_pin() -> None:
+        raise RuntimeError("wpctl not found")
+
+    svc = AudioService(AudioSettings(sink_address="AA:BB:CC:DD:EE:FF"), pin_volume_fn=failing_pin)
+    queue = svc.subscribe()
+
+    async def fake_exec(*args: object, **kwargs: object) -> MagicMock:
+        return _mock_proc(b"true")
+
+    async def fake_wait_retry(delay: float, *, interrupt_on_recheck: bool = False) -> bool:
+        raise asyncio.CancelledError
+
+    with (
+        patch("companion.services.audio.asyncio.create_subprocess_exec", side_effect=fake_exec),
+        patch.object(svc, "_wait_retry", side_effect=fake_wait_retry),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await svc.run()
+
+    events = []
+    while not queue.empty():
+        events.append(queue.get_nowait())
+    assert AudioReadyChanged(audio_ready=True, address="AA:BB:CC:DD:EE:FF") in events
+
+
+def test_set_audio_ready_returns_true_on_transition() -> None:
+    svc = _service()
+    assert svc._set_audio_ready(True) is True
+    assert svc._set_audio_ready(True) is False  # already ready — not a transition
+    assert svc._set_audio_ready(False) is True
+
+
+# ---------------------------------------------------------------------------
 # audio_ready during run() lifecycle
 # ---------------------------------------------------------------------------
 
