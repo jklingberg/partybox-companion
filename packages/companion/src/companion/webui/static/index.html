@@ -1381,9 +1381,18 @@ function healthItems() {
   }
 
   const sp = S.spotify;
+  const audioUp = S.audio && S.audio.connected;
   if (!sp || !sp.running) {
     items.push({ name: 'Spotify Connect', icon: 'i-music', state: 'err', shortIssue: 'stopped',
       text: 'Stopped', action: { label: 'Restart', fn: 'spotify-restart' } });
+  } else if (sp.state === 'playing' && !audioUp) {
+    // Same "Playing via Spotify Connect" claim the source card guards
+    // against (#76 UX-02) — librespot reports playing, but with the A2DP
+    // link down that audio never reaches the speaker. The Bluetooth Audio
+    // row above already surfaces the real cause ('pending'/"Connecting…"),
+    // so this row must not sit next to it reading a contradicting green "ok".
+    items.push({ name: 'Spotify Connect', icon: 'i-music', state: 'warn', shortIssue: 'not reaching speaker',
+      text: 'Playing, but not reaching the speaker — Bluetooth Audio is still connecting' });
   } else {
     items.push({ name: 'Spotify Connect', icon: 'i-music', state: 'ok', shortIssue: '',
       text: sp.state === 'playing' ? 'Playing' : sp.state === 'paused' ? 'Paused' : 'Ready' });
@@ -1456,12 +1465,7 @@ document.addEventListener('click', e => {
   const action = t.dataset.action;
   const handlers = {
     'power-on': () => sendPower('on'),
-    // The ON scene (the only place power-toggle is wired) is reached only
-    // when health.speaker_state === 'on' (deriveScene()), so this always
-    // sends 'off' — but it reads the daemon's authoritative signal rather
-    // than re-deriving "awake" from battery presence (ADR-033/ADR-035),
-    // which mislabeled mains-only speakers with no battery (#76).
-    'power-toggle': () => sendPower(S.health && S.health.speaker_state === 'on' ? 'off' : 'on'),
+    'power-toggle': () => sendPower(powerToggleCommand()),
     'open-settings': openSettings,
     'close-settings': closeSettings,
     'save-settings': saveSettings,
@@ -1484,6 +1488,19 @@ document.addEventListener('click', e => {
 // ==========================================================================
 // Power control
 // ==========================================================================
+
+// power-toggle is only wired in the ON scene — deriveScene() reaches
+// Scene.ON only when health.speaker_state === 'on' — so this always
+// resolves to 'off' in practice. Named explicitly (rather than inlined at
+// the call site) so that invariant has one place to be documented and one
+// place a test can pin down, instead of living only as a comment next to
+// an inline arrow function. Reads the daemon's authoritative signal rather
+// than re-deriving "awake" from battery presence (ADR-033/ADR-035), which
+// mislabeled mains-only speakers with no battery (#76).
+function powerToggleCommand() {
+  return S.health && S.health.speaker_state === 'on' ? 'off' : 'on';
+}
+
 let powerPendingTimer = null;
 
 async function sendPower(cmd) {
