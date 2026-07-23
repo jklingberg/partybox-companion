@@ -12,6 +12,7 @@ from partyboxd.device import DeviceManager
 
 from .auth import make_auth_dependency
 from .routes import make_router
+from .security import HostOriginMiddleware
 from .ws import EventSource, make_ws_router
 
 
@@ -30,6 +31,10 @@ def create_app(
 
     API key authentication is controlled by ``settings.api.api_key``. When
     ``None`` (the default) all requests are accepted without credentials.
+    Independent of the API key, every request's Host (and, for mutating
+    methods, Origin) header is validated by :class:`HostOriginMiddleware` —
+    see ``docs/adr/041-host-origin-allowlist.md`` — which closes the
+    CSRF/DNS-rebinding gap even with no key configured.
 
     *extra_event_sources* lets a layer above partyboxd (companion) fan
     additional events into the same WebSocket stream — see
@@ -52,6 +57,7 @@ def create_app(
         docs_url="/api/docs",
         redoc_url=None,
     )
+    app.add_middleware(HostOriginMiddleware)
 
     auth = make_auth_dependency(settings)
     app.include_router(

@@ -161,18 +161,22 @@ def make_services_router(
 ) -> APIRouter:
     """Return an APIRouter with service-status and diagnostics endpoints.
 
-    Most of these endpoints are intentionally unauthenticated — they expose
-    read-only appliance state and contain no sensitive data. The restart
-    endpoint is also unauthenticated because it can only affect the local
-    appliance and requires physical network access.
+    The read-only status endpoints (``GET /audio``, ``GET /spotify``,
+    ``GET /volume``) are intentionally unauthenticated — they expose no
+    sensitive data, and the Portal itself must be able to read them with no
+    API key configured.
 
-    ``GET /api/v1/health/details`` is the exception: it exposes per-task crash
-    detail (exception messages), so it requires *auth* — the same API-key
-    dependency partyboxd's private routes use (``partyboxd.api.auth``) — when
-    provided. See ADR-037.
+    Every state-changing endpoint in this router (``POST /audio/pair``,
+    ``POST /spotify/restart``, ``POST /volume``, ``POST /factory-reset``),
+    plus the two that expose sensitive diagnostic data
+    (``GET /health/details``, ``GET /debug/bundle``), require *auth* — the
+    same API-key dependency partyboxd's private routes use
+    (``partyboxd.api.auth``) — when *auth* is provided (i.e. when an API key
+    is configured). See ADR-037 and ``docs/adr/041-host-origin-allowlist.md``
+    (SEC-02/SEC-04).
     """
     router = APIRouter(prefix="/api/v1", tags=["services"])
-    health_details_dependencies = [Depends(auth)] if auth is not None else []
+    auth_dependencies = [Depends(auth)] if auth is not None else []
 
     # ------------------------------------------------------------------
     # GET /api/v1/audio — unauthenticated
@@ -208,13 +212,14 @@ def make_services_router(
         )
 
     # ------------------------------------------------------------------
-    # POST /api/v1/audio/pair — unauthenticated
+    # POST /api/v1/audio/pair — authenticated when an API key is configured
     # ------------------------------------------------------------------
 
     @router.post(
         "/audio/pair",
         status_code=202,
         summary="Start Bluetooth pairing",
+        dependencies=auth_dependencies,
     )
     async def post_audio_pair() -> None:
         """Initiate a Bluetooth Classic pairing scan.
@@ -226,11 +231,15 @@ def make_services_router(
         Returns **202 Accepted** immediately; the scan runs for up to 60 s.
         Returns **409 Conflict** if a pairing attempt is already in progress.
 
+        Requires authentication when an API key is configured (SEC-02) —
+        this endpoint pairs the appliance to a new speaker.
+
         **Responses:**
 
         | Code | Meaning |
         |------|---------|
         | 202  | Pairing scan started |
+        | 401  | Missing or invalid API key |
         | 409  | Pairing already in progress |
         | 503  | Pairing service unavailable |
         """
@@ -280,13 +289,14 @@ def make_services_router(
         )
 
     # ------------------------------------------------------------------
-    # POST /api/v1/spotify/restart — unauthenticated
+    # POST /api/v1/spotify/restart — authenticated when an API key is configured
     # ------------------------------------------------------------------
 
     @router.post(
         "/spotify/restart",
         status_code=204,
         summary="Restart Spotify Connect",
+        dependencies=auth_dependencies,
     )
     async def post_spotify_restart() -> None:
         """Restart the Spotify Connect service with the current saved configuration.
@@ -294,11 +304,15 @@ def make_services_router(
         Call this after saving new Spotify settings via ``PUT /api/v1/config``
         to apply them without rebooting the appliance.
 
+        Requires authentication when an API key is configured (SEC-02) —
+        this endpoint restarts a running service.
+
         **Responses:**
 
         | Code | Meaning |
         |------|---------|
         | 204  | Restart initiated |
+        | 401  | Missing or invalid API key |
         """
         cfg = config.read()
         new_settings = SpotifySettings(
@@ -316,7 +330,7 @@ def make_services_router(
         "/health/details",
         response_model=HealthDetailsResponse,
         summary="Per-task supervisor health",
-        dependencies=health_details_dependencies,
+        dependencies=auth_dependencies,
     )
     async def get_health_details() -> HealthDetailsResponse:
         """Per-task health detail for every task registered with the Supervisor.
@@ -355,13 +369,14 @@ def make_services_router(
         )
 
     # ------------------------------------------------------------------
-    # POST /api/v1/factory-reset — unauthenticated
+    # POST /api/v1/factory-reset — authenticated when an API key is configured
     # ------------------------------------------------------------------
 
     @router.post(
         "/factory-reset",
         status_code=204,
         summary="Factory reset the appliance",
+        dependencies=auth_dependencies,
     )
     async def post_factory_reset() -> None:
         """Return the appliance to its as-shipped state without a reboot.
@@ -386,11 +401,15 @@ def make_services_router(
         keeps running and returns to the un-paired state a fresh image starts
         in — no reboot required.
 
+        Requires authentication when an API key is configured (SEC-02) — this
+        endpoint can wipe pairing, config, and bond state.
+
         **Responses:**
 
         | Code | Meaning |
         |------|---------|
         | 204  | Reset complete |
+        | 401  | Missing or invalid API key |
         """
         cfg = config.read()
         mac = cfg.audio_sink_address
@@ -411,26 +430,30 @@ def make_services_router(
         log.info("Factory reset complete — appliance returned to defaults")
 
     # ------------------------------------------------------------------
-    # GET /api/v1/debug/bundle — unauthenticated
+    # GET /api/v1/debug/bundle — authenticated when an API key is configured
     # ------------------------------------------------------------------
 
     @router.get(
         "/debug/bundle",
         summary="Download debug bundle",
         response_class=StreamingResponse,
+        dependencies=auth_dependencies,
     )
     async def get_debug_bundle() -> StreamingResponse:
         """Download a ZIP archive with diagnostic information.
 
-        The bundle contains appliance version, configuration, service status,
-        system information, and recent log lines. No sensitive data
-        (API keys, credentials) is included.
+        The bundle contains appliance version, configuration (Spotify name,
+        speaker MAC), a full device snapshot (BLE address, firmware, battery
+        serial/health), system platform info, and ~500 lines of journal
+        output — strictly more sensitive than ``/health/details``, so it
+        requires the same auth (SEC-04) rather than less.
 
         **Responses:**
 
         | Code | Meaning |
         |------|---------|
         | 200  | ZIP archive returned |
+        | 401  | Missing or invalid API key |
         """
         cfg = config.read()
         spotify_status = spotify.status
@@ -537,13 +560,14 @@ def make_services_router(
         return VolumeResponse(level=level, source=source)
 
     # ------------------------------------------------------------------
-    # POST /api/v1/volume — unauthenticated
+    # POST /api/v1/volume — authenticated when an API key is configured
     # ------------------------------------------------------------------
 
     @router.post(
         "/volume",
         status_code=204,
         summary="Set logical speaker volume",
+        dependencies=auth_dependencies,
     )
     async def post_volume(body: VolumeBody) -> None:
         """Set the logical speaker volume (0-100).
@@ -555,11 +579,16 @@ def make_services_router(
         succeeded, or "api" as a last-resort optimistic write when neither
         actuator is available (e.g. audio not connected yet).
 
+        Requires authentication when an API key is configured (SEC-02) —
+        listed explicitly in issue #75 as a state-changing endpoint that must
+        respect the API key.
+
         **Responses:**
 
         | Code | Meaning |
         |------|---------|
         | 204  | Volume accepted |
+        | 401  | Missing or invalid API key |
         | 422  | Request body invalid (level out of range or wrong type) |
         """
         if manager is not None:

@@ -16,6 +16,8 @@ from companion.config_store import ConfigStore, PortalConfig
 from companion.webui.router import make_portal_router
 from httpx import ASGITransport, AsyncClient
 from partyboxd.api import create_app as create_daemon_app
+from partyboxd.api.auth import make_auth_dependency
+from partyboxd.config import ApiSettings
 from partyboxd.config import Settings as DaemonSettings
 from partyboxd.device.manager import StatusSnapshot
 
@@ -24,10 +26,15 @@ from partyboxd.device.manager import StatusSnapshot
 # ---------------------------------------------------------------------------
 
 
-def _make_app(tmp_path: Path) -> AsyncClient:
+def _make_app(
+    tmp_path: Path,
+    *,
+    daemon_settings: DaemonSettings | None = None,
+    with_auth: bool = False,
+) -> AsyncClient:
     """Assemble a companion app backed by a mock DeviceManager."""
     companion_settings = CompanionSettings(data_dir=tmp_path)
-    daemon_settings = DaemonSettings()
+    settings = daemon_settings or DaemonSettings()
     store = ConfigStore(tmp_path / "config.json")
 
     manager = MagicMock()
@@ -37,8 +44,12 @@ def _make_app(tmp_path: Path) -> AsyncClient:
     manager.subscribe = MagicMock(return_value=asyncio.Queue())
     manager.unsubscribe = MagicMock()
 
-    app = create_daemon_app(manager, daemon_settings)
-    app.include_router(make_portal_router(companion_settings, store))
+    app = create_daemon_app(manager, settings)
+    app.include_router(
+        make_portal_router(
+            companion_settings, store, auth=make_auth_dependency(settings) if with_auth else None
+        )
+    )
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
 
@@ -119,6 +130,44 @@ async def test_put_config_accepts_partial_with_defaults(tmp_path: Path) -> None:
     body = r.json()
     assert body["spotify_connect_name"] == "Den"
     assert body["spotify_bitrate"] == 320
+
+
+# ---------------------------------------------------------------------------
+# PUT /api/v1/config — auth (SEC-02)
+# ---------------------------------------------------------------------------
+
+
+async def test_put_config_requires_auth_when_configured(tmp_path: Path) -> None:
+    settings = DaemonSettings(api=ApiSettings(api_key="secret"))
+    async with _make_app(tmp_path, daemon_settings=settings, with_auth=True) as client:
+        r = await client.put("/api/v1/config", json={"spotify_connect_name": "Den"})
+    assert r.status_code == 401
+
+
+async def test_put_config_accepts_valid_api_key(tmp_path: Path) -> None:
+    settings = DaemonSettings(api=ApiSettings(api_key="secret"))
+    async with _make_app(tmp_path, daemon_settings=settings, with_auth=True) as client:
+        r = await client.put(
+            "/api/v1/config",
+            json={"spotify_connect_name": "Den"},
+            headers={"X-Api-Key": "secret"},
+        )
+    assert r.status_code == 200
+
+
+async def test_get_config_does_not_require_auth_when_configured(tmp_path: Path) -> None:
+    """GET /api/v1/config stays public even with an API key configured."""
+    settings = DaemonSettings(api=ApiSettings(api_key="secret"))
+    async with _make_app(tmp_path, daemon_settings=settings, with_auth=True) as client:
+        r = await client.get("/api/v1/config")
+    assert r.status_code == 200
+
+
+async def test_put_config_unauthenticated_by_default(tmp_path: Path) -> None:
+    """No API key configured -> Portal settings save keeps working with no key."""
+    async with _make_app(tmp_path) as client:
+        r = await client.put("/api/v1/config", json={"spotify_connect_name": "Den"})
+    assert r.status_code == 200
 
 
 # ---------------------------------------------------------------------------
