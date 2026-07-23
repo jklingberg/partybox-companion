@@ -8,7 +8,12 @@ from typing import Literal
 # Recognised sources of volume information, in rough authority order
 # (hardware > audio service > explicit API write).  New sources — e.g.
 # "airplay" — are added here as they are integrated.
-VolumeSource = Literal["ble", "spotify", "airplay", "api"]
+#
+# "pipewire" is the PipeWire node-volume actuator (see
+# companion.services.pipewire_volume) — the real mechanism behind
+# POST /api/v1/volume while BLE hardware volume remains unconfirmed.  See
+# ADR-022.
+VolumeSource = Literal["ble", "spotify", "airplay", "api", "pipewire"]
 
 
 @dataclass

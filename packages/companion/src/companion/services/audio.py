@@ -31,7 +31,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Literal
 
@@ -166,6 +166,7 @@ class AudioService:
         self,
         settings: AudioSettings,
         speaker_state_fn: Callable[[], str] | None = None,
+        pin_volume_fn: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         #: Returns the speaker's current coarse power state
         #: (DeviceManager.snapshot.speaker_state: "off" / "unreachable" /
@@ -181,6 +182,15 @@ class AudioService:
         #: and its logging — in one place, and leaves room to gate other
         #: states later without another callback.
         self._speaker_state_fn = speaker_state_fn
+        #: Called once per False→True audio_ready transition (fresh connect
+        #: or a link found already up at startup), never on a repeat
+        #: confirmation of an already-connected link. Fixes INC-2: WirePlumber
+        #: defaults every newly-created A2DP sink node to ~40% volume (see
+        #: ADR-028 "Volume floor from mixin.stateless"), so without this the
+        #: appliance ships music quieter than its own native sounds on every
+        #: fresh connect. See companion.services.pipewire_volume.set_volume,
+        #: the actual actuator wired in here by companion.__main__.
+        self._pin_volume_fn = pin_volume_fn
         #: True while the standby gate is holding connect attempts off;
         #: used to log gate entry/exit once instead of every re-evaluation.
         self._gate_active = False
@@ -412,10 +422,17 @@ class AudioService:
                         # check runs before the transport object appears in
                         # GetManagedObjects and would immediately re-trigger a
                         # connect attempt, hammering the speaker.
-                        self._set_audio_ready(True)
+                        became_ready = self._set_audio_ready(True)
                         retry_delay = _RETRY_BASE
                         self._consecutive_failures = 0
+                        # Settle before pinning, not after — the PipeWire sink
+                        # node for this connect is created off the same
+                        # asynchronous MediaTransport1 appearance described
+                        # above, so pinning immediately can target a sink that
+                        # doesn't exist yet (or the previous default sink).
                         await asyncio.sleep(_POST_CONNECT_SETTLE)
+                        if became_ready:
+                            await self._pin_volume()
                         continue
                     # connect failed — still check in case speaker auto-connected
                     if await self._is_connected():
@@ -448,9 +465,11 @@ class AudioService:
                     # auto-connects on wake); the connection itself tells the
                     # story, no separate gate-exit log needed.
                     self._gate_active = False
-                    self._set_audio_ready(True)
+                    became_ready = self._set_audio_ready(True)
                     retry_delay = _RETRY_BASE
                     self._consecutive_failures = 0
+                    if became_ready:
+                        await self._pin_volume()
                     # Interruptible so recheck_now() can cut this short — see
                     # its docstring for why.
                     await self._wait_retry(_CHECK_INTERVAL, interrupt_on_recheck=True)
@@ -463,14 +482,19 @@ class AudioService:
     # internals
     # ------------------------------------------------------------------
 
-    def _set_audio_ready(self, val: bool) -> None:
+    def _set_audio_ready(self, val: bool) -> bool:
         """Update audio_ready and emit AudioReadyChanged on any transition.
 
         Also tracks flapping — see the `_FLAP_*` constants — by comparing how
         long the connection lasted against `_FLAP_WINDOW`.
+
+        Returns whether this call was an actual transition (val differed from
+        the previous state) — callers use this to fire connect-only side
+        effects (see :meth:`_pin_volume`) exactly once per fresh connect, not
+        on every repeat confirmation of an already-connected link.
         """
         if val == self._audio_ready:
-            return
+            return False
         self._audio_ready = val
         now = time.monotonic()
         if val:
@@ -482,6 +506,22 @@ class AudioService:
                 self._flap_count = 0
             self._connected_at = None
         self._bus.emit(AudioReadyChanged(audio_ready=val, address=self._address))
+        return True
+
+    async def _pin_volume(self) -> None:
+        """Invoke the injected volume actuator once, tolerating any failure.
+
+        Best-effort: a missing actuator or a failed pin (PipeWire not ready
+        yet, ``wpctl`` unavailable) must not interrupt the connect loop —
+        the appliance is still audibly usable at whatever volume WirePlumber
+        picked, just not guaranteed to be at 100%.
+        """
+        if self._pin_volume_fn is None:
+            return
+        try:
+            await self._pin_volume_fn()
+        except Exception:
+            log.warning("A2DP: post-connect volume pin failed", exc_info=True)
 
     async def _is_connected(self) -> bool:
         assert self._address is not None
