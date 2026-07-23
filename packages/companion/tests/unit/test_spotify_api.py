@@ -148,6 +148,33 @@ async def test_spotify_response_shape() -> None:
 
 
 # ---------------------------------------------------------------------------
+# POST /api/v1/audio/pair — auth (SEC-02)
+# ---------------------------------------------------------------------------
+
+
+async def test_audio_pair_unauthenticated_by_default() -> None:
+    """No pairing service wired up -> 503, but reached without a key (no 401)."""
+    async with _make_client(_READY) as client:
+        r = await client.post("/api/v1/audio/pair")
+    assert r.status_code == 503
+
+
+async def test_audio_pair_requires_auth_when_configured() -> None:
+    settings = DaemonSettings(api=ApiSettings(api_key="secret"))
+    async with _make_client(_READY, daemon_settings=settings, with_auth=True) as client:
+        r = await client.post("/api/v1/audio/pair")
+    assert r.status_code == 401
+
+
+async def test_audio_pair_accepts_valid_api_key() -> None:
+    """A valid key clears the auth dependency; the 503 comes from the route itself."""
+    settings = DaemonSettings(api=ApiSettings(api_key="secret"))
+    async with _make_client(_READY, daemon_settings=settings, with_auth=True) as client:
+        r = await client.post("/api/v1/audio/pair", headers={"X-Api-Key": "secret"})
+    assert r.status_code == 503
+
+
+# ---------------------------------------------------------------------------
 # POST /api/v1/spotify/restart
 # ---------------------------------------------------------------------------
 
@@ -182,25 +209,24 @@ async def test_spotify_restart_calls_update_settings(tmp_path: Path) -> None:
     assert new_settings.bitrate == 160
 
 
-async def test_spotify_restart_is_public() -> None:
-    """POST /api/v1/spotify/restart must not require an API key."""
-    from partyboxd.config import ApiSettings
-
-    settings = DaemonSettings(api=ApiSettings(api_key="secret"))
-    spotify = MagicMock()
-    type(spotify).status = PropertyMock(return_value=_READY)
-    spotify.settings = SpotifySettings()
-    spotify.update_settings = MagicMock()
-
-    import tempfile
-
-    store = ConfigStore(Path(tempfile.mkdtemp()) / "config.json")
-
-    app = create_daemon_app(_make_manager(), settings)
-    app.include_router(make_services_router(spotify, store))
-
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+async def test_spotify_restart_unauthenticated_by_default() -> None:
+    """No API key configured -> spotify/restart stays reachable with no key."""
+    async with _make_client(_READY) as client:
         r = await client.post("/api/v1/spotify/restart")
+    assert r.status_code == 204
+
+
+async def test_spotify_restart_requires_auth_when_configured() -> None:
+    settings = DaemonSettings(api=ApiSettings(api_key="secret"))
+    async with _make_client(_READY, daemon_settings=settings, with_auth=True) as client:
+        r = await client.post("/api/v1/spotify/restart")
+    assert r.status_code == 401
+
+
+async def test_spotify_restart_accepts_valid_api_key() -> None:
+    settings = DaemonSettings(api=ApiSettings(api_key="secret"))
+    async with _make_client(_READY, daemon_settings=settings, with_auth=True) as client:
+        r = await client.post("/api/v1/spotify/restart", headers={"X-Api-Key": "secret"})
     assert r.status_code == 204
 
 

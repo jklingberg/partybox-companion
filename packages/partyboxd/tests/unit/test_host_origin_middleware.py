@@ -123,3 +123,95 @@ async def test_forged_origin_does_not_affect_get() -> None:
             headers={"Origin": "https://evil.example.com"},
         )
     assert r.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# WebSocket handshakes — Origin is checked unconditionally, not just for
+# "mutating methods" (a WS scope has no "method" key at all, and unlike
+# fetch(), a cross-origin `new WebSocket(...)` isn't blocked by the browser's
+# same-origin policy in the first place).
+# ---------------------------------------------------------------------------
+
+
+def _ws_scope(*, host: str = "test", origin: bytes | None = None) -> dict[str, object]:
+    headers: list[tuple[bytes, bytes]] = [(b"host", host.encode())]
+    if origin is not None:
+        headers.append((b"origin", origin))
+    return {
+        "type": "websocket",
+        "headers": headers,
+        "server": ("test", None),
+    }
+
+
+async def test_forged_origin_rejected_on_websocket_handshake() -> None:
+    """A cross-origin WebSocket handshake must be closed, not just left to the
+    per-connection api_key query-param check in ws.py."""
+    from partyboxd.api.security import HostOriginMiddleware
+
+    app_called = False
+
+    async def app(scope: object, receive: object, send: object) -> None:
+        nonlocal app_called
+        app_called = True
+
+    events: list[dict[str, object]] = []
+
+    async def send(message: dict[str, object]) -> None:
+        events.append(message)
+
+    async def receive() -> dict[str, object]:
+        return {"type": "websocket.connect"}
+
+    middleware = HostOriginMiddleware(app)
+    scope = _ws_scope(origin=b"https://evil.example.com")
+    await middleware(scope, receive, send)
+
+    assert app_called is False
+    assert events[0]["type"] == "websocket.close"
+    assert events[0]["code"] == 4403
+
+
+async def test_same_origin_websocket_handshake_allowed() -> None:
+    from partyboxd.api.security import HostOriginMiddleware
+
+    app_called = False
+
+    async def app(scope: object, receive: object, send: object) -> None:
+        nonlocal app_called
+        app_called = True
+
+    async def send(message: dict[str, object]) -> None:
+        pass
+
+    async def receive() -> dict[str, object]:
+        raise AssertionError("must not be consumed when the handshake is allowed through")
+
+    middleware = HostOriginMiddleware(app)
+    scope = _ws_scope(origin=b"http://test")
+    await middleware(scope, receive, send)
+
+    assert app_called is True
+
+
+async def test_missing_origin_on_websocket_handshake_allowed() -> None:
+    """Non-browser WS clients (the hardware test suite, HA scripts) send no Origin."""
+    from partyboxd.api.security import HostOriginMiddleware
+
+    app_called = False
+
+    async def app(scope: object, receive: object, send: object) -> None:
+        nonlocal app_called
+        app_called = True
+
+    async def send(message: dict[str, object]) -> None:
+        pass
+
+    async def receive() -> dict[str, object]:
+        raise AssertionError("must not be consumed when the handshake is allowed through")
+
+    middleware = HostOriginMiddleware(app)
+    scope = _ws_scope(origin=None)
+    await middleware(scope, receive, send)
+
+    assert app_called is True

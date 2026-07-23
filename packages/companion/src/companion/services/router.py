@@ -158,17 +158,19 @@ def make_services_router(
 ) -> APIRouter:
     """Return an APIRouter with service-status and diagnostics endpoints.
 
-    The read-only status endpoints (``/audio``, ``/spotify``, ``/volume``) are
-    intentionally unauthenticated — they expose no sensitive data, and the
-    Portal itself must be able to read them with no API key configured.
+    The read-only status endpoints (``GET /audio``, ``GET /spotify``,
+    ``GET /volume``) are intentionally unauthenticated — they expose no
+    sensitive data, and the Portal itself must be able to read them with no
+    API key configured.
 
-    ``GET /api/v1/health/details``, ``POST /api/v1/factory-reset``, and
-    ``GET /api/v1/debug/bundle`` are the exceptions: they expose per-task
-    crash detail, wipe appliance state, and bundle config/BLE/journal data
-    respectively, so each requires *auth* — the same API-key dependency
-    partyboxd's private routes use (``partyboxd.api.auth``) — when *auth* is
-    provided (i.e. when an API key is configured). See ADR-037 and
-    ``docs/adr/041-host-origin-allowlist.md`` (SEC-02/SEC-04).
+    Every state-changing endpoint in this router (``POST /audio/pair``,
+    ``POST /spotify/restart``, ``POST /volume``, ``POST /factory-reset``),
+    plus the two that expose sensitive diagnostic data
+    (``GET /health/details``, ``GET /debug/bundle``), require *auth* — the
+    same API-key dependency partyboxd's private routes use
+    (``partyboxd.api.auth``) — when *auth* is provided (i.e. when an API key
+    is configured). See ADR-037 and ``docs/adr/041-host-origin-allowlist.md``
+    (SEC-02/SEC-04).
     """
     router = APIRouter(prefix="/api/v1", tags=["services"])
     auth_dependencies = [Depends(auth)] if auth is not None else []
@@ -207,13 +209,14 @@ def make_services_router(
         )
 
     # ------------------------------------------------------------------
-    # POST /api/v1/audio/pair — unauthenticated
+    # POST /api/v1/audio/pair — authenticated when an API key is configured
     # ------------------------------------------------------------------
 
     @router.post(
         "/audio/pair",
         status_code=202,
         summary="Start Bluetooth pairing",
+        dependencies=auth_dependencies,
     )
     async def post_audio_pair() -> None:
         """Initiate a Bluetooth Classic pairing scan.
@@ -225,11 +228,15 @@ def make_services_router(
         Returns **202 Accepted** immediately; the scan runs for up to 60 s.
         Returns **409 Conflict** if a pairing attempt is already in progress.
 
+        Requires authentication when an API key is configured (SEC-02) —
+        this endpoint pairs the appliance to a new speaker.
+
         **Responses:**
 
         | Code | Meaning |
         |------|---------|
         | 202  | Pairing scan started |
+        | 401  | Missing or invalid API key |
         | 409  | Pairing already in progress |
         | 503  | Pairing service unavailable |
         """
@@ -279,13 +286,14 @@ def make_services_router(
         )
 
     # ------------------------------------------------------------------
-    # POST /api/v1/spotify/restart — unauthenticated
+    # POST /api/v1/spotify/restart — authenticated when an API key is configured
     # ------------------------------------------------------------------
 
     @router.post(
         "/spotify/restart",
         status_code=204,
         summary="Restart Spotify Connect",
+        dependencies=auth_dependencies,
     )
     async def post_spotify_restart() -> None:
         """Restart the Spotify Connect service with the current saved configuration.
@@ -293,11 +301,15 @@ def make_services_router(
         Call this after saving new Spotify settings via ``PUT /api/v1/config``
         to apply them without rebooting the appliance.
 
+        Requires authentication when an API key is configured (SEC-02) —
+        this endpoint restarts a running service.
+
         **Responses:**
 
         | Code | Meaning |
         |------|---------|
         | 204  | Restart initiated |
+        | 401  | Missing or invalid API key |
         """
         cfg = config.read()
         new_settings = SpotifySettings(
@@ -540,13 +552,14 @@ def make_services_router(
         return VolumeResponse(level=level, source=source)
 
     # ------------------------------------------------------------------
-    # POST /api/v1/volume — unauthenticated
+    # POST /api/v1/volume — authenticated when an API key is configured
     # ------------------------------------------------------------------
 
     @router.post(
         "/volume",
         status_code=204,
         summary="Set logical speaker volume",
+        dependencies=auth_dependencies,
     )
     async def post_volume(body: VolumeBody) -> None:
         """Set the logical speaker volume (0-100).
@@ -555,11 +568,16 @@ def make_services_router(
         BLE volume opcode is not yet confirmed, the value is stored in the
         appliance's in-memory volume state and reflected by GET /api/v1/volume.
 
+        Requires authentication when an API key is configured (SEC-02) —
+        listed explicitly in issue #75 as a state-changing endpoint that must
+        respect the API key.
+
         **Responses:**
 
         | Code | Meaning |
         |------|---------|
         | 204  | Volume accepted |
+        | 401  | Missing or invalid API key |
         | 422  | Request body invalid (level out of range or wrong type) |
         """
         if manager is not None:

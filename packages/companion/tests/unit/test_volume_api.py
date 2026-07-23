@@ -11,6 +11,8 @@ from companion.services.spotify import SpotifyStatus
 from companion.volume import VolumeState
 from httpx import ASGITransport, AsyncClient
 from partyboxd.api import create_app as create_daemon_app
+from partyboxd.api.auth import make_auth_dependency
+from partyboxd.config import ApiSettings
 from partyboxd.config import Settings as DaemonSettings
 from partyboxd.device.manager import DeviceNotConnectedError, StatusSnapshot
 
@@ -58,6 +60,9 @@ def _make_spotify() -> MagicMock:
 def _make_client(
     manager: MagicMock | None = None,
     volume_state: VolumeState | None = None,
+    *,
+    daemon_settings: DaemonSettings | None = None,
+    with_auth: bool = False,
 ) -> AsyncClient:
     import tempfile
     from pathlib import Path
@@ -66,9 +71,16 @@ def _make_client(
     from companion.config_store import ConfigStore
 
     store = ConfigStore(store_path)
-    app = create_daemon_app(manager or _make_manager(), DaemonSettings())
+    settings = daemon_settings or DaemonSettings()
+    app = create_daemon_app(manager or _make_manager(), settings)
     app.include_router(
-        make_services_router(_make_spotify(), store, manager=manager, volume_state=volume_state)
+        make_services_router(
+            _make_spotify(),
+            store,
+            manager=manager,
+            volume_state=volume_state,
+            auth=make_auth_dependency(settings) if with_auth else None,
+        )
     )
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
@@ -199,3 +211,43 @@ async def test_post_volume_boundary_values_accepted(level: int) -> None:
     assert r.status_code == 204
     assert vs.level == level
     assert vs.source == "api"
+
+
+# ---------------------------------------------------------------------------
+# POST /api/v1/volume — auth (SEC-02)
+# ---------------------------------------------------------------------------
+
+
+async def test_post_volume_unauthenticated_by_default() -> None:
+    """No API key configured -> volume stays reachable with no key."""
+    async with _make_client(None, VolumeState()) as client:
+        r = await client.post("/api/v1/volume", json={"level": 50})
+    assert r.status_code == 204
+
+
+async def test_post_volume_requires_auth_when_configured() -> None:
+    settings = DaemonSettings(api=ApiSettings(api_key="secret"))
+    async with _make_client(
+        None, VolumeState(), daemon_settings=settings, with_auth=True
+    ) as client:
+        r = await client.post("/api/v1/volume", json={"level": 50})
+    assert r.status_code == 401
+
+
+async def test_post_volume_accepts_valid_api_key() -> None:
+    settings = DaemonSettings(api=ApiSettings(api_key="secret"))
+    async with _make_client(
+        None, VolumeState(), daemon_settings=settings, with_auth=True
+    ) as client:
+        r = await client.post("/api/v1/volume", json={"level": 50}, headers={"X-Api-Key": "secret"})
+    assert r.status_code == 204
+
+
+async def test_get_volume_does_not_require_auth_when_configured() -> None:
+    """GET /api/v1/volume is read-only and must stay public even with a key set."""
+    settings = DaemonSettings(api=ApiSettings(api_key="secret"))
+    async with _make_client(
+        None, VolumeState(), daemon_settings=settings, with_auth=True
+    ) as client:
+        r = await client.get("/api/v1/volume")
+    assert r.status_code == 200

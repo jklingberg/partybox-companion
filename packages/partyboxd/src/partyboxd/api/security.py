@@ -11,7 +11,9 @@ from urllib.parse import urlsplit
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 #: Simple requests with these methods can mutate appliance state, so their
-#: Origin (when a browser sends one) is checked in addition to Host.
+#: Origin (when a browser sends one) is checked in addition to Host. WebSocket
+#: handshakes are Origin-checked unconditionally, regardless of this set —
+#: see HostOriginMiddleware's docstring.
 _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 #: Static allowlist. Anything else is only accepted if it matches the address
@@ -45,6 +47,12 @@ class HostOriginMiddleware:
     cross-origin ``fetch(..., {method: "POST"})`` carries an ``Origin`` header
     for the page that issued it, which likewise won't match.
 
+    Origin is also checked on every WebSocket handshake, mutating method or
+    not: a WS handshake scope has no ``method`` key, and — unlike ``fetch`` —
+    a cross-origin ``new WebSocket(...)`` is not blocked by the browser's
+    same-origin policy at all, so a foreign Origin there is itself the
+    CSRF-equivalent signal, not something gated behind a method check.
+
     ``scope["server"][0]`` is the literal address this connection reached the
     server on (uvicorn populates it from the socket, not from the Host
     header), so comparing against it allows any direct-IP access — current
@@ -73,7 +81,7 @@ class HostOriginMiddleware:
             await self._reject(scope, receive, send)
             return
 
-        if scope.get("method", "") in _MUTATING_METHODS:
+        if scope["type"] == "websocket" or scope.get("method", "") in _MUTATING_METHODS:
             origin = headers.get(b"origin")
             if origin is not None and _hostname(origin.decode("latin-1")) not in allowed:
                 await self._reject(scope, receive, send)

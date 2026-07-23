@@ -49,8 +49,15 @@ every router `companion` layers on top:
   *specific* connection actually reached the server on
   (`scope["server"][0]`).
 - **Origin** is additionally checked for mutating methods (`POST`, `PUT`,
-  `PATCH`, `DELETE`) against the same allowlist, but only when present —
-  absence is not itself suspicious (see below).
+  `PATCH`, `DELETE`) *and unconditionally for every WebSocket handshake*
+  (`GET /api/v1/events`), against the same allowlist, but only when present —
+  absence is not itself suspicious (see below). WebSocket handshakes need
+  their own branch here: the handshake scope has no `method` key, so it can
+  never match `_MUTATING_METHODS`, and — unlike `fetch()` — a cross-origin
+  `new WebSocket(...)` is not blocked by the browser's same-origin policy at
+  all, so skipping the check there would leave the richest live event stream
+  (device address, firmware, battery, Spotify device name) readable from any
+  origin under the default no-key config.
 
 The `scope["server"][0]` comparison is what makes this work with zero
 configuration: uvicorn populates it from the actual socket, not from the Host
@@ -94,9 +101,13 @@ current by construction.
 partyboxd's own private routes (`/speaker`, `/battery`, `/power/*`,
 `/bluetooth/reset`). This is extended — not replaced — to also gate:
 
-- `POST /api/v1/factory-reset` and `GET /api/v1/debug/bundle`
-  (`companion/services/router.py`) — same `auth_dependencies` list already
-  used for `GET /api/v1/health/details` (ADR-037).
+- `POST /api/v1/factory-reset`, `GET /api/v1/debug/bundle`,
+  `POST /api/v1/audio/pair`, `POST /api/v1/spotify/restart`, and
+  `POST /api/v1/volume` (`companion/services/router.py`) — the same
+  `auth_dependencies` list already used for `GET /api/v1/health/details`
+  (ADR-037). The corresponding `GET` status endpoints (`/audio`, `/spotify`,
+  `/volume`) stay unauthenticated — read-only, no sensitive data, and the
+  Portal must read them with no key configured.
 - `PUT /api/v1/config` (`companion/webui/router.py`) — `GET /api/v1/config`
   stays public; it holds no sensitive data and the Portal must read it with
   no key configured.
@@ -138,6 +149,10 @@ should never have had a lower bar.
   not just partyboxd's original private routes — closing the specific gap
   SEC-02 called out ("leaves the entire companion services router open even
   when a key is configured").
+- `GET /api/v1/events` (the WebSocket event stream) rejects a forged Origin
+  on the handshake itself, in addition to its existing `api_key` query-param
+  check — closing a cross-origin read that doesn't need DNS rebinding at all,
+  since WebSockets aren't subject to the browser's same-origin policy.
 - No new user-facing configuration, no reboot/reflash required — this ships
   as a source-only change (`packages/partyboxd/src/partyboxd/api/`,
   `packages/companion/src/companion/{services,webui,wifi}/`) deployable via
