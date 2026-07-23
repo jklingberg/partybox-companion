@@ -406,13 +406,13 @@ name = "partybox-companion"
 source = { editable = "packages/companion" }
 dependencies = [
     { name = "dbus-fast" },
+    { name = "httpx" },
     { name = "partyboxd" },
     { name = "pydantic-settings" },
 ]
 
 [package.optional-dependencies]
 dev = [
-    { name = "httpx" },
     { name = "mypy" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -423,7 +423,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "dbus-fast", specifier = ">=4.0" },
-    { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27" },
+    { name = "httpx", specifier = ">=0.27" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=2.0" },
     { name = "partyboxd", editable = "packages/partyboxd" },
     { name = "pydantic-settings", specifier = ">=2.2" },

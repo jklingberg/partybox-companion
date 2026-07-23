@@ -381,31 +381,43 @@ WWANEnabled=true
 NM_STATE_EOF
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 10b. SSH access
+# 10b. SSH access (ADR-042 / SEC-01)
 #
-# Creates a default login user and enables the SSH daemon. SSH is the primary
-# administration interface for a headless appliance.
+# Creates the login user but leaves SSH itself DISABLED and key-only, on
+# every image (production and dev alike -- see ADR-042 for why there is no
+# build-time flag to restore password auth). The pi/raspberry shared default
+# password that used to be set here is gone entirely, along with the
+# PasswordAuthentication yes drop-in that made this image less safe than a
+# stock Pi OS install.
 #
-# Pi OS Bookworm ships openssh-server but disables it because the default pi
-# user was removed in Bookworm. We restore both here.
-#
-# Default credentials: pi / raspberry
-# Change the password after first login:  ssh pi@partybox.local  &&  passwd
+# Enabling SSH and provisioning a key is now done entirely through the
+# Companion Portal (Settings -> SSH access), which drives
+# companion-ssh-apply.service (installed in section 10d below) to write
+# ~pi/.ssh/authorized_keys and flip ssh.service on/off. The pi account itself
+# still gets a password -- but a random one, generated per device on real
+# first boot by partybox-firstboot.service (section 10e), not a fixed string
+# baked into the image. That password is for the physical/UART console only
+# and is never usable over SSH.
 # ──────────────────────────────────────────────────────────────────────────────
-log "Creating default SSH user (pi)"
+log "Creating pi user (no default password, no SSH access until enabled via the Portal)"
 if ! id pi &>/dev/null; then
     useradd -m -s /bin/bash -G sudo pi
 fi
-echo "pi:raspberry" | chpasswd
 
-log "Enabling SSH daemon"
-systemctl enable ssh
+log "Leaving SSH daemon disabled by default"
+systemctl disable ssh 2>/dev/null || true
 
-# Bookworm's default sshd_config uses PasswordAuthentication prohibit-password.
-# Override via a drop-in so that password login works for the pi user.
+# Explicit even though Bookworm's default is already PasswordAuthentication
+# prohibit-password -- states the appliance's actual security posture
+# directly rather than relying on an upstream default that could change.
+# KbdInteractiveAuthentication no closes the same door for PAM-based
+# challenge-response prompts.
 mkdir -p /etc/ssh/sshd_config.d
-printf 'PasswordAuthentication yes\n' \
-    > /etc/ssh/sshd_config.d/10-partybox.conf
+cat > /etc/ssh/sshd_config.d/10-partybox.conf << 'EOF'
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+EOF
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 10c. PipeWire user session for the pi user (A2DP audio pipeline)
@@ -507,6 +519,68 @@ cp "${PARTYBOX_SRC_DIR}/image/config/logind-runtime-dir-mode.conf" \
 cat > /etc/tmpfiles.d/wireplumber-state.conf << 'EOF'
 R! /home/pi/.local/state/wireplumber - - - - -
 EOF
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 10d. companion-ssh-apply.service — root helper the Portal's SSH toggle
+# triggers over D-Bus (ADR-042)
+#
+# Never enabled/started here -- it only ever runs on demand, triggered by
+# companion.service (as the unprivileged 'companion' user) calling
+# org.freedesktop.systemd1.Manager.StartUnit over D-Bus. The polkit rule
+# below is what authorizes that call, scoped to exactly this unit name.
+# ──────────────────────────────────────────────────────────────────────────────
+log "Installing companion-ssh-apply.service (SSH access helper, ADR-042)"
+install -m 755 \
+    "${PARTYBOX_SRC_DIR}/image/config/companion-ssh-apply.sh" \
+    /usr/local/bin/companion-ssh-apply
+install -m 0644 \
+    "${PARTYBOX_SRC_DIR}/system/systemd/companion-ssh-apply.service" \
+    /lib/systemd/system/companion-ssh-apply.service
+
+log "Installing polkit rule for companion -> systemd1 (companion-ssh-apply.service only)"
+cat > /etc/polkit-1/rules.d/53-companion-ssh-apply.rules << 'POLKIT_EOF'
+// Grant the companion system user permission to start exactly one named
+// unit -- companion-ssh-apply.service (ADR-042) -- not the
+// org.freedesktop.systemd1.manage-units namespace generally. Unlike the
+// NetworkManager rule above (namespace-scoped, because NM's action-ID
+// surface is fragile across versions -- see ADR-021) and the logind rule
+// (scoped to two specific stable action IDs -- see ADR-038), systemd
+// exposes the target unit name itself via action.lookup("unit"), so this
+// rule can be scoped narrower than either precedent: to the one unit, not
+// just the one action.
+polkit.addRule(function(action, subject) {
+    if (action.id == "org.freedesktop.systemd1.manage-units"
+            && action.lookup("unit") == "companion-ssh-apply.service"
+            && subject.user === "companion") {
+        return polkit.Result.YES;
+    }
+});
+POLKIT_EOF
+chmod 0644 /etc/polkit-1/rules.d/53-companion-ssh-apply.rules
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 10e. partybox-firstboot.service — random per-device local-console password
+# (ADR-042)
+#
+# Must run on the device's real first boot, not during this chroot-based
+# image build -- see ADR-042 for why building the random password in here
+# would just reproduce SEC-01 (every device from the same image sharing one
+# "random" password). systemctl enable creates the want-symlink only; it
+# does not run the unit now, matching the same reasoning as companion.service
+# above.
+# ──────────────────────────────────────────────────────────────────────────────
+log "Installing partybox-firstboot.service (per-device console password, ADR-042)"
+install -m 755 \
+    "${PARTYBOX_SRC_DIR}/image/config/partybox-firstboot.sh" \
+    /usr/local/bin/partybox-firstboot
+install -m 0644 \
+    "${PARTYBOX_SRC_DIR}/system/systemd/partybox-firstboot.service" \
+    /lib/systemd/system/partybox-firstboot.service
+systemctl enable partybox-firstboot 2>/dev/null || {
+    mkdir -p /etc/systemd/system/sysinit.target.wants
+    ln -sf /lib/systemd/system/partybox-firstboot.service \
+        /etc/systemd/system/sysinit.target.wants/partybox-firstboot.service
+}
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 11. SD card longevity

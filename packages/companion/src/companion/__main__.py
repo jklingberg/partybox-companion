@@ -42,6 +42,8 @@ from companion.services.pairing import PairingService, PairingState
 from companion.services.provisioning import ProvisioningService
 from companion.services.router import make_services_router
 from companion.services.spotify import SpotifyService
+from companion.services.ssh_access import SshAccessService
+from companion.ssh.router import make_ssh_router
 from companion.supervisor import RestartPolicy, Supervisor
 from companion.volume import VolumeState
 from companion.webui.router import make_portal_router
@@ -373,6 +375,7 @@ async def _run(
     )
 
     provisioning = ProvisioningService(companion_settings.wifi.interface)
+    ssh_access = SshAccessService(companion_settings.data_dir)
 
     # Created before the routers so make_services_router can read live task
     # health via supervisor.health() — registrations happen below, after the
@@ -432,6 +435,7 @@ async def _run(
         )
     )
     app.include_router(make_wifi_router(provisioning, auth=auth))
+    app.include_router(make_ssh_router(ssh_access, auth=auth))
     app.add_middleware(CaptivePortalMiddleware, provisioning=provisioning)
 
     server_config = uvicorn.Config(
