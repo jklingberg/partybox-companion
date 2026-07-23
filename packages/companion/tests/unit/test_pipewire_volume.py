@@ -125,6 +125,17 @@ async def test_get_volume_rounds_to_nearest_percent() -> None:
         assert await pipewire_volume.get_volume() == 100
 
 
+async def test_get_volume_clamps_boosted_volume_above_100() -> None:
+    """WirePlumber allows boosted volume above 1.0 (e.g. a manual wpctl
+    set-volume ... 1.2 outside this module's control) — get_volume() must
+    still honor its documented 0-100 contract."""
+    with patch(
+        "companion.services.pipewire_volume.asyncio.create_subprocess_exec",
+        return_value=_mock_proc(stdout=b"Volume: 1.20\n"),
+    ):
+        assert await pipewire_volume.get_volume() == 100
+
+
 async def test_get_volume_returns_none_on_nonzero_exit() -> None:
     with patch(
         "companion.services.pipewire_volume.asyncio.create_subprocess_exec",

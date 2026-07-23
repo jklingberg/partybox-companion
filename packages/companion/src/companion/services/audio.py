@@ -425,9 +425,14 @@ class AudioService:
                         became_ready = self._set_audio_ready(True)
                         retry_delay = _RETRY_BASE
                         self._consecutive_failures = 0
+                        # Settle before pinning, not after — the PipeWire sink
+                        # node for this connect is created off the same
+                        # asynchronous MediaTransport1 appearance described
+                        # above, so pinning immediately can target a sink that
+                        # doesn't exist yet (or the previous default sink).
+                        await asyncio.sleep(_POST_CONNECT_SETTLE)
                         if became_ready:
                             await self._pin_volume()
-                        await asyncio.sleep(_POST_CONNECT_SETTLE)
                         continue
                     # connect failed — still check in case speaker auto-connected
                     if await self._is_connected():

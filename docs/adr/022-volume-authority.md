@@ -174,15 +174,20 @@ directions:
 2. `GET /api/v1/volume` reads PipeWire's live level as the second-priority
    source (after BLE, before the `VolumeState` fallback) — a real readback,
    not a replay of the last write.
-3. `AudioService` pins the sink to 100% on every fresh A2DP connect
-   (`pin_volume_fn`, called once per False→True `audio_ready` transition —
-   see `companion/services/audio.py`), closing INC-2 at the code layer.
-   This is intentionally redundant with the image-level WirePlumber
-   `device.routes.default-sink-volume = 1.0` override (ADR-028 § "Volume
-   floor from mixin.stateless"), which fixes the same symptom via config —
-   the explicit pin does not depend on that config surviving a future image
-   change, and is what the RC13 punch list and this review both asked for
-   directly.
+3. `AudioService` pins the sink on every fresh A2DP connect (`pin_volume_fn`,
+   called once per False→True `audio_ready` transition, after the post-connect
+   settle sleep so the PipeWire sink node is guaranteed to exist — see
+   `companion/services/audio.py`), closing INC-2 at the code layer. The pin
+   targets `VolumeState.level` when one is already known and only falls back
+   to 100% when nothing has been recorded yet, so a routine reconnect (the
+   speaker drops A2DP on idle and `AudioService` reconnects automatically)
+   does not clobber a level the user or Spotify already set — that would
+   violate the last-write-wins model above. This is intentionally redundant
+   with the image-level WirePlumber `device.routes.default-sink-volume = 1.0`
+   override (ADR-028 § "Volume floor from mixin.stateless"), which fixes the
+   same symptom via config — the explicit pin does not depend on that config
+   surviving a future image change, and is what the RC13 punch list and this
+   review both asked for directly.
 
 `"pipewire"` is added to `VolumeSource` alongside the sources listed above.
 This does not change the Phase 2 plan: BLE hardware volume, once the opcode

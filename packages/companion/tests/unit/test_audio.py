@@ -736,7 +736,10 @@ async def test_pin_volume_fn_called_once_on_fresh_connect() -> None:
 
 async def test_pin_volume_fn_called_after_explicit_connect() -> None:
     """The actuator also fires on the _connect() success path, not only the
-    "already connected at startup" branch covered above."""
+    "already connected at startup" branch covered above — and only after the
+    settle sleep, since the PipeWire sink node isn't guaranteed to exist
+    until MediaTransport1 shows up (same race the settle sleep itself
+    guards against)."""
     pin_calls = 0
 
     async def pin() -> None:
@@ -748,10 +751,15 @@ async def test_pin_volume_fn_called_after_explicit_connect() -> None:
     call_results = [_mock_proc(b"false"), _mock_proc(b"ok")]
 
     async def fake_exec(*args: object, **kwargs: object) -> MagicMock:
+        if not call_results:
+            raise asyncio.CancelledError
         return call_results.pop(0)
 
+    sleep_calls = 0
+
     async def fake_sleep(delay: float) -> None:
-        raise asyncio.CancelledError
+        nonlocal sleep_calls
+        sleep_calls += 1
 
     with (
         patch("companion.services.audio.asyncio.create_subprocess_exec", side_effect=fake_exec),
@@ -760,6 +768,7 @@ async def test_pin_volume_fn_called_after_explicit_connect() -> None:
         with pytest.raises(asyncio.CancelledError):
             await svc.run()
 
+    assert sleep_calls == 1
     assert pin_calls == 1
 
 

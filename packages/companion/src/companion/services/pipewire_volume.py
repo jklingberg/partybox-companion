@@ -96,4 +96,8 @@ async def get_volume() -> int | None:
         level = float(line[len(prefix) :].split()[0])
     except ValueError, IndexError:
         return None
-    return round(level * 100)
+    # WirePlumber allows boosted volume above 1.0 (e.g. a manual
+    # `wpctl set-volume ... 1.2`, outside this module's control) — clamp so
+    # callers relying on the documented 0-100 contract (VolumeResponse, the
+    # Portal slider) never see an out-of-range value.
+    return max(0, min(100, round(level * 100)))
