@@ -66,6 +66,52 @@ reservation, or the provisioning AP's fixed `10.42.0.1` — no LAN IP needs to
 be hardcoded or read from settings, and provisioning endpoints reachable over
 the AP just keep working with no special-casing.
 
+**Deployment assumption — no reverse proxy today; document before adding
+one.** This only works because uvicorn currently terminates the client
+connection directly (the appliance binds port 80 itself, per
+`docs/adr/020-appliance-hardening.md`'s `CAP_NET_BIND_SERVICE` grant) — no
+reverse proxy sits in front of it, and Unix domain sockets are already
+rejected by `docs/adr/007-tcp-only.md`. If a future deployment puts nginx,
+Traefik, or another reverse proxy in front of partyboxd/companion,
+`scope["server"][0]` would become the *proxy-to-uvicorn* hop's local address
+(e.g. `127.0.0.1` if proxied over loopback — which happens to already be in
+`_ALLOWED_HOSTNAMES`, so that specific case still works by coincidence — or a
+container-bridge address like `172.17.0.2` if not, which would reject *every*
+request). This middleware deliberately does not fall back to
+`X-Forwarded-Host`/`X-Forwarded-For`: those headers are client-suppliable
+unless a proxy is configured to strip and re-set them, and trusting them
+without that guarantee would reopen the exact DNS-rebinding/CSRF gap this
+middleware exists to close. Adding a trusted reverse proxy in front of the
+appliance therefore requires revisiting this middleware (e.g. a configured
+list of trusted proxy hops whose `X-Forwarded-Host` is honored) rather than
+assuming it continues to work unmodified.
+
+**Duplicate Host/Origin headers are rejected, not silently resolved.** The
+first implementation read headers via `dict(scope["headers"])`, which keeps
+only the *last* occurrence of a repeated header — verified (against a live
+uvicorn/h11 server) that neither rejects a request with two Host headers or
+two Origin headers itself. A request with a forged Host/Origin first and a
+legitimate one last therefore passed the check under that implementation.
+Fixed by scanning `scope["headers"]` for all occurrences and rejecting
+outright when Host appears zero or more-than-once times, or Origin appears
+more than once — matching RFC 7230 §5.4's requirement that a server reject
+any request with more than one Host header. A compliant browser never sends
+duplicate Host/Origin headers itself (both are forbidden headers `fetch()`
+can't set directly), so this isn't reachable through a pure browser-mediated
+CSRF/rebinding attack; it matters for non-browser LAN clients and for
+resilience against any future intermediary that might disagree with this
+middleware about which occurrence is authoritative (the request-smuggling
+failure class this class of bug belongs to).
+
+**`_hostname()` normalizes a trailing dot** (`partybox.local.` is the same
+DNS name as `partybox.local` — the trailing dot denotes the DNS root and is
+stripped by resolvers before lookup) so a client or resolver that includes it
+isn't rejected as a foreign host. A bracket-less IPv6 literal in a Host
+header (e.g. `Host: ::1` with no port) is not specially handled and is
+rejected: RFC 3986/7230 require IPv6 literals to be bracketed in the Host
+header, no compliant client sends it unbracketed, and recovering it without
+brackets would require guessing where the address ends and a port begins.
+
 **Why Origin absence is allowed:** the documented `curl` workflows in this
 repo's own `CLAUDE.md` (power on/off, health checks) send no Origin header at
 all, and neither does any other non-browser client (the hardware test suite,
@@ -88,6 +134,36 @@ middleware outermost (`self.user_middleware.insert(0, ...)`, then
 and never calls through to `HostOriginMiddleware` for them. Once the CNA
 popup navigates to the Portal, every subsequent request's Host is the AP IP
 itself, which the `scope["server"][0]` check already allows.
+
+This ordering is an implicit invariant of `companion/__main__.py`'s source,
+not something Starlette enforces structurally — a future edit that
+reorders the two `add_middleware()` calls (directly, or indirectly via a
+refactor) would silently invert it, and none of the *behavioral* tests in
+`test_host_origin_provisioning_interaction.py` would catch that, since they
+construct their own app and reconstruct the correct order by hand rather
+than exercising `__main__.py` itself.
+`test_middleware_ordering_invariant.py` closes that gap with a structural
+check against `__main__.py`'s actual source (asserting `create_daemon_app(`
+appears before `add_middleware(CaptivePortalMiddleware` in `_run()`), so a
+future reorder fails loudly instead of only manifesting as an AP-mode
+provisioning regression discovered on hardware.
+
+**WebSocket rejection mechanics:** `HostOriginMiddleware._reject()` sends a
+`websocket.close` event with `code=4403` without first sending
+`websocket.accept`. Per the ASGI spec, a close sent before accept has no
+close code on the wire — the connection is refused at the HTTP-upgrade level
+instead (verified against a live uvicorn server: the client sees the
+handshake fail with a plain **HTTP 403**, not a WebSocket close frame
+carrying 4403). The `code` value is therefore only meaningful to ASGI-layer
+unit tests asserting on the event dict, not to a real client; it isn't
+misleading in code, but is worth knowing when debugging with a real WS
+client. Calling `receive()` once before `close()` (to consume the pending
+`websocket.connect` event) is not strictly required by Starlette's own
+`WebSocket` class, which allows sending `close` directly while still in the
+`CONNECTING` state — but doing so anyway is the more defensive, broadly
+portable choice across ASGI server implementations, and was verified (via a
+live uvicorn + `websockets`-client round trip) to reject immediately with no
+hang in the forged-Origin, same-Origin, and no-Origin cases.
 
 **Rejected alternative — a configurable LAN-IP allowlist setting.** The
 appliance's LAN IP is DHCP-assigned and not knowable at config time; adding

@@ -28,12 +28,18 @@ _REJECTED_BODY = (
 
 
 def _hostname(value: str) -> str:
-    """Extract the lowercase hostname from a Host header or Origin URL value."""
+    """Extract the lowercase hostname from a Host header or Origin URL value.
+
+    Strips a single trailing dot (``partybox.local.`` is the same DNS name as
+    ``partybox.local`` — the trailing dot denotes the DNS root and is dropped
+    by resolvers before lookup) so a client or resolver that includes it
+    doesn't get rejected as if it were a foreign host.
+    """
     if "://" in value:
         value = urlsplit(value).netloc
     if value.startswith("["):
         return value.split("]")[0].lstrip("[").lower()
-    return value.rsplit(":", 1)[0].lower()
+    return value.rsplit(":", 1)[0].rstrip(".").lower()
 
 
 class HostOriginMiddleware:
@@ -72,18 +78,30 @@ class HostOriginMiddleware:
             await self._app(scope, receive, send)
             return
 
-        headers = dict(scope["headers"])
+        # Read header occurrences as a list rather than collapsing to a dict:
+        # a naive dict(scope["headers"]) silently keeps only the *last*
+        # occurrence of a repeated header, so a request smuggling two Host (or
+        # two Origin) headers -- a forged one followed by a matching one --
+        # would sail through. ASGI servers are not guaranteed to reject
+        # duplicate Host headers themselves (verified against uvicorn/h11,
+        # which pass both through), so this middleware must treat more than
+        # one occurrence of either header as ambiguous and reject it, per
+        # RFC 7230 §5.4's requirement for exactly one Host header.
+        raw_headers: list[tuple[bytes, bytes]] = scope["headers"]
         server = scope.get("server")
         allowed = _ALLOWED_HOSTNAMES | ({server[0].lower()} if server else set())
 
-        host = headers.get(b"host")
-        if host is None or _hostname(host.decode("latin-1")) not in allowed:
+        hosts = [v for k, v in raw_headers if k == b"host"]
+        if len(hosts) != 1 or _hostname(hosts[0].decode("latin-1")) not in allowed:
             await self._reject(scope, receive, send)
             return
 
         if scope["type"] == "websocket" or scope.get("method", "") in _MUTATING_METHODS:
-            origin = headers.get(b"origin")
-            if origin is not None and _hostname(origin.decode("latin-1")) not in allowed:
+            origins = [v for k, v in raw_headers if k == b"origin"]
+            if len(origins) > 1:
+                await self._reject(scope, receive, send)
+                return
+            if origins and _hostname(origins[0].decode("latin-1")) not in allowed:
                 await self._reject(scope, receive, send)
                 return
 

@@ -86,6 +86,130 @@ async def test_missing_host_header_rejected() -> None:
     assert events[0]["status"] == 400
 
 
+async def test_trailing_dot_host_allowed() -> None:
+    """ "partybox.local." is the same DNS name as "partybox.local" (root label)."""
+    async with _make_client() as client:
+        r = await client.get("/api/v1/health", headers={"Host": "partybox.local."})
+    assert r.status_code == 200
+
+
+async def test_empty_host_value_rejected() -> None:
+    """httpx rejects an empty header value outright, so exercise the ASGI layer."""
+    from partyboxd.api.security import HostOriginMiddleware
+
+    events: list[dict[str, object]] = []
+
+    async def app(scope: object, receive: object, send: object) -> None:
+        raise AssertionError("downstream app must not run for an empty Host header")
+
+    async def send(message: dict[str, object]) -> None:
+        events.append(message)
+
+    async def receive() -> dict[str, object]:
+        raise AssertionError("not expected for a plain http request")
+
+    middleware = HostOriginMiddleware(app)
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "headers": [(b"host", b"")],
+        "server": ("192.168.1.50", 8080),
+    }
+    await middleware(scope, receive, send)
+    assert events[0]["status"] == 400
+
+
+# ---------------------------------------------------------------------------
+# Duplicate Host/Origin headers — a naive dict(scope["headers"]) silently
+# keeps only the *last* occurrence of a repeated header. uvicorn/h11 do not
+# reject requests with more than one Host header themselves (verified against
+# a live server), so a request smuggling two Host headers -- forged first,
+# legitimate last -- would otherwise sail through. RFC 7230 §5.4 requires
+# rejecting any request with more than one Host header outright.
+# ---------------------------------------------------------------------------
+
+
+async def test_duplicate_host_forged_first_legit_last_rejected() -> None:
+    """Regression: this exact ordering used to bypass the check via dict()."""
+    from partyboxd.api.security import HostOriginMiddleware
+
+    events: list[dict[str, object]] = []
+
+    async def app(scope: object, receive: object, send: object) -> None:
+        raise AssertionError("downstream app must not run for an ambiguous duplicate Host")
+
+    async def send(message: dict[str, object]) -> None:
+        events.append(message)
+
+    async def receive() -> dict[str, object]:
+        raise AssertionError("not expected for a plain http request")
+
+    middleware = HostOriginMiddleware(app)
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "headers": [(b"host", b"evil.example.com"), (b"host", b"partybox.local")],
+        "server": ("192.168.1.50", 8080),
+    }
+    await middleware(scope, receive, send)
+    assert events[0]["status"] == 400
+
+
+async def test_duplicate_host_legit_first_forged_last_rejected() -> None:
+    from partyboxd.api.security import HostOriginMiddleware
+
+    events: list[dict[str, object]] = []
+
+    async def app(scope: object, receive: object, send: object) -> None:
+        raise AssertionError("downstream app must not run for an ambiguous duplicate Host")
+
+    async def send(message: dict[str, object]) -> None:
+        events.append(message)
+
+    async def receive() -> dict[str, object]:
+        raise AssertionError("not expected for a plain http request")
+
+    middleware = HostOriginMiddleware(app)
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "headers": [(b"host", b"partybox.local"), (b"host", b"evil.example.com")],
+        "server": ("192.168.1.50", 8080),
+    }
+    await middleware(scope, receive, send)
+    assert events[0]["status"] == 400
+
+
+async def test_duplicate_origin_forged_first_legit_last_rejected() -> None:
+    """Regression: this exact ordering used to bypass the CSRF check via dict()."""
+    from partyboxd.api.security import HostOriginMiddleware
+
+    events: list[dict[str, object]] = []
+
+    async def app(scope: object, receive: object, send: object) -> None:
+        raise AssertionError("downstream app must not run for an ambiguous duplicate Origin")
+
+    async def send(message: dict[str, object]) -> None:
+        events.append(message)
+
+    async def receive() -> dict[str, object]:
+        raise AssertionError("not expected for a plain http request")
+
+    middleware = HostOriginMiddleware(app)
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "headers": [
+            (b"host", b"partybox.local"),
+            (b"origin", b"https://evil.example.com"),
+            (b"origin", b"http://partybox.local"),
+        ],
+        "server": ("192.168.1.50", 8080),
+    }
+    await middleware(scope, receive, send)
+    assert events[0]["status"] == 400
+
+
 # ---------------------------------------------------------------------------
 # Origin header — CSRF (SEC-02), mutating methods only
 # ---------------------------------------------------------------------------
@@ -123,6 +247,77 @@ async def test_forged_origin_does_not_affect_get() -> None:
             headers={"Origin": "https://evil.example.com"},
         )
     assert r.status_code == 200
+
+
+async def test_same_origin_post_with_port_allowed() -> None:
+    """An Origin carrying an explicit port must still match on hostname alone."""
+    async with _make_client() as client:
+        r = await client.post("/api/v1/power/on", headers={"Origin": "http://test:8080"})
+    assert r.status_code == 204
+
+
+async def test_ipv6_origin_matches_ipv6_server_address() -> None:
+    """A bracketed IPv6 Origin (as browsers serialize it) must match scope["server"]."""
+    from partyboxd.api.security import HostOriginMiddleware
+
+    app_called = False
+
+    async def app(scope: object, receive: object, send: object) -> None:
+        nonlocal app_called
+        app_called = True
+
+    async def send(message: dict[str, object]) -> None:
+        pass
+
+    async def receive() -> dict[str, object]:
+        raise AssertionError("not expected for a plain http request")
+
+    middleware = HostOriginMiddleware(app)
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "headers": [
+            (b"host", b"[fe80::1]:8080"),
+            (b"origin", b"http://[fe80::1]:8080"),
+        ],
+        "server": ("fe80::1", 8080),
+    }
+    await middleware(scope, receive, send)
+    assert app_called is True
+
+
+async def test_malformed_origin_rejected_on_post() -> None:
+    """An Origin that isn't a URL at all must not be treated as a match by accident."""
+    async with _make_client() as client:
+        r = await client.post("/api/v1/power/on", headers={"Origin": "not a url"})
+    assert r.status_code == 400
+
+
+async def test_empty_origin_value_rejected_on_post() -> None:
+    """An explicitly empty Origin header is present (unlike a missing one) --
+    treat it as a mismatch, not as the "no Origin sent" non-browser case."""
+    from partyboxd.api.security import HostOriginMiddleware
+
+    events: list[dict[str, object]] = []
+
+    async def app(scope: object, receive: object, send: object) -> None:
+        raise AssertionError("downstream app must not run for an empty Origin header")
+
+    async def send(message: dict[str, object]) -> None:
+        events.append(message)
+
+    async def receive() -> dict[str, object]:
+        raise AssertionError("not expected for a plain http request")
+
+    middleware = HostOriginMiddleware(app)
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "headers": [(b"host", b"partybox.local"), (b"origin", b"")],
+        "server": ("192.168.1.50", 8080),
+    }
+    await middleware(scope, receive, send)
+    assert events[0]["status"] == 400
 
 
 # ---------------------------------------------------------------------------
@@ -215,3 +410,57 @@ async def test_missing_origin_on_websocket_handshake_allowed() -> None:
     await middleware(scope, receive, send)
 
     assert app_called is True
+
+
+async def test_websocket_bad_host_good_origin_rejected_at_host_check() -> None:
+    """Host is checked first -- a rebound Host rejects the handshake even when
+    Origin would otherwise have matched."""
+    from partyboxd.api.security import HostOriginMiddleware
+
+    app_called = False
+
+    async def app(scope: object, receive: object, send: object) -> None:
+        nonlocal app_called
+        app_called = True
+
+    events: list[dict[str, object]] = []
+
+    async def send(message: dict[str, object]) -> None:
+        events.append(message)
+
+    async def receive() -> dict[str, object]:
+        return {"type": "websocket.connect"}
+
+    middleware = HostOriginMiddleware(app)
+    scope = _ws_scope(host="evil.example.com", origin=b"http://test")
+    await middleware(scope, receive, send)
+
+    assert app_called is False
+    assert events[0]["type"] == "websocket.close"
+
+
+async def test_websocket_good_host_malformed_origin_rejected() -> None:
+    """A valid Host with a garbage Origin must still be rejected, not waved
+    through because it "isn't a mismatch we recognize"."""
+    from partyboxd.api.security import HostOriginMiddleware
+
+    app_called = False
+
+    async def app(scope: object, receive: object, send: object) -> None:
+        nonlocal app_called
+        app_called = True
+
+    events: list[dict[str, object]] = []
+
+    async def send(message: dict[str, object]) -> None:
+        events.append(message)
+
+    async def receive() -> dict[str, object]:
+        return {"type": "websocket.connect"}
+
+    middleware = HostOriginMiddleware(app)
+    scope = _ws_scope(origin=b"not a url")
+    await middleware(scope, receive, send)
+
+    assert app_called is False
+    assert events[0]["type"] == "websocket.close"
