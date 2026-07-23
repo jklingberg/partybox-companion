@@ -23,6 +23,20 @@ Environment=COMPANION_DATA_DIR=/var/lib/companion
 # tmpfs-backed directory before ExecStart.
 Environment=COMPANION_RUNTIME_DIR=/run/companion
 
+# The live PipeWire/WirePlumber session is the pi user's (see ADR-019 and the
+# PULSE_SERVER comment in companion.env) at /run/user/1000, NOT this unit's own
+# RuntimeDirectory=companion below — RuntimeDirectory= only exports
+# $RUNTIME_DIRECTORY (=/run/companion), it does not set $XDG_RUNTIME_DIR for a
+# system service the way it would for a systemd --user session. Without this,
+# wpctl (companion.services.pipewire_volume) has no runtime dir to resolve
+# @DEFAULT_AUDIO_SINK@ against — 'companion' is a nologin system account with
+# no logind session of its own — and every call fails with "Could not connect
+# to PipeWire" (confirmed on hardware 2026-07-23 while validating #78/PR#80:
+# the ARCH-04 actuator was merged and unit-tested but never actually worked on
+# the appliance until this was added). Same UID-1000 assumption as
+# PULSE_SERVER below.
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+
 # Operator overrides: copy system/systemd/companion.env to /etc/companion/companion.env
 # and uncomment the settings you want to change. The file is silently ignored if absent.
 EnvironmentFile=-/etc/companion/companion.env
@@ -88,11 +102,13 @@ SyslogIdentifier=companion
 # StateDirectory creates /var/lib/companion owned by companion before ExecStart.
 StateDirectory=companion
 
-# RuntimeDirectory creates /run/companion (tmpfs-backed, owned by companion) and
-# sets XDG_RUNTIME_DIR=/run/companion. This is the correct location for PipeWire
-# sockets, WirePlumber state, and any future user-session runtime artefacts.
-# Having this in place means enabling PipeWire for the companion user requires no
-# change to this unit — see ADR-019 companion user section.
+# RuntimeDirectory creates /run/companion (tmpfs-backed, owned by companion)
+# and exports it as $RUNTIME_DIRECTORY — used by SpotifyService for the
+# librespot --onevent socket. This does NOT set $XDG_RUNTIME_DIR (that's only
+# automatic for systemd --user sessions, not a system service's User=); the
+# explicit Environment=XDG_RUNTIME_DIR= above is what wpctl actually needs,
+# and it points at the pi user's session, not this directory — see that
+# comment for why.
 RuntimeDirectory=companion
 RuntimeDirectoryMode=0700
 
