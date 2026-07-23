@@ -168,3 +168,28 @@ async def test_get_volume_returns_none_on_unparseable_output() -> None:
         return_value=_mock_proc(stdout=b"no default sink found\n"),
     ):
         assert await pipewire_volume.get_volume() is None
+
+
+# ---------------------------------------------------------------------------
+# pin_sink_volume() — ARCH-04/INC-2: pin the sink after an A2DP reconnect
+# ---------------------------------------------------------------------------
+
+
+async def test_pin_sink_volume_pins_to_100_when_no_level_known() -> None:
+    """A true fresh boot/pairing — nothing recorded yet — still targets 100%,
+    the INC-2 symptom this actuator exists to fix."""
+    with patch(
+        "companion.services.pipewire_volume.set_volume", return_value=True
+    ) as mock_set_volume:
+        await pipewire_volume.pin_sink_volume(None)
+    mock_set_volume.assert_awaited_once_with(100)
+
+
+async def test_pin_sink_volume_pins_to_last_known_level_on_reconnect() -> None:
+    """A routine reconnect after the user already set a level must re-apply
+    that level, not slam the sink back to 100%."""
+    with patch(
+        "companion.services.pipewire_volume.set_volume", return_value=True
+    ) as mock_set_volume:
+        await pipewire_volume.pin_sink_volume(20)
+    mock_set_volume.assert_awaited_once_with(20)
