@@ -25,3 +25,19 @@ npm install -g @anthropic-ai/claude-code
 
 # Install OpenAI Codex CLI globally.
 npm install -g @openai/codex
+
+# Default Codex to its built-in "Auto" mode (workspace-write sandbox +
+# on-request approval) so it doesn't stop to ask which mode to run in on
+# first launch. It can still read/edit/run commands in the repo without
+# prompting, but still asks before touching anything outside the workspace
+# or hitting the network. Codex may have already created config.toml itself
+# (e.g. a [projects."..."] trust_level entry from an earlier run), so check
+# for the specific keys rather than file existence, and prepend rather than
+# overwrite — TOML requires top-level keys to precede any [table] section.
+codex_config=/home/vscode/.codex/config.toml
+touch "$codex_config"
+if ! grep -q '^approval_policy' "$codex_config"; then
+  printf 'approval_policy = "on-request"\nsandbox_mode = "workspace-write"\n\n' \
+    | cat - "$codex_config" > "$codex_config.tmp"
+  mv "$codex_config.tmp" "$codex_config"
+fi
