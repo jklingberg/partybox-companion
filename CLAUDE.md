@@ -35,6 +35,8 @@ uv run pytest packages/partybox/ -m hardware -v
 
 mypy is configured `strict` in the root `pyproject.toml`. All packages must pass `mypy --strict` — no exceptions.
 
+New devcontainer terminals do **not** auto-activate `.venv` (`python.terminal.activateEnvironment` is disabled in `.devcontainer/devcontainer.json`) — always prefix commands with `uv run`, as shown above, rather than assuming an activated shell.
+
 ## Architecture
 
 Four layers, strict one-way dependency:
