@@ -27,6 +27,7 @@ from partyboxd.device.events import (
 from partyboxd.device.manager import (
     _HEALTH_CHECK_FAILURE_LIMIT,
     _RECONNECT_MAX,
+    _WEDGE_UNREACHABLE_TIMEOUT,
     _WEDGE_WINDOW,
     DeviceManager,
     DeviceNotConnectedError,
@@ -808,6 +809,34 @@ async def test_maintain_exit_disconnects_transport(monkeypatch: pytest.MonkeyPat
         await task
 
 
+async def test_successful_connect_clears_unreachable_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A successful connect must clear _unreachable_since, so a later drop
+    starts a fresh stretch instead of inheriting stale elapsed time toward
+    _WEDGE_UNREACHABLE_TIMEOUT."""
+    transport = MockTransport(address="BB:CC:DD:EE:FF:AA")
+    transport.stub(FIRMWARE_REQUEST, FIRMWARE_RESPONSE)
+    connected_event = asyncio.Event()
+
+    async def _fake_find(*_: object, **__: object) -> ScanResult:
+        await transport.connect()
+        device = PartyBoxDevice._from_transport(transport)
+        connected_event.set()
+        return ScanResult(device=device, beacon_seen=True)
+
+    monkeypatch.setattr("partyboxd.device.manager.Scanner.find_with_presence", _fake_find)
+
+    manager = _make_manager()
+    manager._unreachable_since = asyncio.get_running_loop().time() - 1000
+    task = asyncio.create_task(manager.run())
+    await asyncio.wait_for(connected_event.wait(), timeout=2.0)
+    await asyncio.sleep(0.05)
+    assert manager._unreachable_since is None
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
 async def test_connect_failures_in_power_command_grace_are_not_counted() -> None:
     """ADR-034: the speaker resets its BLE stack after every power command;
     the connect failures that produces must not look like a wedge."""
@@ -1048,6 +1077,79 @@ async def test_connect_failures_still_count_when_nothing_to_reclaim() -> None:
     assert recoveries == []
     await manager._note_connect_failure()
     assert recoveries == [True]
+
+
+# ---------------------------------------------------------------------------
+# total-elapsed-unreachable-time escalation — complements the density check
+# above (see _WEDGE_UNREACHABLE_TIMEOUT): a 2026-07-23 outage ran ~2h53m with
+# only 6 connect failures, each spaced just outside _WEDGE_WINDOW, surrounded
+# by ~150 clean-empty scans that move no counter at all. Neither density-based
+# heuristic ever fired.
+# ---------------------------------------------------------------------------
+
+
+async def test_unreachable_duration_triggers_recovery_independent_of_density() -> None:
+    """A long stretch with no successful connect must escalate to adapter
+    recovery once _WEDGE_UNREACHABLE_TIMEOUT elapses, even with no dense
+    connect-failure run at all."""
+    recoveries: list[bool] = []
+
+    async def recover() -> bool:
+        recoveries.append(True)
+        return True
+
+    manager = DeviceManager(_settings(), adapter_recover_fn=recover)
+    await manager._note_unreachable_duration()  # starts the clock
+    assert recoveries == []
+    assert manager._unreachable_since is not None
+    manager._unreachable_since -= _WEDGE_UNREACHABLE_TIMEOUT + 1
+    await manager._note_unreachable_duration()
+    assert recoveries == [True]
+
+
+async def test_unreachable_duration_does_not_trigger_before_timeout() -> None:
+    recoveries: list[bool] = []
+
+    async def recover() -> bool:
+        recoveries.append(True)
+        return True
+
+    manager = DeviceManager(_settings(), adapter_recover_fn=recover)
+    await manager._note_unreachable_duration()
+    assert manager._unreachable_since is not None
+    manager._unreachable_since -= _WEDGE_UNREACHABLE_TIMEOUT - 5
+    await manager._note_unreachable_duration()
+    assert recoveries == []
+
+
+async def test_unreachable_duration_respects_recovery_cooldown() -> None:
+    """Repeated escalation attempts while still disconnected must not
+    re-trigger recovery faster than _RECOVERY_COOLDOWN — same brake as the
+    density-based path, since both call _maybe_recover."""
+    recoveries: list[bool] = []
+
+    async def recover() -> bool:
+        recoveries.append(True)
+        return True
+
+    manager = DeviceManager(_settings(), adapter_recover_fn=recover)
+    await manager._note_unreachable_duration()
+    assert manager._unreachable_since is not None
+    manager._unreachable_since -= _WEDGE_UNREACHABLE_TIMEOUT + 1
+    await manager._note_unreachable_duration()
+    assert recoveries == [True]
+    # Still disconnected on the very next cycle: cooldown suppresses a repeat.
+    await manager._note_unreachable_duration()
+    assert recoveries == [True]
+
+
+async def test_unreachable_duration_ignores_empty_scans_without_recover_fn() -> None:
+    """No adapter_recover_fn configured (standalone partyboxd) must stay a
+    no-op, same contract as the density-based path."""
+    manager = _make_manager()
+    await manager._note_unreachable_duration()
+    manager._unreachable_since -= _WEDGE_UNREACHABLE_TIMEOUT + 1
+    await manager._note_unreachable_duration()  # must not raise
 
 
 # ---------------------------------------------------------------------------

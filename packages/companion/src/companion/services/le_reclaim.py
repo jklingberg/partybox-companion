@@ -56,13 +56,26 @@ async def disconnect_stale_speaker_links() -> bool:
         return False
     line = stdout.decode(errors="replace").strip()
     if line.startswith("ok:"):
+        parts = line[len("ok:") :].split(":")
         try:
-            count = int(line[len("ok:") :])
+            count = int(parts[0])
+            seen = int(parts[1]) if len(parts) > 1 else None
         except ValueError:
             log.warning("LE reclaim: malformed helper output %r", line)
             return False
         if count > 0:
             log.info("LE reclaim: disconnected %d stale speaker link(s)", count)
+        elif seen:
+            # Previously silent — during a 2026-07-23 outage this path ran an
+            # estimated 40+ times with no way to tell "BlueZ has no record of
+            # the speaker" apart from "saw it, but not connected".
+            log.debug(
+                "LE reclaim: checked %d PartyBox-named LE device object(s) on "
+                "our adapter, none connected — nothing to reclaim",
+                seen,
+            )
+        else:
+            log.debug("LE reclaim: no PartyBox-named LE device objects in BlueZ's cache")
         return count > 0
     log.warning(
         "LE reclaim failed: %s (stderr: %s)",

@@ -115,6 +115,20 @@ _WEDGE_CONNECT_FAILURES = 3
 # wedge produces a dense run of them.
 _WEDGE_WINDOW = 600.0
 
+# Total wall-clock time without a successful connect — regardless of how
+# that time was filled — before requesting adapter recovery. Complements
+# _WEDGE_CONNECT_FAILURES/_WEDGE_WINDOW's density check rather than
+# replacing it: a 2026-07-23 outage ran ~2h53m with only 6 explicit connect
+# failures, each spaced 9-21 minutes apart (every gap just outside
+# _WEDGE_WINDOW, so the density counter kept resetting to 0) surrounded by
+# ~150 clean-empty scans that move no counter at all. Neither existing
+# heuristic ever fired. This one only looks at "how long has it been since
+# we were last connected," so it catches that shape too. Set comfortably
+# above _WEDGE_WINDOW so a single isolated failure during a normal
+# reconnect (post-power-command BLE stack reset, one stale-address miss)
+# never trips it on its own.
+_WEDGE_UNREACHABLE_TIMEOUT = 600.0
+
 # Consecutive scan *errors* (Scanner.find raising — distinct from a clean
 # empty scan, which just means the speaker is off) before requesting adapter
 # recovery. Scanning itself failing means the adapter is unusable, e.g.
@@ -340,6 +354,9 @@ class DeviceManager:
         #: Dense connect failures since the last success (see _WEDGE_WINDOW).
         self._connect_failures = 0
         self._last_connect_failure = 0.0
+        #: loop.time() the current unreachable stretch began; None while
+        #: connected. Feeds _WEDGE_UNREACHABLE_TIMEOUT — see that constant.
+        self._unreachable_since: float | None = None
         #: Consecutive Scanner.find exceptions (reset by any completed scan).
         self._scan_errors = 0
         #: loop.time() of the last power command sent (ADR-034 grace window).
@@ -565,6 +582,7 @@ class DeviceManager:
         log.info("scan attempt %d", attempt)
         device = await self._scan()
         if device is None:
+            await self._note_unreachable_duration()
             await self._sleep_and_backoff()
             return
 
@@ -573,11 +591,13 @@ class DeviceManager:
         except ConnectionFailedError as exc:
             log.warning("connection failed (attempt %d): %s", attempt, exc)
             await self._note_connect_failure()
+            await self._note_unreachable_duration()
             await self._sleep_and_backoff()
             return
 
         self._retry_delay = self._settings.reconnect_delay
         self._connect_failures = 0
+        self._unreachable_since = None
         self._device = device
         self._connected_event.set()
         log.info("connected to %s (attempt %d)", device.address, attempt)
@@ -827,6 +847,27 @@ class DeviceManager:
                 " (suspected controller wedge)"
             )
 
+    async def _note_unreachable_duration(self) -> None:
+        """Escalate to adapter recovery after a long stretch with no successful connect.
+
+        Runs alongside ``_note_connect_failure``'s density check on both
+        failure paths in ``_connect_and_maintain`` (empty scan and failed
+        connect) — see ``_WEDGE_UNREACHABLE_TIMEOUT`` for why the density
+        check alone isn't enough. ``_unreachable_since`` is set here, lazily,
+        on the first failure of a stretch (cleared on the next successful
+        connect), so this is also what starts the clock, not just what reads
+        it.
+        """
+        now = asyncio.get_running_loop().time()
+        if self._unreachable_since is None:
+            self._unreachable_since = now
+            return
+        if now - self._unreachable_since >= _WEDGE_UNREACHABLE_TIMEOUT:
+            await self._maybe_recover(
+                f"{now - self._unreachable_since:.0f}s without a successful connect"
+                " (regardless of failure density)"
+            )
+
     async def _note_empty_scan(self) -> None:
         """Track a clean scan that found nothing; reclaim a stale LE link on a run.
 
@@ -863,6 +904,7 @@ class DeviceManager:
             self._last_failed_reclaim is not None
             and now - self._last_failed_reclaim < _RECLAIM_COOLDOWN
         ):
+            log.debug("stale-link reclaim check skipped (cooling down)")
             return False
         try:
             reclaimed = await self._stale_reclaim_fn()
@@ -871,6 +913,12 @@ class DeviceManager:
             self._last_failed_reclaim = now
             return False
         if not reclaimed:
+            # Previously silent: during the 2026-07-23 outage this ran an
+            # estimated 40+ times with nothing to show for it either way —
+            # no line in the logs distinguishing "checked, found nothing"
+            # from "never checked". See BLE reconnect investigation handoff,
+            # 2026-07-24.
+            log.debug("stale-link reclaim checked; found nothing to reclaim")
             self._last_failed_reclaim = now
             return False
         self._last_failed_reclaim = None
