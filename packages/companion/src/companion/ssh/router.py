@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from companion.services.ssh_access import (
     GithubImportError,
@@ -33,11 +33,19 @@ class SshGithubImportResponse(BaseModel):
 
 class SshSettingsRequest(BaseModel):
     enabled: bool
-    #: ``None`` leaves any previously configured key(s) untouched; an empty
-    #: list clears them; a non-empty list replaces them. Each entry is one
-    #: authorized_keys-formatted line (as returned by the github-import
-    #: endpoint, or pasted directly by the user).
-    authorized_keys: list[str] | None = None
+    authorized_keys: list[str] | None = Field(
+        default=None,
+        description=(
+            "Omit this field (or send it as `null`) to leave any previously "
+            "configured key(s) untouched. Send an empty list `[]` to "
+            "explicitly clear them. Send a non-empty list to replace them. "
+            "These three cases are distinct — an empty list is NOT the same "
+            "as omitting the field, so don't default a form field to `[]` "
+            "unless you actually mean 'clear the key(s)'. Each entry is one "
+            "authorized_keys-formatted line (as returned by the "
+            "github-import endpoint, or pasted directly by the user)."
+        ),
+    )
 
 
 def make_ssh_router(

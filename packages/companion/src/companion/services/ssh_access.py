@@ -22,6 +22,7 @@ import base64
 import binascii
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,6 +32,27 @@ import httpx
 from companion.services import systemd1_dbus
 
 log = logging.getLogger(__name__)
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    """Write *text* to *path* via a temp file + fsync + rename.
+
+    ``companion-ssh-apply.sh`` (root) reads these same files concurrently
+    with this process writing them; a plain ``write_text()`` truncates in
+    place first, so a read racing the write could see an empty or partial
+    file. ``os.replace`` is atomic on the same filesystem (both files live
+    under the same ``data_dir``), so readers only ever see the old or the
+    new content, never a partial write.
+    """
+    tmp_path = path.with_name(path.name + ".tmp")
+    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, text.encode())
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.replace(tmp_path, path)
+
 
 _APPLY_UNIT = "companion-ssh-apply.service"
 _GITHUB_KEYS_URL = "https://github.com/{username}.keys"
@@ -114,6 +136,11 @@ async def fetch_github_keys(username: str, *, timeout: float = _GITHUB_FETCH_TIM
     use. GitHub publishes every account's registered SSH public keys there by
     design; no token or authentication is needed. This only fetches and
     validates — it does not apply anything.
+
+    Single attempt, no retry — this is a user-initiated Portal action (the
+    "Import" button), not a background job, so a transient failure is
+    surfaced immediately and the user can just click Import again rather
+    than this call silently retrying behind their back.
     """
     username = validate_github_username(username)
     url = _GITHUB_KEYS_URL.format(username=username)
@@ -123,8 +150,18 @@ async def fetch_github_keys(username: str, *, timeout: float = _GITHUB_FETCH_TIM
     except httpx.HTTPError as exc:
         raise GithubImportError(f"could not reach github.com: {exc}") from exc
 
-    if resp.status_code != 200:
+    if resp.status_code == 404:
         raise GithubImportError(f"no GitHub user {username!r} found")
+    if resp.status_code == 429:
+        raise GithubImportError("GitHub rate-limited this request — wait a minute and try again")
+    if resp.status_code >= 500:
+        raise GithubImportError(
+            f"GitHub returned a server error ({resp.status_code}) — try again shortly"
+        )
+    if resp.status_code != 200:
+        raise GithubImportError(
+            f"GitHub returned unexpected status {resp.status_code} for {username!r}"
+        )
 
     try:
         return validate_authorized_keys_block(resp.text)
@@ -193,12 +230,12 @@ class SshAccessService:
 
         if authorized_keys is not None:
             body = ("\n".join(authorized_keys) + "\n") if authorized_keys else ""
-            self._key_file.write_text(body)
+            _atomic_write(self._key_file, body)
 
         has_key = self._key_file.exists() and self._key_file.stat().st_size > 0
         if enabled and not has_key:
             raise ValueError("cannot enable SSH with no public key configured")
 
-        self._enabled_file.write_text("true\n" if enabled else "false\n")
+        _atomic_write(self._enabled_file, "true\n" if enabled else "false\n")
 
         await systemd1_dbus.start_unit(_APPLY_UNIT)

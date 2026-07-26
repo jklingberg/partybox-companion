@@ -14,6 +14,7 @@ from companion.services.ssh_access import (
     GithubImportError,
     InvalidKeyError,
     SshAccessService,
+    _atomic_write,
     fetch_github_keys,
     validate_authorized_keys_block,
     validate_github_username,
@@ -134,6 +135,27 @@ async def test_fetch_github_keys_404_raises() -> None:
             await fetch_github_keys("doesnotexist")
 
 
+async def test_fetch_github_keys_429_raises_rate_limit_error() -> None:
+    client = _fake_httpx_client(429, "rate limited")
+    with patch.object(ssh_access.httpx, "AsyncClient", return_value=client):
+        with pytest.raises(GithubImportError, match="rate-limited"):
+            await fetch_github_keys("octocat")
+
+
+async def test_fetch_github_keys_500_raises_server_error() -> None:
+    client = _fake_httpx_client(503, "Service Unavailable")
+    with patch.object(ssh_access.httpx, "AsyncClient", return_value=client):
+        with pytest.raises(GithubImportError, match="server error"):
+            await fetch_github_keys("octocat")
+
+
+async def test_fetch_github_keys_other_status_raises_generic_error() -> None:
+    client = _fake_httpx_client(301, "Moved")
+    with patch.object(ssh_access.httpx, "AsyncClient", return_value=client):
+        with pytest.raises(GithubImportError, match="unexpected status 301"):
+            await fetch_github_keys("octocat")
+
+
 async def test_fetch_github_keys_empty_body_raises() -> None:
     client = _fake_httpx_client(200, "")
     with patch.object(ssh_access.httpx, "AsyncClient", return_value=client):
@@ -154,6 +176,30 @@ async def test_fetch_github_keys_network_error_raises() -> None:
 async def test_fetch_github_keys_rejects_bad_username_before_network_call() -> None:
     with pytest.raises(GithubImportError):
         await fetch_github_keys("-bad")
+
+
+# ---------------------------------------------------------------------------
+# _atomic_write
+# ---------------------------------------------------------------------------
+
+
+def test_atomic_write_creates_file_with_content(tmp_path: Path) -> None:
+    target = tmp_path / "f"
+    _atomic_write(target, "hello\n")
+    assert target.read_text() == "hello\n"
+
+
+def test_atomic_write_overwrites_existing_content(tmp_path: Path) -> None:
+    target = tmp_path / "f"
+    target.write_text("old content that is longer than the new one\n")
+    _atomic_write(target, "new\n")
+    assert target.read_text() == "new\n"
+
+
+def test_atomic_write_leaves_no_tmp_file_behind(tmp_path: Path) -> None:
+    target = tmp_path / "f"
+    _atomic_write(target, "hello\n")
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["f"]
 
 
 # ---------------------------------------------------------------------------

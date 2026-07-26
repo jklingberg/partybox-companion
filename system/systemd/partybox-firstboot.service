@@ -4,10 +4,22 @@ Documentation=https://github.com/jklingberg/partybox-companion
 # See ADR-042 and image/config/partybox-firstboot.sh. Must run and complete
 # before any getty offers a login prompt, so the generated password is in
 # /etc/issue by the time anyone can actually log in.
+#
+# DefaultDependencies=no + After=<early target> + Before=sysinit.target +
+# WantedBy=sysinit.target is the same shape systemd's own
+# systemd-firstboot.service uses to guarantee it runs before anything that
+# depends on sysinit.target (which includes basic.target -> multi-user.target
+# -> getty.target and every getty/serial-getty instance -- none of them start
+# until sysinit.target is reached). The explicit Before= on the getty units
+# below is therefore redundant with Before=sysinit.target, kept only as
+# defense-in-depth documentation of intent. Conflicts=shutdown.target matches
+# the same upstream unit, so this never gets pulled in during a shutdown
+# transaction.
 ConditionPathExists=!/var/lib/companion/.firstboot-done
 DefaultDependencies=no
+Conflicts=shutdown.target
 After=local-fs.target
-Before=sysinit.target getty.target serial-getty@ttyAMA0.service getty@tty1.service
+Before=sysinit.target shutdown.target getty.target serial-getty@ttyAMA0.service getty@tty1.service
 Wants=local-fs.target
 
 [Service]
