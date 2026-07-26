@@ -25,6 +25,7 @@ from companion.services import pipewire_volume
 from companion.services.audio import AudioService
 from companion.services.pairing import PairingService, PairingState
 from companion.services.spotify import SpotifyService
+from companion.services.ssh_access import SshAccessService
 from companion.supervisor import Supervisor
 from companion.volume import VolumeState
 
@@ -155,6 +156,7 @@ def make_services_router(
     audio: AudioService | None = None,
     pairing: PairingService | None = None,
     supervisor: Supervisor | None = None,
+    ssh: SshAccessService | None = None,
     auth: Callable[..., Awaitable[None]] | None = None,
     pipewire_get_volume: Callable[[], Awaitable[int | None]] = pipewire_volume.get_volume,
     pipewire_set_volume: Callable[[int], Awaitable[bool]] = pipewire_volume.set_volume,
@@ -395,11 +397,16 @@ def make_services_router(
            remembered speaker — reverting to factory defaults.
         4. Restarts Spotify Connect so its advertised name reflects the
            reset immediately.
+        5. Disables SSH and clears the provisioned key(s) (ADR-042) — a
+           fresh image ships with SSH disabled and no key, so a reset must
+           match that per ADR-031's "indistinguishable from a freshly-flashed
+           image" contract; otherwise the previous owner's key would still
+           be able to log in after a reset.
 
-        Bond removal is best-effort: a BlueZ failure is logged but does not
-        abort the reset, so the configuration is always cleared. The appliance
-        keeps running and returns to the un-paired state a fresh image starts
-        in — no reboot required.
+        Bond removal and the SSH teardown are both best-effort: a failure in
+        either is logged but does not abort the reset, so the configuration
+        is always cleared. The appliance keeps running and returns to the
+        un-paired state a fresh image starts in — no reboot required.
 
         Requires authentication when an API key is configured (SEC-02) — this
         endpoint can wipe pairing, config, and bond state.
@@ -427,6 +434,13 @@ def make_services_router(
 
         defaults = SpotifySettings(backend=spotify.settings.backend)
         spotify.update_settings(defaults)
+
+        if ssh is not None:
+            try:
+                await ssh.apply(enabled=False, authorized_keys=[])
+            except Exception as exc:
+                log.warning("Factory reset: SSH access teardown failed: %s", exc)
+
         log.info("Factory reset complete — appliance returned to defaults")
 
     # ------------------------------------------------------------------

@@ -108,10 +108,14 @@ def make_ssh_router(
     async def put_ssh_settings(body: SshSettingsRequest) -> SshStatusResponse:
         """Apply SSH settings.
 
-        Returns immediately once the change is queued with systemd — the
-        root ``companion-ssh-apply.service`` unit applies it asynchronously
-        (typically well under a second). Poll ``GET /api/v1/ssh/status`` to
-        confirm, the same pattern ``GET /api/v1/wifi/status`` already uses.
+        Waits for ``companion-ssh-apply.service`` to actually finish applying
+        the change (see ``SshAccessService.apply`` / ``systemd1_dbus.
+        start_unit``) before responding, so the returned status reflects the
+        real post-apply outcome rather than a stale pre-change snapshot — the
+        unit itself completes in well under a second in practice. ``GET
+        /api/v1/ssh/status`` remains available to poll independently (e.g.
+        after a page reload), the same pattern ``GET /api/v1/wifi/status``
+        uses for the (genuinely long-running) WiFi connect flow.
         """
         authorized_keys = body.authorized_keys
         # An empty list (clear the configured key(s)) and None (leave them

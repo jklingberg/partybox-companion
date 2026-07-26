@@ -431,6 +431,7 @@ async def _run(
             audio=audio,
             pairing=pairing,
             supervisor=supervisor,
+            ssh=ssh_access,
             auth=auth,
         )
     )

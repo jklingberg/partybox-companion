@@ -122,12 +122,25 @@ surface is fragile across versions per ADR-021; `52-companion-logind.rules`,
 scoped to two specific stable action IDs per ADR-038) — here the unit name
 itself *is* the scope, which is narrower than either existing rule.
 
-`StartUnit` is fire-and-forget from Companion's point of view (matching the
-existing WiFi-provisioning UX: `PUT /api/v1/ssh/settings` returns
-immediately, the Portal re-polls `GET /api/v1/ssh/status` the same way it
-already polls `GET /api/v1/wifi/status`). The oneshot unit's own work is a
-handful of file/systemctl operations and completes in well under a second in
-practice.
+`start_unit()` waits for the triggered job's `JobRemoved` D-Bus signal before
+returning, rather than returning as soon as `StartUnit` hands back a queued
+job path. This isn't just "wait a bit longer for nicer UX": `mode="replace"`
+only preempts a *queued* job, not one already executing, so a naive
+fire-and-forget implementation would let a second `apply()` call arriving
+while the previous run is still executing get **merged** by systemd into
+that already-running job instead of starting a fresh one — silently
+dropping whatever new desired state the second caller had just written to
+disk, with no error surfaced anywhere. `SshAccessService.apply()` also holds
+an `asyncio.Lock` across its whole write-then-trigger-then-wait sequence, so
+two overlapping calls from Companion's own event loop can't even race each
+other into writing interleaved desired-state before either one triggers the
+unit. The oneshot unit's own work is a handful of file/systemctl operations
+and completes in well under a second in practice, so waiting for it is a
+short delay, not a long-poll — and it means `PUT /api/v1/ssh/settings`'s
+response already reflects the real, post-apply status rather than a stale
+pre-change one. `GET /api/v1/ssh/status` remains available to poll
+independently, the same pattern `GET /api/v1/wifi/status` uses for the
+(genuinely long-running) WiFi connect flow.
 
 **Rejected: a full D-Bus broker service.** A previous privileged-recovery
 discussion ([ADR-028](028-audio-readiness-model.md)'s deferred audio-recovery
@@ -171,6 +184,18 @@ generated value. This is a cosmetic-only gap (an operator who changes a
 password is, by definition, already aware of it); fixing it would mean
 hooking password-change events, judged as more complexity than the gap
 warrants.
+
+### 5. Factory reset disables SSH and clears the key
+
+[ADR-031](031-factory-reset-contract.md) requires new runtime state to
+either be torn down by `POST /api/v1/factory-reset` or explicitly documented
+as exempt — a fresh image ships with SSH disabled and no key, so the SSH
+state this ADR adds isn't exempt. `post_factory_reset()` calls
+`SshAccessService.apply(enabled=False, authorized_keys=[])` alongside the
+existing bond/config teardown, best-effort like the bond removal already is
+(a D-Bus failure here is logged, not fatal to the rest of the reset).
+Without this, a previous owner's key would still be able to log in as `pi`
+after a reset meant to return the appliance to factory defaults.
 
 ## Consequences
 

@@ -18,6 +18,7 @@ this module to read back.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import json
@@ -189,6 +190,13 @@ class SshAccessService:
         self._enabled_file = data_dir / "ssh_enabled"
         self._key_file = data_dir / "ssh_authorized_key"
         self._status_file = data_dir / "ssh_status.json"
+        # Serializes apply() end-to-end (write desired state -> trigger the
+        # root unit -> wait for it to finish, see systemd1_dbus.start_unit).
+        # Without this, two overlapping calls could both write their desired
+        # state before either triggers the unit, and the second trigger would
+        # get merged by systemd into the first's already-running job instead
+        # of starting a fresh run — silently dropping the second call's state.
+        self._lock = asyncio.Lock()
 
     def status(self) -> SshStatus:
         """Current SSH access state.
@@ -224,18 +232,32 @@ class SshAccessService:
         if *enabled* is ``True`` but no key would end up configured —
         refusing to bring up ``ssh.service`` with nothing able to
         authenticate against it (``PasswordAuthentication`` stays ``no``
-        regardless).
+        regardless). This check happens *before* any file is written, so a
+        rejected call is a true no-op: it never corrupts the previously
+        applied desired state (a naive write-then-validate order would leave
+        the key file cleared even though the call raised, and a later
+        unrelated call could then trigger the root unit against that
+        leftover empty file and delete a real, working key on the Pi).
+
+        Waits for ``companion-ssh-apply.service`` to actually finish (see
+        ``systemd1_dbus.start_unit``) before returning, so by the time this
+        coroutine completes, :meth:`status` already reflects the outcome.
         """
-        self._data_dir.mkdir(parents=True, exist_ok=True)
+        async with self._lock:
+            self._data_dir.mkdir(parents=True, exist_ok=True)
 
-        if authorized_keys is not None:
-            body = ("\n".join(authorized_keys) + "\n") if authorized_keys else ""
-            _atomic_write(self._key_file, body)
+            if authorized_keys is not None:
+                prospective_has_key = bool(authorized_keys)
+            else:
+                prospective_has_key = self._key_file.exists() and self._key_file.stat().st_size > 0
 
-        has_key = self._key_file.exists() and self._key_file.stat().st_size > 0
-        if enabled and not has_key:
-            raise ValueError("cannot enable SSH with no public key configured")
+            if enabled and not prospective_has_key:
+                raise ValueError("cannot enable SSH with no public key configured")
 
-        _atomic_write(self._enabled_file, "true\n" if enabled else "false\n")
+            if authorized_keys is not None:
+                body = ("\n".join(authorized_keys) + "\n") if authorized_keys else ""
+                _atomic_write(self._key_file, body)
 
-        await systemd1_dbus.start_unit(_APPLY_UNIT)
+            _atomic_write(self._enabled_file, "true\n" if enabled else "false\n")
+
+            await systemd1_dbus.start_unit(_APPLY_UNIT)

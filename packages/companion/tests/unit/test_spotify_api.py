@@ -341,6 +341,7 @@ def _reset_client(
     sink_address: str | None = None,
     audio: MagicMock | None = None,
     pairing: MagicMock | None = None,
+    ssh: MagicMock | None = None,
     daemon_settings: DaemonSettings | None = None,
     with_auth: bool = False,
 ) -> tuple[AsyncClient, MagicMock, ConfigStore]:
@@ -367,6 +368,7 @@ def _reset_client(
             store,
             audio=audio,
             pairing=pairing,
+            ssh=ssh,
             auth=make_auth_dependency(settings) if with_auth else None,
         )
     )
@@ -435,6 +437,38 @@ async def test_factory_reset_resilient_to_bond_removal_failure(tmp_path: Path) -
     # Config is still wiped even though bond removal raised.
     assert store.read() == PortalConfig()
     spotify.update_settings.assert_called_once()
+
+
+async def test_factory_reset_clears_ssh_access(tmp_path: Path) -> None:
+    """ADR-031: new runtime state must be torn down on reset or documented as
+    exempt. SSH access (ADR-042) isn't exempt -- a fresh image ships with SSH
+    disabled and no key, so reset must match that."""
+    ssh = MagicMock()
+    ssh.apply = AsyncMock()
+    client, _, _ = _reset_client(tmp_path, ssh=ssh)
+    async with client:
+        await client.post("/api/v1/factory-reset")
+    ssh.apply.assert_awaited_once_with(enabled=False, authorized_keys=[])
+
+
+async def test_factory_reset_resilient_to_ssh_teardown_failure(tmp_path: Path) -> None:
+    ssh = MagicMock()
+    ssh.apply = AsyncMock(side_effect=RuntimeError("dbus down"))
+    client, spotify, store = _reset_client(tmp_path, sink_address="50:1B:6A:14:FD:1D", ssh=ssh)
+    async with client:
+        r = await client.post("/api/v1/factory-reset")
+    assert r.status_code == 204
+    # Config is still wiped even though SSH teardown raised.
+    assert store.read() == PortalConfig()
+    spotify.update_settings.assert_called_once()
+
+
+async def test_factory_reset_skips_ssh_teardown_when_not_configured(tmp_path: Path) -> None:
+    """ssh=None (e.g. in tests that don't care about SSH) must not crash the reset."""
+    client, _, _ = _reset_client(tmp_path)
+    async with client:
+        r = await client.post("/api/v1/factory-reset")
+    assert r.status_code == 204
 
 
 # ---------------------------------------------------------------------------

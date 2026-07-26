@@ -239,13 +239,31 @@ async def test_apply_disable_does_not_require_key(tmp_path: Path) -> None:
     assert (tmp_path / "ssh_enabled").read_text().strip() == "false"
 
 
-async def test_apply_empty_list_clears_key(tmp_path: Path) -> None:
+async def test_apply_empty_list_clears_key_when_disabling(tmp_path: Path) -> None:
     svc = SshAccessService(tmp_path)
     with patch.object(ssh_access.systemd1_dbus, "start_unit", new=AsyncMock()):
         await svc.apply(enabled=True, authorized_keys=[_GOOD_KEY])
+        await svc.apply(enabled=False, authorized_keys=[])
+    assert (tmp_path / "ssh_authorized_key").read_text() == ""
+
+
+async def test_apply_rejected_request_does_not_touch_existing_key(tmp_path: Path) -> None:
+    """A rejected apply() must be a true no-op -- it must never clear the
+    previously configured (and still valid, still applied) key file, even
+    though the *request itself* asked to clear it. Otherwise a later,
+    unrelated call (e.g. just disabling SSH) would trigger the root unit
+    against a corrupted, already-empty key file and delete a real key the
+    user never asked to remove."""
+    svc = SshAccessService(tmp_path)
+    with patch.object(ssh_access.systemd1_dbus, "start_unit", new=AsyncMock()) as start_unit:
+        await svc.apply(enabled=True, authorized_keys=[_GOOD_KEY])
+        start_unit.reset_mock()
         with pytest.raises(ValueError, match="no public key"):
             await svc.apply(enabled=True, authorized_keys=[])
-    assert (tmp_path / "ssh_authorized_key").read_text() == ""
+    # Rejected before any write -- the real, previously-applied key survives.
+    assert (tmp_path / "ssh_authorized_key").read_text() == _GOOD_KEY + "\n"
+    assert (tmp_path / "ssh_enabled").read_text().strip() == "true"
+    start_unit.assert_not_called()
 
 
 def test_status_reads_status_file_over_desired_state(tmp_path: Path) -> None:
