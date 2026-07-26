@@ -4,7 +4,7 @@
     "dockerfile": "Dockerfile"
   },
 
-  // GitHub CLI and Node.js (for Claude Code)
+  // GitHub CLI and Node.js (for Claude Code and Codex CLI)
   "features": {
     "ghcr.io/devcontainers/features/github-cli:1": {},
     "ghcr.io/devcontainers/features/node:1": {
@@ -29,16 +29,23 @@
   // GH_TOKEN is sourced from the host so the gh CLI can reach the GitHub API
   // (the forwarded SSH agent only covers git-over-SSH, not the API). Set it on
   // the host with: export GH_TOKEN=$(gh auth token). Empty if unset on host.
+  //
+  // OPENAI_API_KEY is likewise sourced from the host for Codex CLI, in case
+  // API-key auth is used instead of the browser-based ChatGPT OAuth login.
+  // Empty if unset on host.
   "remoteEnv": {
     "PATH": "${containerEnv:PATH}:/home/vscode/.local/bin",
     "CLAUDE_CONFIG_DIR": "/home/vscode/.claude",
-    "GH_TOKEN": "${localEnv:GH_TOKEN}"
+    "GH_TOKEN": "${localEnv:GH_TOKEN}",
+    "OPENAI_API_KEY": "${localEnv:OPENAI_API_KEY}"
   },
 
-  // Named volume keeps Claude Code state (OAuth credentials, .claude.json,
-  // projects/<session>.jsonl history) across container rebuilds.
+  // Named volumes keep CLI state across container rebuilds: Claude Code
+  // (OAuth credentials, .claude.json, projects/<session>.jsonl history) and
+  // Codex CLI (~/.codex/auth.json, config.toml).
   "mounts": [
-    "source=partybox-claude-config,target=/home/vscode/.claude,type=volume"
+    "source=partybox-claude-config,target=/home/vscode/.claude,type=volume",
+    "source=partybox-codex-config,target=/home/vscode/.codex,type=volume"
   ],
 
   "customizations": {
@@ -87,7 +94,8 @@
   },
 
   // Runs once after the container is first created. See post-create.sh for the
-  // individual steps (volume chown, workspace install, git hooks, Claude Code).
+  // individual steps (volume chown, workspace install, git hooks, Claude Code,
+  // Codex CLI).
   "postCreateCommand": "./.devcontainer/post-create.sh",
 
   "remoteUser": "vscode"
