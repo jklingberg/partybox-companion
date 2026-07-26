@@ -115,18 +115,21 @@ _WEDGE_CONNECT_FAILURES = 3
 # wedge produces a dense run of them.
 _WEDGE_WINDOW = 600.0
 
-# Total wall-clock time without a successful connect — regardless of how
-# that time was filled — before requesting adapter recovery. Complements
+# Total wall-clock time spent in a confirmed-trouble state — the speaker's
+# beacon is present but its control channel isn't, an explicit connect
+# failure, or the adapter erroring on scan — before requesting adapter
+# recovery. Deliberately NOT counted while a scan cleanly finds no beacon at
+# all: that's the ordinary "speaker is off" state, not evidence of a wedge
+# (see _scan and _note_unreachable_duration). Complements
 # _WEDGE_CONNECT_FAILURES/_WEDGE_WINDOW's density check rather than
 # replacing it: a 2026-07-23 outage ran ~2h53m with only 6 explicit connect
 # failures, each spaced 9-21 minutes apart (every gap just outside
 # _WEDGE_WINDOW, so the density counter kept resetting to 0) surrounded by
-# ~150 clean-empty scans that move no counter at all. Neither existing
-# heuristic ever fired. This one only looks at "how long has it been since
-# we were last connected," so it catches that shape too. Set comfortably
-# above _WEDGE_WINDOW so a single isolated failure during a normal
-# reconnect (post-power-command BLE stack reset, one stale-address miss)
-# never trips it on its own.
+# ~150 clean-empty scans (the speaker's beacon was present throughout, per
+# the btmon capture — see docs/adr/042) that moved no counter at all.
+# Neither existing heuristic ever fired. Set comfortably above _WEDGE_WINDOW
+# so a single isolated failure during a normal reconnect (post-power-command
+# BLE stack reset, one stale-address miss) never trips it on its own.
 _WEDGE_UNREACHABLE_TIMEOUT = 600.0
 
 # Consecutive scan *errors* (Scanner.find raising — distinct from a clean
@@ -582,7 +585,6 @@ class DeviceManager:
         log.info("scan attempt %d", attempt)
         device = await self._scan()
         if device is None:
-            await self._note_unreachable_duration()
             await self._sleep_and_backoff()
             return
 
@@ -850,13 +852,27 @@ class DeviceManager:
     async def _note_unreachable_duration(self) -> None:
         """Escalate to adapter recovery after a long stretch with no successful connect.
 
-        Runs alongside ``_note_connect_failure``'s density check on both
-        failure paths in ``_connect_and_maintain`` (empty scan and failed
-        connect) — see ``_WEDGE_UNREACHABLE_TIMEOUT`` for why the density
-        check alone isn't enough. ``_unreachable_since`` is set here, lazily,
-        on the first failure of a stretch (cleared on the next successful
+        Runs alongside ``_note_connect_failure``'s density check — see
+        ``_WEDGE_UNREACHABLE_TIMEOUT`` for why the density check alone isn't
+        enough. ``_unreachable_since`` is set here, lazily, on the first
+        qualifying failure of a stretch (cleared on the next successful
         connect), so this is also what starts the clock, not just what reads
         it.
+
+        Deliberately **not** called for every empty scan: a scan that finds
+        no beacon at all means the speaker is off or out of range, the most
+        common and entirely ordinary reason a scan finds nothing, and is not
+        evidence of a wedge. Callers only reach this method when there is
+        actual trouble to measure — the speaker's beacon is present but its
+        control channel isn't (``_scan``'s empty-scan-with-beacon branch), an
+        explicit connect failure (``_note_connect_failure``'s caller in
+        ``_connect_and_maintain``), or the adapter itself erroring on scan
+        (``_scan``'s except branch). ``_scan`` clears ``_unreachable_since``
+        outright when a scan cleanly finds no beacon, so an ordinary
+        "speaker is switched off" stretch can never itself accumulate toward
+        an adapter power-cycle — see review feedback on #88: escalating on
+        every empty scan turned that ordinary state into periodic resets
+        that dropped other live connections on the adapter for no reason.
         """
         now = asyncio.get_running_loop().time()
         if self._unreachable_since is None:
@@ -991,6 +1007,10 @@ class DeviceManager:
         except Exception as exc:
             log.warning("scan failed: %s", exc)
             await self._note_scan_error()
+            # The adapter itself being unusable is real trouble regardless of
+            # beacon presence — we can't even observe the beacon to know
+            # either way. See _note_unreachable_duration's gating note.
+            await self._note_unreachable_duration()
             return None
         self._scan_errors = 0
         # Only meaningful while disconnected (speaker_state ignores it
@@ -999,6 +1019,20 @@ class DeviceManager:
         self._set_snapshot(replace(self._snapshot, beacon_seen=result.beacon_seen))
         if result.device is None:
             await self._note_empty_scan()
+            if result.beacon_seen:
+                # The speaker is confirmed present (FDDF beacon) but its
+                # connectable control advert isn't — genuine trouble, not a
+                # speaker that's simply off. Count it.
+                await self._note_unreachable_duration()
+            else:
+                # No beacon at all: the speaker is off or out of range, the
+                # single most common and entirely expected reason a scan
+                # finds nothing. Not evidence of a wedge — clear the clock so
+                # this ordinary state never itself escalates to an adapter
+                # power-cycle (which would drop other live connections on the
+                # adapter for no reason). Review feedback on #88: escalating
+                # here turned "speaker switched off" into periodic resets.
+                self._unreachable_since = None
         else:
             self._empty_scans = 0
         return result.device

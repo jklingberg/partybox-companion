@@ -1152,6 +1152,101 @@ async def test_unreachable_duration_ignores_empty_scans_without_recover_fn() -> 
     await manager._note_unreachable_duration()  # must not raise
 
 
+async def test_empty_scan_without_beacon_does_not_accumulate_unreachable_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A clean scan finding no beacon at all means the speaker is off or out
+    of range — the ordinary case, not evidence of trouble. It must not move
+    _unreachable_since forward, and repeated cycles of it must never
+    escalate to adapter recovery, however long they go on. Review feedback
+    on #88: the original implementation counted every empty scan, so a
+    speaker left switched off for _WEDGE_UNREACHABLE_TIMEOUT triggered a
+    Bluetooth adapter power-cycle for no reason, repeating every
+    _RECOVERY_COOLDOWN indefinitely."""
+    recoveries: list[bool] = []
+
+    async def recover() -> bool:
+        recoveries.append(True)
+        return True
+
+    async def _no_beacon(*_: object, **__: object) -> ScanResult:
+        return ScanResult(device=None, beacon_seen=False)
+
+    monkeypatch.setattr("partyboxd.device.manager.Scanner.find_with_presence", _no_beacon)
+    manager = DeviceManager(_settings(), adapter_recover_fn=recover)
+
+    for _ in range(20):
+        await manager._scan()
+        assert manager._unreachable_since is None
+
+    assert recoveries == []
+
+
+async def test_empty_scan_with_beacon_accumulates_and_escalates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A scan that sees the speaker's FDDF beacon but no connectable
+    candidate is genuine trouble (control channel unreachable despite the
+    speaker being confirmed present/powered) and must still escalate once
+    _WEDGE_UNREACHABLE_TIMEOUT elapses."""
+    recoveries: list[bool] = []
+
+    async def recover() -> bool:
+        recoveries.append(True)
+        return True
+
+    async def _beacon_no_candidate(*_: object, **__: object) -> ScanResult:
+        return ScanResult(device=None, beacon_seen=True)
+
+    monkeypatch.setattr("partyboxd.device.manager.Scanner.find_with_presence", _beacon_no_candidate)
+    manager = DeviceManager(_settings(), adapter_recover_fn=recover)
+
+    await manager._scan()
+    assert manager._unreachable_since is not None
+    assert recoveries == []
+
+    manager._unreachable_since -= _WEDGE_UNREACHABLE_TIMEOUT + 1
+    await manager._scan()
+    assert recoveries == [True]
+
+
+async def test_beacon_loss_resets_unreachable_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A stretch of beacon-present-but-uncontrollable trouble must not carry
+    its elapsed time across into a later, unrelated "speaker is off"
+    stretch — the clock resets the moment a scan cleanly finds no beacon."""
+    manager = _make_manager()
+    manager._unreachable_since = asyncio.get_running_loop().time() - 1000
+
+    async def _no_beacon(*_: object, **__: object) -> ScanResult:
+        return ScanResult(device=None, beacon_seen=False)
+
+    monkeypatch.setattr("partyboxd.device.manager.Scanner.find_with_presence", _no_beacon)
+    await manager._scan()
+    assert manager._unreachable_since is None
+
+
+async def test_scan_error_still_accumulates_unreachable_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Scanner.find raising means the adapter itself is unusable — real
+    trouble regardless of beacon presence, since a broken scan can't observe
+    the beacon either way. Must still count toward escalation."""
+    recoveries: list[bool] = []
+
+    async def recover() -> bool:
+        recoveries.append(True)
+        return True
+
+    async def _broken_scan(*_: object, **__: object) -> ScanResult:
+        raise RuntimeError("adapter gone")
+
+    monkeypatch.setattr("partyboxd.device.manager.Scanner.find_with_presence", _broken_scan)
+    manager = DeviceManager(_settings(), adapter_recover_fn=recover)
+
+    await manager._scan()
+    assert manager._unreachable_since is not None
+
+
 # ---------------------------------------------------------------------------
 # manually requested adapter reset (Portal "Reset Bluetooth" button)
 # ---------------------------------------------------------------------------
