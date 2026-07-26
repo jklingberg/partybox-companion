@@ -26,6 +26,7 @@ from partyboxd.device.events import (
 )
 from partyboxd.device.manager import (
     _HEALTH_CHECK_FAILURE_LIMIT,
+    _POWER_COMMAND_GRACE,
     _RECONNECT_MAX,
     _WEDGE_UNREACHABLE_TIMEOUT,
     _WEDGE_WINDOW,
@@ -852,6 +853,46 @@ async def test_connect_failures_in_power_command_grace_are_not_counted() -> None
         await manager._note_connect_failure()
     assert calls == []
     assert manager._connect_failures == 0
+
+
+async def test_unreachable_duration_exempts_power_command_grace_window() -> None:
+    """Same ADR-034 exemption as _note_connect_failure, for the elapsed-time
+    path: repeated power-cycling where each reconnect attempt fails inside
+    its own grace window must never accumulate toward
+    _WEDGE_UNREACHABLE_TIMEOUT, however long it goes on. Review feedback on
+    #88 (round 2) — the density counter was exempted but the elapsed-time
+    counter wasn't, so this false-positive class was only half-fixed."""
+    recoveries: list[bool] = []
+
+    async def recover() -> bool:
+        recoveries.append(True)
+        return True
+
+    manager = DeviceManager(_settings(), adapter_recover_fn=recover)
+    manager._last_power_command = asyncio.get_running_loop().time()
+    for _ in range(10):
+        await manager._note_unreachable_duration()
+        assert manager._unreachable_since is None
+    assert recoveries == []
+
+
+async def test_unreachable_duration_resumes_after_grace_window_expires() -> None:
+    """Once the grace window elapses, continued trouble must still escalate
+    — the exemption only covers the ADR-034 reset stretch itself, not
+    unreachability that outlives it."""
+    recoveries: list[bool] = []
+
+    async def recover() -> bool:
+        recoveries.append(True)
+        return True
+
+    manager = DeviceManager(_settings(), adapter_recover_fn=recover)
+    manager._last_power_command = asyncio.get_running_loop().time() - _POWER_COMMAND_GRACE - 1
+    await manager._note_unreachable_duration()
+    assert manager._unreachable_since is not None
+    manager._unreachable_since -= _WEDGE_UNREACHABLE_TIMEOUT + 1
+    await manager._note_unreachable_duration()
+    assert recoveries == [True]
 
 
 async def test_recovery_cooldown_suppresses_repeat_recovery() -> None:

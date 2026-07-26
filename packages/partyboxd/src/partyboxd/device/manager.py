@@ -127,9 +127,16 @@ _WEDGE_WINDOW = 600.0
 # _WEDGE_WINDOW, so the density counter kept resetting to 0) surrounded by
 # ~150 clean-empty scans (the speaker's beacon was present throughout, per
 # the btmon capture — see docs/adr/042) that moved no counter at all.
-# Neither existing heuristic ever fired. Set comfortably above _WEDGE_WINDOW
-# so a single isolated failure during a normal reconnect (post-power-command
-# BLE stack reset, one stale-address miss) never trips it on its own.
+# Neither existing heuristic ever fired. Also exempts the ADR-034
+# post-power-command grace window, same as _WEDGE_CONNECT_FAILURES (see
+# _note_unreachable_duration). Set equal to _WEDGE_WINDOW — not a
+# coincidence to preserve, just this constant's own floor for the same
+# reason: a single isolated failure during a normal reconnect
+# (post-power-command BLE stack reset, one stale-address miss) shouldn't
+# trip it on its own, and 600s already proved long enough for that in
+# practice. The two constants measure different things (density between
+# explicit failures vs. total elapsed time) and can be tuned independently;
+# nothing depends on them staying equal.
 _WEDGE_UNREACHABLE_TIMEOUT = 600.0
 
 # Consecutive scan *errors* (Scanner.find raising — distinct from a clean
@@ -873,8 +880,27 @@ class DeviceManager:
         an adapter power-cycle — see review feedback on #88: escalating on
         every empty scan turned that ordinary state into periodic resets
         that dropped other live connections on the adapter for no reason.
+
+        Also exempts the ADR-034 post-power-command grace window, same as
+        ``_note_connect_failure``: the speaker resets its own BLE stack for
+        ~15-17s after every power command, so failures in that window are
+        expected and must not accrue wall-clock time toward
+        ``_WEDGE_UNREACHABLE_TIMEOUT`` — otherwise repeated power-cycling
+        (e.g. the documented restart flow, or a Home Assistant automation)
+        where each reconnect attempt happens to fail inside its own grace
+        window could accumulate straight through to a real, unwanted
+        adapter recovery. ``_unreachable_since`` should already be ``None``
+        on entry to a grace window (it's only ever set after a successful
+        connect+command), so skipping the body here is sufficient — no
+        stale timestamp to also clear.
         """
         now = asyncio.get_running_loop().time()
+        if (
+            self._last_power_command is not None
+            and now - self._last_power_command < _POWER_COMMAND_GRACE
+        ):
+            log.debug("unreachable-duration check inside post-power-command grace window")
+            return
         if self._unreachable_since is None:
             self._unreachable_since = now
             return

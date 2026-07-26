@@ -76,6 +76,32 @@ async def test_reclaim_malformed_output_reports_false(monkeypatch: pytest.Monkey
     assert await disconnect_stale_speaker_links() is False
 
 
+async def test_reclaim_malformed_seen_does_not_mask_valid_count(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A malformed seen field must not shadow an otherwise-valid count: a
+    real successful reclaim (count=1) reported as False here would leave the
+    manager's retry backoff in place instead of resetting it for an
+    immediate rescan."""
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _script_exec("ok:1:notanumber"))
+    with caplog.at_level(logging.WARNING, logger="companion.services.le_reclaim"):
+        assert await disconnect_stale_speaker_links() is True
+    assert any("malformed seen count" in r.message for r in caplog.records)
+
+
+async def test_reclaim_missing_seen_with_zero_count_logs_nothing(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Old-format "ok:0" (no seen count at all) must not be treated the same
+    as a confirmed seen=0 — the wrapper has no basis to claim BlueZ's cache
+    was empty when the helper never reported a seen count in the first
+    place."""
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _script_exec("ok:0"))
+    with caplog.at_level(logging.DEBUG, logger="companion.services.le_reclaim"):
+        assert await disconnect_stale_speaker_links() is False
+    assert not any("PartyBox-named" in r.message for r in caplog.records)
+
+
 async def test_reclaim_times_out_to_false(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(le_reclaim, "_RECLAIM_TIMEOUT", 0.05)
 

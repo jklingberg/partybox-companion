@@ -59,13 +59,25 @@ async def disconnect_stale_speaker_links() -> bool:
         parts = line[len("ok:") :].split(":")
         try:
             count = int(parts[0])
-            seen = int(parts[1]) if len(parts) > 1 else None
         except ValueError:
             log.warning("LE reclaim: malformed helper output %r", line)
             return False
+        # Parsed separately from count: a malformed/missing seen field (old-
+        # format "ok:<n>" output, or version skew between this wrapper and
+        # the _le_reclaim helper) must not mask an otherwise-valid count —
+        # that would report a real successful reclaim as a failure and leave
+        # the retry backoff in place instead of resetting it.
+        seen: int | None = None
+        if len(parts) > 1:
+            try:
+                seen = int(parts[1])
+            except ValueError:
+                log.warning("LE reclaim: malformed seen count in helper output %r", line)
         if count > 0:
             log.info("LE reclaim: disconnected %d stale speaker link(s)", count)
-        elif seen:
+        elif seen == 0:
+            log.debug("LE reclaim: no PartyBox-named LE device objects in BlueZ's cache")
+        elif seen is not None:
             # Previously silent — during a 2026-07-23 outage this path ran an
             # estimated 40+ times with no way to tell "BlueZ has no record of
             # the speaker" apart from "saw it, but not connected".
@@ -74,8 +86,8 @@ async def disconnect_stale_speaker_links() -> bool:
                 "our adapter, none connected — nothing to reclaim",
                 seen,
             )
-        else:
-            log.debug("LE reclaim: no PartyBox-named LE device objects in BlueZ's cache")
+        # else: seen is unknown (old-format output, or its field didn't
+        # parse) — no diagnostic claim to make either way.
         return count > 0
     log.warning(
         "LE reclaim failed: %s (stderr: %s)",

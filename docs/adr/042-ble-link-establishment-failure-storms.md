@@ -124,18 +124,40 @@ widely-spaced explicit failures in between.
 
 **Add an elapsed-time-based escalation, additive to the existing density
 check.** `DeviceManager` now tracks `_unreachable_since` (set on the first
-failure of a stretch — either a clean-empty scan or a failed connect;
-cleared on the next successful connect) and a new
-`_note_unreachable_duration()` checks it on every failure cycle alongside
+*qualifying* failure of a stretch; cleared on the next successful connect)
+and a new `_note_unreachable_duration()` checks it alongside
 `_note_connect_failure`'s existing density check. Once
-`_WEDGE_UNREACHABLE_TIMEOUT` (600s — comfortably above `_WEDGE_WINDOW`, so an
-isolated post-power-command reconnect never trips it) elapses without a
-successful connect, it requests adapter recovery via the same
-`_maybe_recover()`/`_RECOVERY_COOLDOWN` path the density check already uses —
-regardless of how that time was filled. Applied retroactively to the
-2026-07-23 outage, this would have triggered an adapter power-cycle at
-roughly the ten-minute mark instead of leaving the speaker unreachable for
-~2h53m.
+`_WEDGE_UNREACHABLE_TIMEOUT` (600s — equal to `_WEDGE_WINDOW`, not by
+necessity but because that value already proved long enough to not trip on
+an isolated post-power-command reconnect) elapses without a successful
+connect, it requests adapter recovery via the same
+`_maybe_recover()`/`_RECOVERY_COOLDOWN` path the density check already uses.
+
+Not every failure qualifies, deliberately — two review rounds on the PR that
+shipped this (#88) tightened the original "regardless of how that time was
+filled" framing:
+
+- A clean scan that finds no beacon at all — the speaker is off or out of
+  range, the ordinary case — does **not** count, and actively clears
+  `_unreachable_since`. The first version of this change counted every
+  empty scan, which meant a speaker simply left switched off for
+  `_WEDGE_UNREACHABLE_TIMEOUT` triggered a real adapter power-cycle, and
+  since the clock was never cleared without a successful connect, it
+  repeated every `_RECOVERY_COOLDOWN` indefinitely — dropping other live
+  connections on the adapter for a state that was never actually wrong.
+- Failures inside the ADR-034 post-power-command grace window are exempted,
+  same as `_note_connect_failure`. Without this, repeated power-cycling
+  (the documented restart flow, or a Home Assistant automation) where each
+  reconnect attempt happens to fail inside its own ~15-17s grace window
+  could accumulate straight through to an unwanted recovery, even though
+  every individual failure is the expected, benign ADR-034 shape.
+
+What *does* count: the speaker's beacon present but its control channel
+isn't, an explicit connect failure, or the adapter erroring on scan — outside
+any active grace window. Applied to the 2026-07-23 outage (whose empty scans
+were beacon-present throughout, per the capture above), this would have
+triggered an adapter power-cycle at roughly the ten-minute mark instead of
+leaving the speaker unreachable for ~2h53m.
 
 This does not fix the underlying HCI 0x3E link-establishment failures — that
 remains either an RF-environment condition or a BCM4345 controller quirk,
