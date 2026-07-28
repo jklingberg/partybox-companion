@@ -107,6 +107,24 @@ class ControlTransport(ABC):
     def is_connected(self) -> bool:
         """Whether the transport currently has a live connection."""
 
+    @property
+    def is_disconnect_confirmed(self) -> bool:
+        """Whether an unexpected disconnect is already known to the transport.
+
+        This is deliberately narrower than ``not is_connected``: a clean
+        caller-initiated disconnect is not an unexpected loss. It lets a
+        caller distinguish a failed I/O operation that may be transient from
+        one that raced with a disconnect callback that has since confirmed the
+        link is gone. Concrete transports that cannot make that distinction
+        may retain the safe default of ``False``.
+
+        ``True`` is only permitted for a platform-confirmed unexpected loss
+        (for example, a disconnect callback), never from an I/O error or
+        cached connection state. ``False`` is safe: it preserves the existing
+        retry behaviour and can at worst defer to the passive disconnect path.
+        """
+        return False
+
     @abstractmethod
     async def connect(self) -> None:
         """Establish the connection.

@@ -167,19 +167,24 @@ count-based limit to feel wrong in practice, but no evidence yet that it does.
   across BlueZ upgrades, but this hasn't been verified against every BlueZ
   release, and this codebase currently only runs on the Pi's Linux/BlueZ
   stack in practice — this is documented here rather than left implicit.
-- **Known gap, not addressed here:** a real disconnect racing with an
-  in-flight `verify_connection()`/`_poll_liveness()` call could, depending on
-  exactly which error bleak surfaces for that specific timing, be classified
-  as transient for one cycle rather than immediately as
-  `ConfirmedDisconnectError`. Bounded, not open-ended: the very next loop
-  iteration's `drain_until_disconnect()` reads the already-queued disconnect
-  sentinel and raises immediately via the passive path (which doesn't go
-  through the retry-tolerant branch at all), so the cost is at most one extra
-  `_HEALTH_CHECK_INTERVAL`/`_STREAMING_HEALTH_CHECK_INTERVAL` (~15s/~60s), not
-  the full retry budget. Not fixed in this PR — would require re-checking the
-  transport's internal `_lost` state from outside its own encapsulation, which
-  wasn't judged worth the coupling for a narrow, already-bounded race. Tracked
-  in #73 so it isn't forgotten once v1.0 ships.
+- **The racing-disconnect gap is closed by #73.** `ControlTransport` exposes
+  `is_disconnect_confirmed`, a narrow read-only query rather than its private
+  `_lost` implementation detail. If a probe surfaces a generic
+  `ConnectionLostError`/`TimeoutError` but bleak's disconnected callback has
+  confirmed the loss by the time the health-check handles it, the manager
+  raises `ConfirmedDisconnectError` immediately instead of consuming one
+  retry cycle. Transports that cannot make this distinction safely return
+  `False`, preserving the transient-failure behaviour.
+  Returning `True` is permitted only after a platform-confirmed *unexpected*
+  loss (such as bleak's disconnect callback), never from a failed I/O call or
+  cached connection state; a false positive would incorrectly suppress a
+  transient retry. `False` is therefore the safe default: it preserves the
+  existing retry behaviour and leaves the passive disconnect path to resolve
+  the event. If the callback arrives just after this check, the next loop
+  iteration recreates `drain_until_disconnect()`, which consumes its queued
+  sentinel immediately before another health probe can run. This query is used
+  only in `_drain_with_health_check()`; reconnect starts with a fresh transport
+  lifecycle and does not consult it.
 - **Not yet confirmed end-to-end.** The original failure is intermittent;
   there had not yet been a second natural occurrence, post-fix, to directly
   observe "would have disconnected under the old code, tolerated under the

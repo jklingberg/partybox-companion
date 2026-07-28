@@ -348,6 +348,34 @@ async def test_health_check_does_not_retry_confirmed_disconnect(
     assert calls == 1  # no retry
 
 
+async def test_health_check_does_not_retry_disconnect_confirmed_during_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A generic probe failure must not consume a retry if the disconnect
+    callback confirms the loss before the health-check handles that failure."""
+    monkeypatch.setattr("partyboxd.device.manager._HEALTH_CHECK_INTERVAL", 0.01)
+    manager = _make_manager()
+    transport = MockTransport(address="AA:BB:CC:DD:EE:FF")
+    await transport.connect()
+    device = PartyBoxDevice._from_transport(transport)
+    monkeypatch.setattr(device, "drain_until_disconnect", _hanging_drain)
+
+    calls = 0
+
+    async def racing_disconnect() -> None:
+        nonlocal calls
+        calls += 1
+        transport.drop()  # equivalent to bleak's callback winning the race
+        raise ConnectionLostError("probe failed as the peer disconnected")
+
+    monkeypatch.setattr(device, "verify_connection", racing_disconnect)
+    monkeypatch.setattr(manager, "_poll_liveness", AsyncMock())
+
+    with pytest.raises(ConfirmedDisconnectError):
+        await manager._drain_with_health_check(device)
+    assert calls == 1
+
+
 async def test_health_check_tolerates_failure_then_passive_disconnect(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -79,6 +79,11 @@ class MockTransport(ControlTransport):
     def is_connected(self) -> bool:
         return self._connected
 
+    @property
+    def is_disconnect_confirmed(self) -> bool:
+        """Whether :meth:`drop` has simulated an unexpected disconnect."""
+        return self._lost
+
     async def connect(self) -> None:
         if self._connected:
             return
