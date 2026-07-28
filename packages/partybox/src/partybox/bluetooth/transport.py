@@ -117,6 +117,11 @@ class ControlTransport(ABC):
         one that raced with a disconnect callback that has since confirmed the
         link is gone. Concrete transports that cannot make that distinction
         may retain the safe default of ``False``.
+
+        ``True`` is only permitted for a platform-confirmed unexpected loss
+        (for example, a disconnect callback), never from an I/O error or
+        cached connection state. ``False`` is safe: it preserves the existing
+        retry behaviour and can at worst defer to the passive disconnect path.
         """
         return False
 

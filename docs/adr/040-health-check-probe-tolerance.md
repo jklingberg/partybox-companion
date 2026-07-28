@@ -175,6 +175,16 @@ count-based limit to feel wrong in practice, but no evidence yet that it does.
   raises `ConfirmedDisconnectError` immediately instead of consuming one
   retry cycle. Transports that cannot make this distinction safely return
   `False`, preserving the transient-failure behaviour.
+  Returning `True` is permitted only after a platform-confirmed *unexpected*
+  loss (such as bleak's disconnect callback), never from a failed I/O call or
+  cached connection state; a false positive would incorrectly suppress a
+  transient retry. `False` is therefore the safe default: it preserves the
+  existing retry behaviour and leaves the passive disconnect path to resolve
+  the event. If the callback arrives just after this check, the next loop
+  iteration recreates `drain_until_disconnect()`, which consumes its queued
+  sentinel immediately before another health probe can run. This query is used
+  only in `_drain_with_health_check()`; reconnect starts with a fresh transport
+  lifecycle and does not consult it.
 - **Not yet confirmed end-to-end.** The original failure is intermittent;
   there had not yet been a second natural occurrence, post-fix, to directly
   observe "would have disconnected under the old code, tolerated under the
