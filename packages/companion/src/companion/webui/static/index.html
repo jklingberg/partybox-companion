@@ -598,22 +598,17 @@
       </div>
     </div>
 
-    <div class="btn-row">
-      <button class="btn btn-heat" data-action="save-settings">Save</button>
-      <button class="btn btn-ghost" data-action="close-settings">Cancel</button>
-    </div>
-
     <div class="section" id="ssh-section">
       <div class="section-title">SSH access</div>
       <div class="field-hint" style="margin-bottom:14px">
         Off by default. This box always shows what's currently authorized —
-        edit it and Apply to change that. Password login is never available.
+        edit it and Save below to change that. Password login is never available.
       </div>
       <div class="field">
         <label for="ssh-key-input">Authorized public key(s)</label>
         <textarea id="ssh-key-input" rows="3" placeholder="ssh-ed25519 AAAA... (one per line)"
           style="resize:vertical;min-height:46px;background:var(--bg);border:1px solid var(--border);border-radius:var(--r-sm);color:var(--ink);padding:12px 14px;font-size:13px;font-family:ui-monospace,monospace;width:100%"></textarea>
-        <span class="field-hint">One key per line. Add a line and Apply to allow it in; delete a line (or clear the box) and Apply to remove it — an empty box means SSH is off.</span>
+        <span class="field-hint">One key per line. Add a line to allow it in; delete a line (or clear the box) to remove it — an empty box means SSH is off. Takes effect when you click Save below.</span>
       </div>
       <div class="field" style="flex-direction:row;gap:8px;margin-top:0;align-items:flex-end">
         <div style="flex:1">
@@ -623,10 +618,12 @@
         <button class="btn btn-sm" id="btn-ssh-github-import" data-action="ssh-github-import" style="height:46px">Import</button>
       </div>
       <div class="flow-msg info" id="ssh-msg" style="text-align:left;margin-top:8px"></div>
-      <div class="btn-row" style="margin-top:14px">
-        <button class="btn btn-heat" data-action="save-ssh">Apply SSH settings</button>
-      </div>
       <div class="field-hint" id="ssh-status-line" style="margin-top:10px"></div>
+    </div>
+
+    <div class="btn-row">
+      <button class="btn btn-heat" data-action="save-settings">Save</button>
+      <button class="btn btn-ghost" data-action="close-settings">Cancel</button>
     </div>
 
     <div class="section section-danger">
@@ -1501,7 +1498,6 @@ document.addEventListener('click', e => {
     'close-settings': closeSettings,
     'save-settings': saveSettings,
     'ssh-github-import': sshGithubImport,
-    'save-ssh': saveSsh,
     'factory-reset-start': factoryResetStart,
     'factory-reset-cancel': factoryResetCancel,
     'factory-reset-confirm': factoryResetConfirm,
@@ -1694,6 +1690,35 @@ document.getElementById('factory-reset-input').addEventListener('input', e => {
 });
 
 async function saveSettings() {
+  // One Save button commits everything in the sheet — Spotify fields and
+  // the SSH key field used to have their own separate buttons, which read
+  // as two unrelated forms sharing one dialog. SSH goes first: it's the one
+  // call that can reject on bad input (a malformed pasted key, 400), and
+  // surfacing that before touching anything else means a rejected save
+  // never leaves the form half-applied.
+  const keyText = document.getElementById('ssh-key-input').value.trim();
+  const authorized_keys = keyText ? keyText.split('\n').map(l => l.trim()).filter(Boolean) : [];
+  try {
+    const sshR = await fetch('/api/v1/ssh/settings', {
+      method: 'PUT',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ authorized_keys }),
+    });
+    if (sshR.status === 401) { showAuth(); return; }
+    if (!sshR.ok) {
+      const errBody = await sshR.json().catch(() => null);
+      setFlowMsg('ssh-msg', 'err', (errBody && errBody.detail) || 'Could not apply SSH settings.');
+      return;
+    }
+    S.ssh = await sshR.json();
+    document.getElementById('ssh-key-input').value = S.ssh.authorized_keys.join('\n');
+    renderSshStatusLine();
+    setFlowMsg('ssh-msg', '', '');
+  } catch (_) {
+    setFlowMsg('ssh-msg', 'err', 'Could not apply SSH settings.');
+    return;
+  }
+
   const newSvcName = document.getElementById('set-spotify-name').value.trim() || 'PartyBox';
   const newBitrate = parseInt(document.getElementById('set-bitrate').value, 10) || 320;
 
@@ -1731,15 +1756,19 @@ async function saveSettings() {
 // -- SSH access (ADR-043) --------------------------------------------------
 // The key field is the single source of truth, round-tripped both ways: it
 // always shows what's actually authorized (populated from GET
-// /api/v1/ssh/status in openSettings, not left blank), and Apply always
-// replaces server state with exactly what's in the field — so clearing it
-// and clicking Apply disables SSH, no separate control needed. Whether SSH
-// is on is derived entirely from whether a key is configured (server-side
-// too, see SshAccessService.apply). This replaced an earlier design with an
-// independent "Enable SSH" toggle plus a blank-on-open field — real-world
-// use showed people adding a key, clicking Apply, and never noticing the
-// toggle was a second, separate step, leaving a key configured but SSH
-// still off with no way to see that from the (always-blank) field.
+// /api/v1/ssh/status in openSettings, not left blank), and the sheet's one
+// Save button (see saveSettings) always replaces server state with exactly
+// what's in the field — so clearing it and saving disables SSH, no separate
+// control needed. Whether SSH is on is derived entirely from whether a key
+// is configured (server-side too, see SshAccessService.apply). This
+// replaced two earlier designs in turn: first an independent "Enable SSH"
+// toggle plus a blank-on-open field (real-world use showed people adding a
+// key, clicking Apply, and never noticing the toggle was a second step,
+// leaving a key configured but SSH still off with no way to see that from
+// the always-blank field); then a second "Apply SSH settings" button
+// alongside the Spotify section's own "Save" — two independent submit
+// actions in one sheet read as two unrelated forms sharing a dialog, so
+// they were folded into the one Save button.
 function renderSshStatusLine() {
   const el = document.getElementById('ssh-status-line');
   if (!el) return;
@@ -1780,42 +1809,12 @@ async function sshGithubImport() {
     const existing = input.value.trim();
     input.value = existing ? existing + '\n' + data.keys.join('\n') : data.keys.join('\n');
     const n = data.keys.length;
-    setFlowMsg('ssh-msg', 'ok', `Imported ${n} key${n === 1 ? '' : 's'} from GitHub user ${username}. Review below, then Apply.`);
+    setFlowMsg('ssh-msg', 'ok', `Imported ${n} key${n === 1 ? '' : 's'} from GitHub user ${username}. Review below, then Save.`);
   } catch (_) {
     setFlowMsg('ssh-msg', 'err', 'Could not reach github.com.');
   } finally {
     btn.disabled = false;
     btn.textContent = 'Import';
-  }
-}
-
-async function saveSsh() {
-  const keyText = document.getElementById('ssh-key-input').value.trim();
-  // The field is the whole desired state, always — an empty box is a
-  // legitimate value (it means "no keys", i.e. disable SSH), not "leave
-  // unchanged". `[]` is sent explicitly rather than omitting the field.
-  const authorized_keys = keyText ? keyText.split('\n').map(l => l.trim()).filter(Boolean) : [];
-  const okMessage = authorized_keys.length ? 'SSH enabled.' : 'SSH disabled.';
-
-  try {
-    const r = await fetch('/api/v1/ssh/settings', {
-      method: 'PUT',
-      headers: authHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ authorized_keys }),
-    });
-    if (r.status === 401) { showAuth(); return; }
-    if (!r.ok) {
-      const errBody = await r.json().catch(() => null);
-      setFlowMsg('ssh-msg', 'err', (errBody && errBody.detail) || 'Could not apply SSH settings.');
-      return;
-    }
-    S.ssh = await r.json();
-    document.getElementById('ssh-key-input').value = S.ssh.authorized_keys.join('\n');
-    renderSshStatusLine();
-    setFlowMsg('ssh-msg', 'ok', okMessage);
-    toast(okMessage);
-  } catch (_) {
-    setFlowMsg('ssh-msg', 'err', 'Could not apply SSH settings.');
   }
 }
 
