@@ -212,8 +212,18 @@ def test_status_defaults_when_no_files_exist(tmp_path: Path) -> None:
     status = svc.status()
     assert status.enabled is False
     assert status.has_key is False
+    assert status.authorized_keys == []
     assert status.applied_at is None
     assert status.error is None
+
+
+async def test_status_reads_back_applied_keys(tmp_path: Path) -> None:
+    """The Portal round-trips the key field from this -- GET /api/v1/ssh/status
+    must return the actual key content, not just a has_key boolean."""
+    svc = SshAccessService(tmp_path)
+    with patch.object(ssh_access.systemd1_dbus, "start_unit", new=AsyncMock()):
+        await svc.apply(authorized_keys=[_GOOD_KEY, _GOOD_KEY_2])
+    assert svc.status().authorized_keys == [_GOOD_KEY, _GOOD_KEY_2]
 
 
 async def test_apply_writes_desired_state_and_triggers_unit(tmp_path: Path) -> None:

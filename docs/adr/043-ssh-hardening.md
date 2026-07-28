@@ -83,11 +83,23 @@ independent states that needed to agree, and real usage showed people adding
 a key, clicking Apply, and never noticing the checkbox was a second step —
 leaving a key configured but SSH still off, with no clear signal why. Tying
 `enabled` to key presence removes that state entirely: adding a key turns SSH
-on, clearing all keys (the Portal's **Disable SSH** button, or `PUT
-/api/v1/ssh/settings` with `authorized_keys: []`) turns it off. The dead-end
-case this was originally guarding against (`PasswordAuthentication no` with
-nothing able to authenticate) is now unreachable by construction rather than
-rejected at the API boundary.
+on, clearing all keys turns it off. The dead-end case this was originally
+guarding against (`PasswordAuthentication no` with nothing able to
+authenticate) is now unreachable by construction rather than rejected at the
+API boundary.
+
+The key field itself went through the same fix a step further: it used to be
+blank every time the Settings sheet opened (write-only, with a separate
+"leave blank to keep existing keys" convention), so there was no way to see
+what was actually configured, and a dedicated **Disable SSH** button existed
+just to send `authorized_keys: []`. `GET /api/v1/ssh/status` now returns
+`authorized_keys` (companion already has the plaintext on disk — it's the
+file it writes as its own desired state before asking the root unit to
+install it, and public keys aren't secret), and the Portal populates the
+field from that on open. The field is a straightforward mirror of server
+state both ways: Apply always replaces server state with exactly what's in
+the field, so an emptied field plus Apply *is* disabling SSH — no separate
+button needed.
 
 **Key validation** (`companion.services.ssh_access.validate_authorized_keys_block`)
 anchors its regex at the key-type token (`ssh-ed25519`, `ssh-rsa`,

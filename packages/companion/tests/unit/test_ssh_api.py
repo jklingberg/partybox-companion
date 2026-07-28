@@ -27,12 +27,19 @@ _GOOD_KEY = "ssh-ed25519 " + base64.b64encode(b"A" * 48).decode()
 def _make_service(
     enabled: bool = False,
     has_key: bool = False,
+    authorized_keys: list[str] | None = None,
     applied_at: str | None = None,
     error: str | None = None,
 ) -> MagicMock:
     svc = MagicMock(spec=SshAccessService)
     svc.status = MagicMock(
-        return_value=SshStatus(enabled=enabled, has_key=has_key, applied_at=applied_at, error=error)
+        return_value=SshStatus(
+            enabled=enabled,
+            has_key=has_key,
+            authorized_keys=authorized_keys if authorized_keys is not None else [],
+            applied_at=applied_at,
+            error=error,
+        )
     )
     svc.apply = AsyncMock()
     return svc
@@ -58,7 +65,9 @@ def _make_client(
 
 
 async def test_status_reflects_service() -> None:
-    svc = _make_service(enabled=True, has_key=True, applied_at="2026-07-23T00:00:00Z")
+    svc = _make_service(
+        enabled=True, has_key=True, authorized_keys=[_GOOD_KEY], applied_at="2026-07-23T00:00:00Z"
+    )
     async with _make_client(svc) as client:
         r = await client.get("/api/v1/ssh/status")
     assert r.status_code == 200
@@ -66,6 +75,7 @@ async def test_status_reflects_service() -> None:
     assert body == {
         "enabled": True,
         "has_key": True,
+        "authorized_keys": [_GOOD_KEY],
         "applied_at": "2026-07-23T00:00:00Z",
         "error": None,
     }

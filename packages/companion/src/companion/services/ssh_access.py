@@ -174,6 +174,7 @@ async def fetch_github_keys(username: str, *, timeout: float = _GITHUB_FETCH_TIM
 class SshStatus:
     enabled: bool
     has_key: bool
+    authorized_keys: list[str]
     applied_at: str | None
     error: str | None
 
@@ -205,9 +206,21 @@ class SshAccessService:
         authoritative record of what was actually applied) and falls back to
         reading the desired-state files directly if that hasn't been written
         yet (e.g. a factory-fresh appliance that has never had SSH touched).
+
+        ``authorized_keys`` always comes straight from ``self._key_file``
+        rather than ``ssh_status.json`` — that file is companion's own
+        desired-state file (written by this process, not the root unit), so
+        it's readable without needing the root side to echo key content
+        back. This is what lets the Portal show the actually-configured
+        key(s) instead of a write-only field.
         """
         enabled = self._enabled_file.exists() and self._enabled_file.read_text().strip() == "true"
         has_key = self._key_file.exists() and self._key_file.stat().st_size > 0
+        authorized_keys = (
+            [ln for ln in self._key_file.read_text().splitlines() if ln.strip()]
+            if self._key_file.exists()
+            else []
+        )
         applied_at: str | None = None
         error: str | None = None
 
@@ -222,7 +235,13 @@ class SshAccessService:
                 applied_at = data.get("applied_at")
                 error = data.get("error")
 
-        return SshStatus(enabled=enabled, has_key=has_key, applied_at=applied_at, error=error)
+        return SshStatus(
+            enabled=enabled,
+            has_key=has_key,
+            authorized_keys=authorized_keys,
+            applied_at=applied_at,
+            error=error,
+        )
 
     async def apply(self, *, authorized_keys: list[str] | None) -> None:
         """Persist desired state and trigger the root apply unit.

@@ -19,6 +19,7 @@ from companion.services.ssh_access import (
 class SshStatusResponse(BaseModel):
     enabled: bool
     has_key: bool
+    authorized_keys: list[str]
     applied_at: str | None = None
     error: str | None = None
 
@@ -81,7 +82,11 @@ def make_ssh_router(
         """Current SSH enable/key state, as last applied by the root helper unit."""
         s = ssh.status()
         return SshStatusResponse(
-            enabled=s.enabled, has_key=s.has_key, applied_at=s.applied_at, error=s.error
+            enabled=s.enabled,
+            has_key=s.has_key,
+            authorized_keys=s.authorized_keys,
+            applied_at=s.applied_at,
+            error=s.error,
         )
 
     @router.post(
@@ -135,7 +140,11 @@ def make_ssh_router(
 
         s = ssh.status()
         return SshStatusResponse(
-            enabled=s.enabled, has_key=s.has_key, applied_at=s.applied_at, error=s.error
+            enabled=s.enabled,
+            has_key=s.has_key,
+            authorized_keys=s.authorized_keys,
+            applied_at=s.applied_at,
+            error=s.error,
         )
 
     return router
