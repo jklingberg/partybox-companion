@@ -20,11 +20,17 @@ from pydantic import BaseModel, ValidationError
 log = logging.getLogger(__name__)
 
 
+# Shared between PortalConfig and PortalConfigPatch so the two can't
+# silently drift apart (e.g. a new bitrate tier added to one and not the
+# other).
+SpotifyBitrate = Literal[96, 160, 320]
+
+
 class PortalConfig(BaseModel):
     """Appliance configuration persisted across restarts."""
 
     spotify_connect_name: str = "PartyBox"
-    spotify_bitrate: Literal[96, 160, 320] = 320
+    spotify_bitrate: SpotifyBitrate = 320
     audio_sink_address: str | None = None
 
 
@@ -41,7 +47,7 @@ class PortalConfigPatch(BaseModel):
     """
 
     spotify_connect_name: str | None = None
-    spotify_bitrate: Literal[96, 160, 320] | None = None
+    spotify_bitrate: SpotifyBitrate | None = None
     audio_sink_address: str | None = None
 
 
@@ -89,7 +95,17 @@ class ConfigStore:
         idle-battery-shutdown power-off) can never observe a truncated or
         half-written `config.json` (DEBT-03). The temp file lives alongside
         the target rather than in a shared tmp dir so `os.replace` stays a
-        same-filesystem rename rather than a cross-filesystem copy.
+        same-filesystem rename rather than a cross-filesystem copy. The
+        parent directory is fsynced too, after the rename — on its own,
+        fsyncing just the temp file only guarantees *its content* survives a
+        crash, not that the rename that makes it visible as `config.json`
+        does; without this, a power loss right after `os.replace` could still
+        surface the previous file on the next boot.
+
+        This is blocking, synchronous I/O — SD-card `fsync` calls can take
+        tens of milliseconds. Called only from :meth:`update`, which offloads
+        it to a thread so it doesn't stall the event loop; call it directly
+        (as tests do) only when that isn't a concern.
         """
         self._path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = self._path.with_name(f"{self._path.name}.tmp-{os.getpid()}")
@@ -101,6 +117,22 @@ class ConfigStore:
             os.replace(tmp_path, self._path)
         finally:
             tmp_path.unlink(missing_ok=True)
+        self._fsync_dir()
+
+    def _fsync_dir(self) -> None:
+        """fsync the config file's parent directory.
+
+        Persists the directory entry change from the `os.replace` in
+        :meth:`write` (or the unlink in :meth:`reset`) — without this, the
+        file's own fsync only guarantees its *content* survives a crash, not
+        that the rename/unlink making it visible under its new name is
+        durable too.
+        """
+        dir_fd = os.open(self._path.parent, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
 
     async def update(self, mutate: Callable[[PortalConfig], PortalConfig]) -> PortalConfig:
         """Atomically read-modify-write the config under a lock.
@@ -111,26 +143,40 @@ class ConfigStore:
         a Settings-save PUT and a concurrent pairing persist can no longer
         interleave such that one clobbers the other's field with a stale
         value — each `update()` call always mutates the freshest on-disk
-        state, not a copy a caller cached earlier.
+        state, not a copy a caller cached earlier. `reset()` shares the same
+        lock, so a factory-reset and a concurrent `update()` can't interleave
+        and corrupt the file either.
+
+        `write()`'s blocking I/O (including `fsync`) is offloaded to a thread
+        so a slow SD card can't stall every other coroutine in this
+        single-process appliance (BLE GATT, WebSocket pushes, health
+        polling) for the duration.
         """
         async with self._lock:
             cfg = self.read()
             new_cfg = mutate(cfg)
-            self.write(new_cfg)
+            await asyncio.to_thread(self.write, new_cfg)
             return new_cfg
 
-    def reset(self) -> None:
+    async def reset(self) -> None:
         """Delete the config file so the next read returns factory defaults.
 
         Used by the factory-reset flow. Removing the file (rather than writing
         ``PortalConfig()``) keeps disk state identical to a fresh appliance
-        image, where no config file exists yet. A missing file is not an error.
+        image, where no config file exists yet. A missing file is not an
+        error. Shares :meth:`update`'s lock (RACE-01) so this can't interleave
+        with a concurrent `update()` call and corrupt the file — it does
+        *not* by itself stop a still-running pairing attempt from persisting
+        an address again afterwards; callers that need that must stop the
+        pairing attempt first (see ``PairingService``).
         """
-        try:
-            self._path.unlink(missing_ok=True)
-        except OSError as exc:
-            log.error("config reset: could not delete %s (%s)", self._path, exc)
-            raise
+        async with self._lock:
+            try:
+                self._path.unlink(missing_ok=True)
+            except OSError as exc:
+                log.error("config reset: could not delete %s (%s)", self._path, exc)
+                raise
+            self._fsync_dir()
 
     def _quarantine(self) -> Path | None:
         """Move the unreadable config aside so the next write starts clean.

@@ -430,7 +430,7 @@ def make_services_router(
             except Exception as exc:
                 log.warning("Factory reset: bond removal for %s failed: %s", mac, exc)
 
-        config.reset()
+        await config.reset()
 
         defaults = SpotifySettings(backend=spotify.settings.backend)
         spotify.update_settings(defaults)

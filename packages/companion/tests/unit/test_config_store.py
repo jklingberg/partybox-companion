@@ -57,22 +57,39 @@ def test_write_after_quarantine_starts_clean(tmp_path: Path) -> None:
     assert store.read().spotify_connect_name == "Fixed"
 
 
-def test_reset_deletes_file_and_restores_defaults(tmp_path: Path) -> None:
+async def test_reset_deletes_file_and_restores_defaults(tmp_path: Path) -> None:
     path = tmp_path / "config.json"
     store = ConfigStore(path)
     store.write(PortalConfig(spotify_connect_name="Den", audio_sink_address="50:1B:6A:14:FD:1D"))
     assert path.exists()
 
-    store.reset()
+    await store.reset()
 
     assert not path.exists()
     assert store.read() == PortalConfig()
 
 
-def test_reset_is_noop_when_file_missing(tmp_path: Path) -> None:
+async def test_reset_is_noop_when_file_missing(tmp_path: Path) -> None:
     store = ConfigStore(tmp_path / "config.json")
-    store.reset()  # must not raise
+    await store.reset()  # must not raise
     assert store.read() == PortalConfig()
+
+
+async def test_reset_shares_lock_with_update(tmp_path: Path) -> None:
+    """reset() must not interleave with a concurrent update() call (RACE-01)."""
+    store = ConfigStore(tmp_path / "config.json")
+    store.write(PortalConfig(spotify_connect_name="Den"))
+
+    await store._lock.acquire()
+    try:
+        task = asyncio.create_task(store.reset())
+        await asyncio.sleep(0)
+        assert not task.done()
+    finally:
+        store._lock.release()
+
+    await task
+    assert not (tmp_path / "config.json").exists()
 
 
 # ---------------------------------------------------------------------------
