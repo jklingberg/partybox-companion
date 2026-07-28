@@ -68,7 +68,9 @@ packages = ["src/partyboxd"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-addopts = ["--cov=partyboxd"]
+# This package-level config shadows the root [tool.pytest.ini_options], so
+# the coverage report flags must be repeated here.
+addopts = ["--cov=partyboxd", "--cov-report=term-missing", "--cov-report=xml"]
 
 [tool.mypy]
 mypy_path = "src"
