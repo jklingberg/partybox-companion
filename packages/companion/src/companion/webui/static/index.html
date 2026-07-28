@@ -927,6 +927,19 @@ function deriveScene() {
   // SPEAKER_UNREACHABLE meanwhile would read as the action having failed.
   // See S.btResetStartedAt's doc comment.
   if (S.btResetStartedAt !== null) return Scene.BT_RECONNECTING;
+  // Checked ahead of the speaker_state block below: per the documented scene
+  // hierarchy (docs/design/portal-redesign.md §2), PAIR precedes OFF. Until
+  // A2DP pairing has ever completed, DeviceManager's independent BLE control
+  // link (partyboxd/device/manager.py) is still scanning/connecting on its
+  // own — it needs no bond to reach the speaker's GATT service — and
+  // fluctuates through 'off'/'unreachable' while the user is mid-flow
+  // holding the speaker's Bluetooth button to enter pairing mode. Checking
+  // speaker_state first hijacked the PAIR scene into OFF/SPEAKER_UNREACHABLE
+  // ("speaker is off" / "seems to be on, but not responding") right as the
+  // user followed the on-screen pairing instructions, with no way back to
+  // PAIR short of the settings menu's "Pair speaker" action. Reported
+  // 2026-07-28.
+  if (!S.audio || !S.audio.address) return Scene.PAIR;
   if (S.health.speaker_state === 'off' || S.health.speaker_state === 'unreachable') {
     // A power command we just sent makes the speaker drop its own BLE link
     // for ~15-20s before reconnecting (ADR-034) — indistinguishable from a
@@ -976,7 +989,6 @@ function deriveScene() {
     if (S.health.audio_ready) return Scene.BLOCKED;
     return Scene.OFF;
   }
-  if (!S.audio || !S.audio.address) return Scene.PAIR;
   if (S.health.speaker_state === 'standby') {
     // Waking a standby speaker doesn't drop the BLE link (unlike the
     // off/unreachable case above, where the speaker resets its own BLE
