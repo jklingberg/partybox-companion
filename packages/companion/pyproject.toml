@@ -32,7 +32,7 @@ dependencies = [
     # BlueZ D-Bus API (PairingService) — already a transitive dependency via
     # partybox -> bleak; declared directly since companion now calls it itself.
     "dbus-fast>=4.0",
-    # GitHub SSH-key import (SshAccessService.fetch_github_keys, ADR-042).
+    # GitHub SSH-key import (SshAccessService.fetch_github_keys, ADR-043).
     # Previously a dev-only dependency (FastAPI's async TestClient); now used
     # at runtime too, so it moved up from the `dev` extra below.
     "httpx>=0.27",
