@@ -714,6 +714,15 @@ class DeviceManager:
                 # since ConfirmedDisconnectError is a subclass of it.
                 raise
             except (ConnectionLostError, TimeoutError) as exc:
+                if device.is_disconnect_confirmed:
+                    # The probe itself may have surfaced a generic failure if
+                    # bleak's disconnected callback raced with its I/O. Check
+                    # the transport's already-known state before spending a
+                    # retry cycle, so that race is treated like every other
+                    # confirmed disconnect.
+                    raise ConfirmedDisconnectError(
+                        "connection disconnected while health probe was in flight"
+                    ) from exc
                 failures += 1
                 if failures < _HEALTH_CHECK_FAILURE_LIMIT:
                     # WARNING, not DEBUG: this line has already proven its

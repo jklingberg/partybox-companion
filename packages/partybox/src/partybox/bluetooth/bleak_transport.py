@@ -151,6 +151,11 @@ class BleakTransport(ControlTransport):
     def is_connected(self) -> bool:
         return self._client is not None and self._client.is_connected
 
+    @property
+    def is_disconnect_confirmed(self) -> bool:
+        """Whether bleak's disconnected callback has confirmed a link loss."""
+        return self._lost
+
     async def connect(self) -> None:
         if self.is_connected:
             return

@@ -145,6 +145,16 @@ class PartyBoxDevice:
         """Whether the control connection is currently live."""
         return self._transport is not None and self._transport.is_connected
 
+    @property
+    def is_disconnect_confirmed(self) -> bool:
+        """Whether the transport has already confirmed an unexpected loss.
+
+        This is useful after a probe has failed ambiguously: a disconnect
+        callback can race with that I/O failure, and in that case retrying the
+        failed probe would only delay reconnection.
+        """
+        return self._transport is not None and self._transport.is_disconnect_confirmed
+
     async def redetect_battery(self) -> BatteryCapability | None:
         """Re-run battery detection on the live connection and refresh the cache.
 
