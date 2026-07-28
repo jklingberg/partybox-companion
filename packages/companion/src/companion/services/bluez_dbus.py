@@ -100,6 +100,7 @@ _FDDF_CONNECTION_BITS_OFFSET = 18
 _PAIR_TIMEOUT = 60.0
 _TRUST_TIMEOUT = 5.0
 _CONNECT_TIMEOUT = 30.0
+_CANCEL_PAIRING_TIMEOUT = 5.0
 
 
 def extract_bredr_address(service_data: bytes) -> str | None:
@@ -502,6 +503,29 @@ class BluezClient:
             raise PairingFailedError(f"Pair failed for {mac}: {exc}") from exc
         except TimeoutError as exc:
             raise PairingFailedError(f"Pair timed out for {mac}") from exc
+
+    async def cancel_pairing(self, mac: str) -> None:
+        """Best-effort ``Device1.CancelPairing()`` — aborts a remote in-flight pair.
+
+        ``pair()``'s ``asyncio.wait_for`` only cancels the *local* task on
+        timeout; ``bluetoothd`` keeps negotiating server-side (the same
+        dbus-fast hazard noted in ``connect_a2dp`` below), which pins a
+        pending LE connection and starves A2DP throughput to ~16% until the
+        Bluetooth stack is restarted (#98). Callers should invoke this
+        unconditionally once a MAC is known, on every exit path of a pairing
+        attempt — including success and paths where ``pair()`` was never
+        reached — since cancelling a pairing that isn't in progress is just a
+        swallowed no-op error, and that is simpler and more robust than
+        threading cancellation logic through each individual failure branch.
+        """
+        try:
+            device = await self._device(mac)
+        except InterfaceNotFoundError:
+            return
+        try:
+            await asyncio.wait_for(_call(device, "cancel_pairing"), timeout=_CANCEL_PAIRING_TIMEOUT)
+        except (DBusError, TimeoutError) as exc:
+            log.debug("Pairing: cancel_pairing for %s: %s", mac, exc)
 
     async def trust(self, mac: str) -> None:
         device = await self._device(mac)

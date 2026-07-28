@@ -166,6 +166,7 @@ class PairingService:
 
     async def _do_pair(self) -> None:
         self._set_state(PairingState.SCANNING)
+        mac: str | None = None
         try:
             async with BluezClient() as bluez, bluez.pairing_agent():
                 # Bondable mode is scoped to this single attempt (ADR-027
@@ -240,6 +241,12 @@ class PairingService:
                     log.info("Pairing: complete")
                 finally:
                     await bluez.set_pairable(False)
+                    # Best-effort abort of any in-flight BlueZ pairing
+                    # attempt on every exit path — timeout, failure,
+                    # cancellation or success alike. Unconditional and
+                    # swallowed inside cancel_pairing() itself; see #98.
+                    if mac is not None:
+                        await bluez.cancel_pairing(mac)
         except asyncio.CancelledError:
             self._set_state(PairingState.IDLE)
             raise

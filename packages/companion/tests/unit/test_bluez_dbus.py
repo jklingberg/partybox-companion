@@ -9,15 +9,19 @@ captures only.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from typing import Any
 
+import companion.services.bluez_dbus as bluez_dbus_module
+import pytest
 from companion.services.bluez_dbus import (
     BluezClient,
     _PairingAgent,
     extract_bredr_address,
     parse_fddf_payload,
 )
+from dbus_fast import DBusError
 
 # Confirmed from hardware: LE advertisement Service Data AD structure
 # (AD type 0x16) under Harman's vendor UUID 0xfddf, captured from a
@@ -158,6 +162,66 @@ async def test_wait_for_device_times_out_and_cleans_up() -> None:
     assert adapter.started is True
     assert adapter.stopped is True
     assert objmgr.callbacks == []
+
+
+# ---------------------------------------------------------------------------
+# cancel_pairing() — best-effort abort of an in-flight BlueZ pairing (#98)
+# ---------------------------------------------------------------------------
+
+
+class _FakeDeviceIface:
+    """Fake org.bluez.Device1 proxy interface recording CancelPairing() calls."""
+
+    def __init__(self, cancel_pairing_error: Exception | None = None) -> None:
+        self.cancel_pairing_error = cancel_pairing_error
+        self.cancel_pairing_calls = 0
+
+    async def call_cancel_pairing(self) -> None:
+        self.cancel_pairing_calls += 1
+        if self.cancel_pairing_error is not None:
+            raise self.cancel_pairing_error
+
+
+class _DeviceTestClient(BluezClient):
+    """BluezClient with ``_device()`` replaced by a fixed fake proxy."""
+
+    def __init__(self, device_iface: object) -> None:
+        super().__init__()
+        self._device_iface = device_iface
+
+    async def _device(self, mac: str) -> Any:  # noqa: ANN401
+        return self._device_iface
+
+
+async def test_cancel_pairing_calls_device_cancel_pairing() -> None:
+    device = _FakeDeviceIface()
+    client = _DeviceTestClient(device)
+
+    await client.cancel_pairing(FDDF_KNOWN_ADDRESS)
+
+    assert device.cancel_pairing_calls == 1
+
+
+async def test_cancel_pairing_swallows_dbus_error() -> None:
+    """No pairing in progress is the expected, common case — must not raise."""
+    device = _FakeDeviceIface(
+        cancel_pairing_error=DBusError("org.bluez.Error.DoesNotExist", "No pairing in progress")
+    )
+    client = _DeviceTestClient(device)
+
+    await client.cancel_pairing(FDDF_KNOWN_ADDRESS)  # must not raise
+
+
+async def test_cancel_pairing_swallows_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(bluez_dbus_module, "_CANCEL_PAIRING_TIMEOUT", 0.01)
+
+    class _HangingDeviceIface:
+        async def call_cancel_pairing(self) -> None:
+            await asyncio.sleep(10)
+
+    client = _DeviceTestClient(_HangingDeviceIface())
+
+    await client.cancel_pairing(FDDF_KNOWN_ADDRESS)  # must not raise
 
 
 # ---------------------------------------------------------------------------
