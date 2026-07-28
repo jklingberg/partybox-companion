@@ -1528,6 +1528,18 @@ document.addEventListener('keydown', e => {
   if (!document.getElementById('health-overlay').classList.contains('hidden')) { closeHealth(); return; }
 });
 
+// Clicking the dimmed backdrop closes the same two sheets, same rule as
+// Escape above (auth-overlay excluded for the same reason). Checking
+// e.target === e.currentTarget means only a click on the overlay itself
+// counts — a click anywhere inside .sheet bubbles up but doesn't match, so
+// interacting with the dialog's own contents never closes it.
+document.getElementById('settings-overlay').addEventListener('click', e => {
+  if (e.target === e.currentTarget) closeSettings();
+});
+document.getElementById('health-overlay').addEventListener('click', e => {
+  if (e.target === e.currentTarget) closeHealth();
+});
+
 // ==========================================================================
 // Power control
 // ==========================================================================
