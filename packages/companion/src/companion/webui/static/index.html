@@ -577,7 +577,15 @@
   <div class="sheet">
     <div class="sheet-head">
       <h2 id="settings-title">Settings</h2>
-      <button class="icon-btn" data-action="close-settings" aria-label="Close"><svg class="icon"><use href="#i-x"/></svg></button>
+      <button class="icon-btn" data-action="request-close-settings" aria-label="Close"><svg class="icon"><use href="#i-x"/></svg></button>
+    </div>
+
+    <div class="field hidden" id="settings-discard-row" style="margin-top:0">
+      <span class="field-hint" style="margin:0 0 10px">You have unsaved changes.</span>
+      <div class="btn-row" style="margin-top:0">
+        <button class="btn btn-heat" data-action="settings-keep-editing">Keep editing</button>
+        <button class="btn btn-ghost" data-action="settings-discard">Discard changes</button>
+      </div>
     </div>
 
     <div class="section">
@@ -598,9 +606,32 @@
       </div>
     </div>
 
+    <div class="section" id="ssh-section">
+      <div class="section-title">SSH access</div>
+      <div class="field-hint" style="margin-bottom:14px">
+        Off by default. This box always shows what's currently authorized —
+        edit it and Save below to change that. Password login is never available.
+      </div>
+      <div class="field">
+        <label for="ssh-key-input">Authorized public key(s)</label>
+        <textarea id="ssh-key-input" rows="3" placeholder="ssh-ed25519 AAAA... (one per line)"
+          style="resize:vertical;min-height:46px;background:var(--bg);border:1px solid var(--border);border-radius:var(--r-sm);color:var(--ink);padding:12px 14px;font-size:13px;font-family:ui-monospace,monospace;width:100%"></textarea>
+        <span class="field-hint">One key per line. Add a line to allow it in; delete a line (or clear the box) to remove it — an empty box means SSH is off. Takes effect when you click Save below.</span>
+      </div>
+      <div class="field" style="flex-direction:row;gap:8px;margin-top:0;align-items:flex-end">
+        <div style="flex:1">
+          <label for="ssh-github-user">Or import from GitHub</label>
+          <input type="text" id="ssh-github-user" placeholder="GitHub username" autocomplete="off" />
+        </div>
+        <button class="btn btn-sm" id="btn-ssh-github-import" data-action="ssh-github-import" style="height:46px">Import</button>
+      </div>
+      <div class="flow-msg info" id="ssh-msg" style="text-align:left;margin-top:8px"></div>
+      <div class="field-hint" id="ssh-status-line" style="margin-top:10px"></div>
+    </div>
+
     <div class="btn-row">
       <button class="btn btn-heat" data-action="save-settings">Save</button>
-      <button class="btn btn-ghost" data-action="close-settings">Cancel</button>
+      <button class="btn btn-ghost" data-action="request-close-settings">Cancel</button>
     </div>
 
     <div class="section section-danger">
@@ -705,6 +736,11 @@ const S = {
   healthDetails: null,
   wifi: null,
   config: { spotify_connect_name: 'PartyBox', spotify_bitrate: 320 },
+  //: SSH access status ({enabled, has_key, authorized_keys, applied_at,
+  //: error} | null) -- fetched on demand when the Settings sheet opens
+  //: (auth-gated, so it isn't part of the unauthenticated main refresh()
+  //: cycle).
+  ssh: null,
   apiKey: localStorage.getItem('_pb_key') || null,
   ws: null,
   fetchFailed: false,
@@ -810,6 +846,7 @@ function bootMock() {
   S.config  = MOCK_CONFIG;
   S.battery = MOCK_BATTERY;
   S.healthDetails = MOCK_HEALTH_DETAILS;
+  S.ssh = { enabled: false, has_key: false, authorized_keys: [], applied_at: null, error: null };
 
   if (MOCK_STATE === 'off') { S.health = { ...MOCK_HEALTH, ble_connected: false, speaker_state: 'off', audio_ready: false }; S.battery = null; }
   if (MOCK_STATE === 'blocked') { S.health = { ...MOCK_HEALTH, ble_connected: false, speaker_state: 'off' }; S.battery = null; }
@@ -1479,8 +1516,11 @@ document.addEventListener('click', e => {
     'power-on': () => sendPower('on'),
     'power-toggle': () => sendPower(powerToggleCommand()),
     'open-settings': openSettings,
-    'close-settings': closeSettings,
+    'request-close-settings': requestCloseSettings,
+    'settings-keep-editing': settingsKeepEditing,
+    'settings-discard': settingsDiscard,
     'save-settings': saveSettings,
+    'ssh-github-import': sshGithubImport,
     'factory-reset-start': factoryResetStart,
     'factory-reset-cancel': factoryResetCancel,
     'factory-reset-confirm': factoryResetConfirm,
@@ -1495,6 +1535,31 @@ document.addEventListener('click', e => {
     'submit-key': submitKey,
   };
   if (handlers[action]) handlers[action]();
+});
+
+// Escape closes whichever dismissable sheet is open, same as its own X/Cancel
+// button — for Settings that means going through requestCloseSettings, same
+// as the X/Cancel buttons, so an unsaved-changes prompt still gets a chance
+// to interrupt. auth-overlay is deliberately excluded — it has no close
+// action of its own (the appliance requires the key), so there's nothing
+// for Escape to trigger there.
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return;
+  if (!document.getElementById('settings-overlay').classList.contains('hidden')) { requestCloseSettings(); return; }
+  if (!document.getElementById('health-overlay').classList.contains('hidden')) { closeHealth(); return; }
+});
+
+// Clicking the dimmed backdrop closes the same two sheets, same rule as
+// Escape above (auth-overlay excluded for the same reason, Settings routed
+// through requestCloseSettings for the same reason). Checking e.target ===
+// e.currentTarget means only a click on the overlay itself counts — a click
+// anywhere inside .sheet bubbles up but doesn't match, so interacting with
+// the dialog's own contents never closes it.
+document.getElementById('settings-overlay').addEventListener('click', e => {
+  if (e.target === e.currentTarget) requestCloseSettings();
+});
+document.getElementById('health-overlay').addEventListener('click', e => {
+  if (e.target === e.currentTarget) closeHealth();
 });
 
 // ==========================================================================
@@ -1623,18 +1688,67 @@ function startReconcilePoll() {
 // ==========================================================================
 // Settings sheet
 // ==========================================================================
-function openSettings() {
+async function openSettings() {
   document.getElementById('set-spotify-name').value = S.config.spotify_connect_name || '';
   const br = String(S.config.spotify_bitrate || 320);
   const sel = document.getElementById('set-bitrate');
   for (const opt of sel.options) opt.selected = opt.value === br;
   document.getElementById('settings-about').textContent =
     'partybox-companion' + (S.health ? ' · v' + S.health.version : '');
+
+  document.getElementById('ssh-github-user').value = '';
+  setFlowMsg('ssh-msg', '', '');
+  document.getElementById('settings-discard-row').classList.add('hidden');
   document.getElementById('settings-overlay').classList.remove('hidden');
+
+  if (!MOCK) await loadSshStatus();
+  // The box always reflects what's actually authorized right now, not a
+  // blank write-only field — see the SSH access section below.
+  document.getElementById('ssh-key-input').value = (S.ssh && S.ssh.authorized_keys || []).join('\n');
+  renderSshStatusLine();
+
+  // Snapshot taken last, after every field above (including the
+  // async-loaded key field) has its real starting value — this is what
+  // settingsDirty() compares against to decide whether closing needs a
+  // confirmation.
+  settingsBaseline = settingsSnapshot();
 }
 function closeSettings() {
   document.getElementById('settings-overlay').classList.add('hidden');
+  document.getElementById('settings-discard-row').classList.add('hidden');
+  settingsBaseline = null;
   factoryResetCancel();
+}
+
+// Compares the sheet's current field values against the snapshot taken when
+// it opened. Deliberately only covers fields a Save actually commits
+// (Spotify name/bitrate, the SSH key field) — the GitHub-username input is
+// excluded because typing a username without clicking Import never sends
+// anything anywhere, so it isn't a pending change in the same sense.
+let settingsBaseline = null;
+function settingsSnapshot() {
+  return JSON.stringify({
+    name: document.getElementById('set-spotify-name').value,
+    bitrate: document.getElementById('set-bitrate').value,
+    keys: document.getElementById('ssh-key-input').value,
+  });
+}
+function settingsDirty() {
+  return settingsBaseline !== null && settingsSnapshot() !== settingsBaseline;
+}
+
+function requestCloseSettings() {
+  if (settingsDirty()) {
+    document.getElementById('settings-discard-row').classList.remove('hidden');
+  } else {
+    closeSettings();
+  }
+}
+function settingsKeepEditing() {
+  document.getElementById('settings-discard-row').classList.add('hidden');
+}
+function settingsDiscard() {
+  closeSettings();
 }
 
 document.getElementById('factory-reset-input').addEventListener('input', e => {
@@ -1642,6 +1756,35 @@ document.getElementById('factory-reset-input').addEventListener('input', e => {
 });
 
 async function saveSettings() {
+  // One Save button commits everything in the sheet — Spotify fields and
+  // the SSH key field used to have their own separate buttons, which read
+  // as two unrelated forms sharing one dialog. SSH goes first: it's the one
+  // call that can reject on bad input (a malformed pasted key, 400), and
+  // surfacing that before touching anything else means a rejected save
+  // never leaves the form half-applied.
+  const keyText = document.getElementById('ssh-key-input').value.trim();
+  const authorized_keys = keyText ? keyText.split('\n').map(l => l.trim()).filter(Boolean) : [];
+  try {
+    const sshR = await fetch('/api/v1/ssh/settings', {
+      method: 'PUT',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ authorized_keys }),
+    });
+    if (sshR.status === 401) { showAuth(); return; }
+    if (!sshR.ok) {
+      const errBody = await sshR.json().catch(() => null);
+      setFlowMsg('ssh-msg', 'err', (errBody && errBody.detail) || 'Could not apply SSH settings.');
+      return;
+    }
+    S.ssh = await sshR.json();
+    document.getElementById('ssh-key-input').value = S.ssh.authorized_keys.join('\n');
+    renderSshStatusLine();
+    setFlowMsg('ssh-msg', '', '');
+  } catch (_) {
+    setFlowMsg('ssh-msg', 'err', 'Could not apply SSH settings.');
+    return;
+  }
+
   const newSvcName = document.getElementById('set-spotify-name').value.trim() || 'PartyBox';
   const newBitrate = parseInt(document.getElementById('set-bitrate').value, 10) || 320;
 
@@ -1674,6 +1817,71 @@ async function saveSettings() {
   closeSettings();
   await refresh();
   render();
+}
+
+// -- SSH access (ADR-043) --------------------------------------------------
+// The key field is the single source of truth, round-tripped both ways: it
+// always shows what's actually authorized (populated from GET
+// /api/v1/ssh/status in openSettings, not left blank), and the sheet's one
+// Save button (see saveSettings) always replaces server state with exactly
+// what's in the field — so clearing it and saving disables SSH, no separate
+// control needed. Whether SSH is on is derived entirely from whether a key
+// is configured (server-side too, see SshAccessService.apply). This
+// replaced two earlier designs in turn: first an independent "Enable SSH"
+// toggle plus a blank-on-open field (real-world use showed people adding a
+// key, clicking Apply, and never noticing the toggle was a second step,
+// leaving a key configured but SSH still off with no way to see that from
+// the always-blank field); then a second "Apply SSH settings" button
+// alongside the Spotify section's own "Save" — two independent submit
+// actions in one sheet read as two unrelated forms sharing a dialog, so
+// they were folded into the one Save button.
+function renderSshStatusLine() {
+  const el = document.getElementById('ssh-status-line');
+  if (!el) return;
+  if (!S.ssh) { el.textContent = ''; return; }
+  if (S.ssh.error) { el.textContent = 'Last apply failed: ' + S.ssh.error; return; }
+  el.textContent = S.ssh.enabled ? 'SSH is enabled.' : 'SSH is disabled.';
+}
+
+async function loadSshStatus() {
+  const r = await get('/api/v1/ssh/status', true);
+  if (r && r.ok) S.ssh = await r.json();
+}
+
+function authHeaders(extra) {
+  return { ...(S.apiKey ? { 'X-Api-Key': S.apiKey } : {}), ...extra };
+}
+
+async function sshGithubImport() {
+  const username = document.getElementById('ssh-github-user').value.trim();
+  if (!username) return;
+  const btn = document.getElementById('btn-ssh-github-import');
+  btn.disabled = true;
+  btn.textContent = 'Importing…';
+  try {
+    const r = await fetch('/api/v1/ssh/github-import', {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ username }),
+    });
+    if (r.status === 401) { showAuth(); return; }
+    if (!r.ok) {
+      const body = await r.json().catch(() => null);
+      setFlowMsg('ssh-msg', 'err', (body && body.detail) || `Could not import keys for ${username}.`);
+      return;
+    }
+    const data = await r.json();
+    const input = document.getElementById('ssh-key-input');
+    const existing = input.value.trim();
+    input.value = existing ? existing + '\n' + data.keys.join('\n') : data.keys.join('\n');
+    const n = data.keys.length;
+    setFlowMsg('ssh-msg', 'ok', `Imported ${n} key${n === 1 ? '' : 's'} from GitHub user ${username}. Review below, then Save.`);
+  } catch (_) {
+    setFlowMsg('ssh-msg', 'err', 'Could not reach github.com.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Import';
+  }
 }
 
 // Factory reset is a two-step in-sheet flow (typed confirmation) rather than
