@@ -1709,7 +1709,7 @@ async function saveSettings() {
   render();
 }
 
-// -- SSH access (ADR-042) --------------------------------------------------
+// -- SSH access (ADR-043) --------------------------------------------------
 function renderSshStatusLine() {
   const el = document.getElementById('ssh-status-line');
   if (!el) return;
@@ -1717,8 +1717,17 @@ function renderSshStatusLine() {
   if (S.ssh.error) { el.textContent = 'Last apply failed: ' + S.ssh.error; return; }
   el.textContent = S.ssh.enabled
     ? (S.ssh.has_key ? 'SSH is enabled.' : 'SSH is enabled, but no key is configured yet — it will not accept connections.')
-    : 'SSH is disabled.';
+    : (S.ssh.has_key ? 'SSH is disabled. A key is configured — check "Enable SSH" above and Apply to allow connections.' : 'SSH is disabled.');
 }
+
+// A key without SSH turned on is a dead end (the API rejects the reverse —
+// enabling with no key — for the same reason), so entering a key here
+// implies the user wants it to work: default the toggle on rather than
+// making "Enable SSH" a second, easy-to-miss step after Import/paste. Only
+// ever flips it on, never off, so it never fights a deliberate uncheck.
+document.getElementById('ssh-key-input').addEventListener('input', e => {
+  if (e.target.value.trim()) document.getElementById('ssh-enabled-toggle').checked = true;
+});
 
 async function loadSshStatus() {
   const r = await get('/api/v1/ssh/status', true);
@@ -1751,8 +1760,12 @@ async function sshGithubImport() {
     const input = document.getElementById('ssh-key-input');
     const existing = input.value.trim();
     input.value = existing ? existing + '\n' + data.keys.join('\n') : data.keys.join('\n');
+    // Setting .value programmatically doesn't dispatch 'input', so the
+    // ssh-key-input listener that defaults the toggle on won't fire here —
+    // do it explicitly, same only-ever-on rule.
+    document.getElementById('ssh-enabled-toggle').checked = true;
     const n = data.keys.length;
-    setFlowMsg('ssh-msg', 'ok', `Imported ${n} key${n === 1 ? '' : 's'} from GitHub user ${username}. Review below, then Apply.`);
+    setFlowMsg('ssh-msg', 'ok', `Imported ${n} key${n === 1 ? '' : 's'} from GitHub user ${username}. SSH access is now enabled — review the key(s) below, then Apply.`);
   } catch (_) {
     setFlowMsg('ssh-msg', 'err', 'Could not reach github.com.');
   } finally {
