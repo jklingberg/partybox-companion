@@ -34,6 +34,27 @@ rsync -e "ssh -o StrictHostKeyChecking=no" -av --delete <src> pi@partybox.local:
 
 The `pi` account still has a password, but it's random per device (generated on first real boot, never at image-build time — see ADR-043) and is for the **physical/UART console only**; it is never accepted over SSH (which stays key-only whenever it's enabled at all). If you need it, it's printed to `/etc/issue`, visible on the serial console or a directly attached keyboard/monitor.
 
+### Port 22 answers but no key is accepted yet
+
+If `ssh`/`rsync` to the Pi gets a TCP response on port 22 (banner exchange happens, connection isn't refused/timed out) but every attempt ends in `Permission denied (publickey)`, that means SSH is enabled on the appliance but it doesn't yet trust any key you're offering — not a network or appliance fault, so don't troubleshoot mDNS/routing for this symptom. Since ADR-043 removed password auth entirely, the only way in is to get a public key into the Portal's SSH settings, and there is no key present on a fresh devcontainer by default. Do this:
+
+1. Check for a devcontainer-shared key first, at `$CLAUDE_CONFIG_DIR/ssh/partybox_ed25519` (i.e. `/home/vscode/.claude/ssh/partybox_ed25519`). This lives inside the `partybox-claude-config` named volume mounted at `CLAUDE_CONFIG_DIR` (see `.devcontainer/devcontainer.json`), so it survives container rebuilds and is already visible to every Claude Code session sharing this container — reuse it, don't generate a second one.
+2. If it isn't there yet, generate it once, non-interactively, no passphrase:
+   ```bash
+   mkdir -p "$CLAUDE_CONFIG_DIR/ssh"
+   ssh-keygen -t ed25519 -N "" -f "$CLAUDE_CONFIG_DIR/ssh/partybox_ed25519" -C "claude-devcontainer-partybox"
+   ```
+3. Show the user the public key and ask them to install it — this is the "paste your public key" path from the SSH access steps above, not the GitHub-username import (that imports the *user's* GitHub-linked keys, not this generated one):
+   ```bash
+   cat "$CLAUDE_CONFIG_DIR/ssh/partybox_ed25519.pub"
+   ```
+   Tell the user: open the Portal (`http://partybox.local`) → **Settings → SSH access** → paste the printed key into the public-key field → **Apply SSH settings**.
+4. Once they confirm it's applied, retry using that identity file explicitly:
+   ```bash
+   ssh -o StrictHostKeyChecking=no -i "$CLAUDE_CONFIG_DIR/ssh/partybox_ed25519" pi@partybox.local "<command>"
+   ```
+   For the rest of the session, add `-i "$CLAUDE_CONFIG_DIR/ssh/partybox_ed25519"` to the `$SSH`/`$RSYNC` commands used elsewhere in this skill so the user isn't prompted again.
+
 ### `pi` vs `companion`: two separate users
 
 SSH always connects as `pi`, but the appliance service runs as `companion` — a **different, more restricted account**. This is deliberate (see [ADR-019](../../../docs/adr/019-distribution-approach.md)), not an oversight, so don't try to "fix" it by running things as `pi` or `root` — expect the split and work with `sudo` instead.
