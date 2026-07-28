@@ -83,8 +83,11 @@ class CompanionSettings(BaseSettings):
     host: str = "0.0.0.0"  # noqa: S104 — appliance must be reachable on the local network
     port: int = Field(default=8080, ge=1, le=65535)
     data_dir: Path = Field(default_factory=lambda: Path.home() / ".local" / "share" / "companion")
-    # SpotifyService's librespot --onevent hook and its Unix socket live here.
-    # On the appliance, the systemd unit overrides this to /run/companion
+    # SpotifyService's librespot --onevent Unix socket lives here (the
+    # --onevent *target* is a real console-script installed in the venv's
+    # bin/, not a file under this dir — see spotify.py's module docstring and
+    # issue #99, since on the appliance this is a noexec tmpfs). On the
+    # appliance, the systemd unit overrides this to /run/companion
     # (RuntimeDirectory=companion — tmpfs, cleared on every restart, which is
     # what we want for ephemeral playback-state signalling).
     runtime_dir: Path = Field(default_factory=lambda: Path(tempfile.gettempdir()) / "companion")

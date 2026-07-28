@@ -116,7 +116,7 @@ def test_build_command_includes_onevent_hook() -> None:
     cmd = svc._build_command()
     assert "--onevent" in cmd
     idx = cmd.index("--onevent")
-    assert cmd[idx + 1] == str(svc._onevent_script_path)
+    assert cmd[idx + 1] == str(svc._onevent_path)
 
 
 def test_build_command_includes_emit_sink_events() -> None:
@@ -173,39 +173,43 @@ def test_apply_player_event_playing_then_paused() -> None:
 
 
 # ---------------------------------------------------------------------------
-# --onevent launcher script + event socket
+# --onevent target path (issue #99: must not be a file under runtime_dir,
+# which is a noexec tmpfs on the appliance) + event socket
 # ---------------------------------------------------------------------------
 
 
-def test_ensure_runtime_files_writes_executable_script(tmp_path: Path) -> None:
-    svc = _service(runtime_dir=tmp_path)
-    svc._ensure_runtime_files()
-    script = svc._onevent_script_path
-    assert script.exists()
-    assert script.stat().st_mode & 0o111  # executable by someone
-    assert "companion.services._librespot_onevent" in script.read_text()
+def test_onevent_path_is_console_script_beside_interpreter(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The --onevent target is resolved from sys.executable's directory.
+
+    Not from runtime_dir — that's the bug issue #99 fixed (a runtime-generated
+    shim written into a noexec tmpfs that librespot could never execute).
+    """
+    monkeypatch.setattr(
+        "companion.services.spotify.sys.executable", "/opt/partybox-companion/bin/python3"
+    )
+    svc = _service()
+    assert svc._onevent_path == Path("/opt/partybox-companion/bin/partybox-librespot-onevent")
 
 
-def test_ensure_runtime_files_sets_runtime_dir_permissions(tmp_path: Path) -> None:
+def test_onevent_path_not_under_runtime_dir(tmp_path: Path) -> None:
     svc = _service(runtime_dir=tmp_path)
-    svc._ensure_runtime_files()
+    assert tmp_path not in svc._onevent_path.parents
+
+
+def test_ensure_runtime_dir_sets_permissions(tmp_path: Path) -> None:
+    svc = _service(runtime_dir=tmp_path)
+    svc._ensure_runtime_dir()
     assert stat.S_IMODE(tmp_path.stat().st_mode) == 0o700
 
 
-def test_ensure_runtime_files_leaves_no_tmp_file_behind(tmp_path: Path) -> None:
-    svc = _service(runtime_dir=tmp_path)
-    svc._ensure_runtime_files()
-    assert list(tmp_path.glob("*.tmp")) == []
-
-
-def test_ensure_runtime_files_rejects_non_directory_path(tmp_path: Path) -> None:
+def test_ensure_runtime_dir_rejects_non_directory_path(tmp_path: Path) -> None:
     """A regular file sitting at runtime_dir must raise a clear, specific error."""
     blocked = tmp_path / "blocked"
     blocked.write_text("not a directory")
     svc = _service(runtime_dir=blocked)
 
     with pytest.raises(NotADirectoryError, match=str(blocked)):
-        svc._ensure_runtime_files()
+        svc._ensure_runtime_dir()
 
 
 async def test_start_event_server_retries_on_oserror(
@@ -213,7 +217,7 @@ async def test_start_event_server_retries_on_oserror(
 ) -> None:
     """A transient OSError while setting up the socket is retried, not raised."""
     svc = _service(runtime_dir=tmp_path)
-    real_ensure = svc._ensure_runtime_files
+    real_ensure = svc._ensure_runtime_dir
     calls = {"n": 0}
 
     def flaky_ensure() -> None:
@@ -222,7 +226,7 @@ async def test_start_event_server_retries_on_oserror(
             raise OSError("runtime dir not ready yet")
         real_ensure()
 
-    svc._ensure_runtime_files = flaky_ensure  # type: ignore[method-assign]
+    svc._ensure_runtime_dir = flaky_ensure  # type: ignore[method-assign]
 
     with caplog.at_level(logging.INFO, logger="companion.services.spotify"):
         with patch(
@@ -238,10 +242,70 @@ async def test_start_event_server_retries_on_oserror(
     await server.wait_closed()
 
 
+# ---------------------------------------------------------------------------
+# _check_onevent_executable: startup self-test that librespot's --onevent
+# target can actually be exec'd (issue #99 — os.access() alone would have
+# passed on the noexec /run/companion the shim used to be written to)
+# ---------------------------------------------------------------------------
+
+
+async def test_check_onevent_executable_passes_for_real_executable(tmp_path: Path) -> None:
+    script = tmp_path / "onevent"
+    script.write_text("#!/bin/sh\nexit 0\n")
+    script.chmod(0o755)
+    svc = _service(runtime_dir=tmp_path)
+    svc._onevent_path = script
+
+    await svc._check_onevent_executable()  # must not raise
+
+
+async def test_check_onevent_executable_logs_error_when_missing(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    svc = _service(runtime_dir=tmp_path)
+    svc._onevent_path = tmp_path / "does-not-exist"
+
+    with caplog.at_level(logging.ERROR, logger="companion.services.spotify"):
+        await svc._check_onevent_executable()  # must not raise
+
+    assert "failed a startup self-test" in caplog.text
+
+
+async def test_check_onevent_executable_logs_error_when_not_executable(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Simulates the noexec-mount failure mode: permission bits look fine but exec() fails."""
+    script = tmp_path / "onevent"
+    script.write_text("#!/bin/sh\nexit 0\n")
+    script.chmod(0o644)  # no execute bit
+    svc = _service(runtime_dir=tmp_path)
+    svc._onevent_path = script
+
+    with caplog.at_level(logging.ERROR, logger="companion.services.spotify"):
+        await svc._check_onevent_executable()  # must not raise
+
+    assert "failed a startup self-test" in caplog.text
+
+
+async def test_check_onevent_executable_logs_error_on_nonzero_exit(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    script = tmp_path / "onevent"
+    script.write_text("#!/bin/sh\nexit 1\n")
+    script.chmod(0o755)
+    svc = _service(runtime_dir=tmp_path)
+    svc._onevent_path = script
+
+    with caplog.at_level(logging.ERROR, logger="companion.services.spotify"):
+        await svc._check_onevent_executable()  # must not raise
+
+    assert "exited 1 during startup self-test" in caplog.text
+
+
 async def test_event_socket_round_trip(tmp_path: Path) -> None:
     """A client connecting to the event socket and sending PLAYER_EVENT updates state."""
     svc = _service(runtime_dir=tmp_path)
-    svc._ensure_runtime_files()
+    svc._ensure_runtime_dir()
     server = await asyncio.start_unix_server(
         svc._handle_event_connection, path=str(svc._event_sock_path)
     )

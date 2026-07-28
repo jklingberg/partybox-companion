@@ -53,6 +53,10 @@ partyboxd = { workspace = true }
 [project.scripts]
 # Full appliance entry point (starts daemon + companion services)
 partybox-companion = "companion.__main__:main"
+# librespot --onevent target (SpotifyService). A real console-script installed
+# to the venv's bin/ — an exec-allowed path — rather than a runtime-generated
+# shell shim; see spotify.py's module docstring and issue #99 for why.
+partybox-librespot-onevent = "companion.services._librespot_onevent:main"
 
 [project.urls]
 Homepage = "https://github.com/jklingberg/partybox-companion"
