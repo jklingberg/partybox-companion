@@ -7,7 +7,10 @@ docs/validation/appliance-validation.md.
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import suppress
 from pathlib import Path
+from unittest.mock import patch
 
 from companion.config_store import ConfigStore, PortalConfig
 
@@ -70,3 +73,90 @@ def test_reset_is_noop_when_file_missing(tmp_path: Path) -> None:
     store = ConfigStore(tmp_path / "config.json")
     store.reset()  # must not raise
     assert store.read() == PortalConfig()
+
+
+# ---------------------------------------------------------------------------
+# Atomic write (DEBT-03)
+# ---------------------------------------------------------------------------
+
+
+def test_write_leaves_no_temp_file_behind(tmp_path: Path) -> None:
+    store = ConfigStore(tmp_path / "config.json")
+    store.write(PortalConfig(spotify_connect_name="Den"))
+    assert list(tmp_path.glob("*.tmp-*")) == []
+
+
+def test_write_does_not_touch_original_until_replace(tmp_path: Path) -> None:
+    """A crash between the temp-file write and the rename must leave the
+    previous, still-valid config.json completely untouched — never a
+    truncated or half-written file (the failure mode a plain `write_text`
+    is vulnerable to on power loss).
+    """
+    path = tmp_path / "config.json"
+    store = ConfigStore(path)
+    store.write(PortalConfig(spotify_connect_name="Original"))
+
+    with (
+        patch("companion.config_store.os.replace", side_effect=OSError("simulated power loss")),
+        suppress(OSError),
+    ):
+        store.write(PortalConfig(spotify_connect_name="New"))
+
+    # Original file is exactly as it was — no truncation, no partial write.
+    assert PortalConfig.model_validate_json(path.read_text()).spotify_connect_name == "Original"
+    # The temp file used for the attempted write is cleaned up, not left
+    # behind as a second, inconsistent copy of the config.
+    assert list(tmp_path.glob("*.tmp-*")) == []
+
+
+# ---------------------------------------------------------------------------
+# Atomic read-modify-write (RACE-01)
+# ---------------------------------------------------------------------------
+
+
+async def test_update_applies_mutation_and_persists(tmp_path: Path) -> None:
+    store = ConfigStore(tmp_path / "config.json")
+    result = await store.update(lambda cfg: cfg.model_copy(update={"spotify_connect_name": "Den"}))
+    assert result.spotify_connect_name == "Den"
+    assert store.read().spotify_connect_name == "Den"
+
+
+async def test_update_blocks_while_lock_is_held(tmp_path: Path) -> None:
+    """A second `update()` must wait for a first one to finish, not interleave.
+
+    Holds the store's lock directly (standing in for one writer's
+    in-progress read-modify-write) and confirms a concurrent `update()`
+    call — e.g. from the other writer, PairingService vs. a Settings-save
+    PUT — does not proceed until the lock is released.
+    """
+    store = ConfigStore(tmp_path / "config.json")
+    await store._lock.acquire()
+    try:
+        task = asyncio.create_task(
+            store.update(lambda cfg: cfg.model_copy(update={"spotify_connect_name": "Den"}))
+        )
+        await asyncio.sleep(0)
+        assert not task.done()
+    finally:
+        store._lock.release()
+
+    result = await task
+    assert result.spotify_connect_name == "Den"
+
+
+async def test_update_sequential_calls_preserve_both_fields(tmp_path: Path) -> None:
+    """Two independent update() calls, each touching a different field, must
+    not clobber each other — the RACE-01 scenario reduced to ConfigStore
+    alone: a pairing persist (audio_sink_address) followed by a Settings
+    save (spotify_connect_name) must leave both set.
+    """
+    store = ConfigStore(tmp_path / "config.json")
+
+    await store.update(
+        lambda cfg: cfg.model_copy(update={"audio_sink_address": "50:1B:6A:14:FD:1D"})
+    )
+    await store.update(lambda cfg: cfg.model_copy(update={"spotify_connect_name": "Den"}))
+
+    final = store.read()
+    assert final.audio_sink_address == "50:1B:6A:14:FD:1D"
+    assert final.spotify_connect_name == "Den"

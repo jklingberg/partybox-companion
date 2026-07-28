@@ -31,11 +31,18 @@ def _make_app(
     *,
     daemon_settings: DaemonSettings | None = None,
     with_auth: bool = False,
+    store: ConfigStore | None = None,
 ) -> AsyncClient:
-    """Assemble a companion app backed by a mock DeviceManager."""
+    """Assemble a companion app backed by a mock DeviceManager.
+
+    *store* can be passed in so a test can hold the exact ConfigStore
+    instance the app's router uses — e.g. to simulate a concurrent writer
+    (PairingService) going through the same shared instance, as
+    `companion.__main__` wires it in production.
+    """
     companion_settings = CompanionSettings(data_dir=tmp_path)
     settings = daemon_settings or DaemonSettings()
-    store = ConfigStore(tmp_path / "config.json")
+    store = store or ConfigStore(tmp_path / "config.json")
 
     manager = MagicMock()
     type(manager).snapshot = PropertyMock(
@@ -130,6 +137,74 @@ async def test_put_config_accepts_partial_with_defaults(tmp_path: Path) -> None:
     body = r.json()
     assert body["spotify_connect_name"] == "Den"
     assert body["spotify_bitrate"] == 320
+
+
+# ---------------------------------------------------------------------------
+# PUT /api/v1/config — merge semantics (RACE-01)
+# ---------------------------------------------------------------------------
+
+
+async def test_put_config_partial_preserves_existing_audio_sink_address(tmp_path: Path) -> None:
+    """A PUT that omits audio_sink_address must not erase an already-paired one."""
+    store = ConfigStore(tmp_path / "config.json")
+    store.write(PortalConfig(audio_sink_address="50:1B:6A:14:FD:1D"))
+
+    async with _make_app(tmp_path, store=store) as client:
+        r = await client.put(
+            "/api/v1/config",
+            json={"spotify_connect_name": "Den", "spotify_bitrate": 160},
+        )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["spotify_connect_name"] == "Den"
+    assert body["audio_sink_address"] == "50:1B:6A:14:FD:1D"
+    assert store.read().audio_sink_address == "50:1B:6A:14:FD:1D"
+
+
+async def test_put_config_explicit_null_clears_audio_sink_address(tmp_path: Path) -> None:
+    """A field explicitly sent as null is still applied — merge only skips absent fields."""
+    store = ConfigStore(tmp_path / "config.json")
+    store.write(PortalConfig(audio_sink_address="50:1B:6A:14:FD:1D"))
+
+    async with _make_app(tmp_path, store=store) as client:
+        r = await client.put("/api/v1/config", json={"audio_sink_address": None})
+    assert r.status_code == 200
+    assert r.json()["audio_sink_address"] is None
+    assert store.read().audio_sink_address is None
+
+
+async def test_pairing_persist_survives_concurrent_settings_save(tmp_path: Path) -> None:
+    """RACE-01 regression.
+
+    Reproduces the exact reported sequence: a Portal session loads config
+    before pairing (audio_sink_address is still None on its stale copy),
+    pairing then persists the address, and only *afterwards* does that
+    session's Settings-save PUT land — carrying spotify fields only, as the
+    Portal now sends (see saveSettings() in webui/static/index.html). The
+    paired address must survive.
+    """
+    store = ConfigStore(tmp_path / "config.json")
+
+    async with _make_app(tmp_path, store=store) as client:
+        # Portal session's stale snapshot: no pairing yet.
+        r = await client.get("/api/v1/config")
+        assert r.json()["audio_sink_address"] is None
+
+        # Pairing completes concurrently — same write path as
+        # PairingService._do_pair (ConfigStore.update, not read()+write()).
+        await store.update(
+            lambda cfg: cfg.model_copy(update={"audio_sink_address": "50:1B:6A:14:FD:1D"})
+        )
+
+        # The stale session's Settings-save now lands.
+        r = await client.put(
+            "/api/v1/config",
+            json={"spotify_connect_name": "Den", "spotify_bitrate": 160},
+        )
+
+    assert r.status_code == 200
+    assert r.json()["audio_sink_address"] == "50:1B:6A:14:FD:1D"
+    assert store.read().audio_sink_address == "50:1B:6A:14:FD:1D"
 
 
 # ---------------------------------------------------------------------------

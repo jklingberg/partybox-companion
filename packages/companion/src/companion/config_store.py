@@ -6,9 +6,12 @@ both the portal router and the services router so they share the same file.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import os
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
 
@@ -25,6 +28,23 @@ class PortalConfig(BaseModel):
     audio_sink_address: str | None = None
 
 
+class PortalConfigPatch(BaseModel):
+    """Partial update to :class:`PortalConfig` — every field optional.
+
+    Used by ``PUT /api/v1/config`` so a caller that only wants to change
+    ``spotify_connect_name`` never has to know (or resend) the current
+    ``audio_sink_address`` — see RACE-01. Fields the caller didn't include in
+    the request body are absent from :attr:`model_fields_set` and left
+    untouched by :meth:`ConfigStore.update`; a field explicitly sent as
+    ``null`` (e.g. to clear the paired speaker) is still applied, since it
+    *is* present in ``model_fields_set``.
+    """
+
+    spotify_connect_name: str | None = None
+    spotify_bitrate: Literal[96, 160, 320] | None = None
+    audio_sink_address: str | None = None
+
+
 class ConfigStore:
     """Read/write PortalConfig from a JSON file on disk.
 
@@ -37,6 +57,13 @@ class ConfigStore:
 
     def __init__(self, path: Path) -> None:
         self._path = path
+        # Guards read-modify-write sequences (see `update`) so the two
+        # independent writers — Settings-save and PairingService — can't
+        # interleave and silently drop each other's field (RACE-01). A plain
+        # asyncio.Lock is enough: both writers run as coroutines on the same
+        # event loop, so this only has to rule out interleaving across
+        # `await` points, not real concurrency across threads/processes.
+        self._lock = asyncio.Lock()
 
     def read(self) -> PortalConfig:
         if not self._path.exists():
@@ -54,8 +81,43 @@ class ConfigStore:
             return PortalConfig()
 
     def write(self, cfg: PortalConfig) -> None:
+        """Atomically replace the config file with *cfg*.
+
+        Writes to a temp file in the same directory, fsyncs it, then
+        `os.replace`s it onto the real path — `os.replace` is atomic on the
+        same filesystem, so a process killed mid-write (e.g. the
+        idle-battery-shutdown power-off) can never observe a truncated or
+        half-written `config.json` (DEBT-03). The temp file lives alongside
+        the target rather than in a shared tmp dir so `os.replace` stays a
+        same-filesystem rename rather than a cross-filesystem copy.
+        """
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_text(cfg.model_dump_json(indent=2))
+        tmp_path = self._path.with_name(f"{self._path.name}.tmp-{os.getpid()}")
+        try:
+            with tmp_path.open("w") as f:
+                f.write(cfg.model_dump_json(indent=2))
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, self._path)
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+    async def update(self, mutate: Callable[[PortalConfig], PortalConfig]) -> PortalConfig:
+        """Atomically read-modify-write the config under a lock.
+
+        *mutate* receives the current on-disk config and returns the config
+        to persist. Serializing every writer through this method (rather
+        than each doing its own `read()` + `write()`) is what closes RACE-01:
+        a Settings-save PUT and a concurrent pairing persist can no longer
+        interleave such that one clobbers the other's field with a stale
+        value — each `update()` call always mutates the freshest on-disk
+        state, not a copy a caller cached earlier.
+        """
+        async with self._lock:
+            cfg = self.read()
+            new_cfg = mutate(cfg)
+            self.write(new_cfg)
+            return new_cfg
 
     def reset(self) -> None:
         """Delete the config file so the next read returns factory defaults.

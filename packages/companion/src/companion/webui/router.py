@@ -10,7 +10,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from companion.config import CompanionSettings
-from companion.config_store import ConfigStore, PortalConfig
+from companion.config_store import ConfigStore, PortalConfig, PortalConfigPatch
 
 _STATIC_DIR = Path(__file__).parent / "static"
 
@@ -33,6 +33,10 @@ def make_portal_router(
     can rewrite the Spotify name/bitrate and remembered speaker address, and
     was previously reachable even when a key was configured (SEC-02). See
     ``docs/adr/041-host-origin-allowlist.md``.
+
+    ``PUT`` is a merge, not a whole-object replace (RACE-01): fields absent
+    from the request body are left untouched rather than overwritten with a
+    caller's possibly-stale copy. See :class:`~companion.config_store.PortalConfigPatch`.
     """
     router = APIRouter()
 
@@ -75,16 +79,26 @@ def make_portal_router(
         summary="Update appliance configuration",
         dependencies=[Depends(auth)] if auth is not None else [],
     )
-    async def put_config(cfg: PortalConfig) -> PortalConfig:
-        """Persist the appliance configuration and return it.
+    async def put_config(patch: PortalConfigPatch) -> PortalConfig:
+        """Merge *patch* onto the current configuration and persist it.
+
+        Only fields present in the request body are changed — a field the
+        caller didn't send (e.g. ``audio_sink_address``, which the Settings
+        sheet never edits) is left exactly as it is on disk, even if a
+        pairing concurrently changed it since this caller last fetched
+        ``GET /api/v1/config`` (RACE-01).
 
         To apply changed Spotify settings without rebooting, call
         ``POST /api/v1/spotify/restart`` after this endpoint.
 
         Requires authentication when an API key is configured (SEC-02).
         """
-        store.write(cfg)
-        return cfg
+        fields = patch.model_fields_set
+
+        def merge(cfg: PortalConfig) -> PortalConfig:
+            return cfg.model_copy(update=patch.model_dump(include=fields))
+
+        return await store.update(merge)
 
     # ------------------------------------------------------------------
     # GET / — Portal HTML (catch-all, must come last)

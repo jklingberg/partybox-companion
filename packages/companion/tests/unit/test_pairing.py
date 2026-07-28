@@ -281,8 +281,9 @@ async def test_successful_pairing_writes_config() -> None:
     with _patch_bluez(fake):
         await _run_to_completion(svc)
 
-    store.write.assert_called_once()
-    saved: PortalConfig = store.write.call_args[0][0]
+    store.update.assert_called_once()
+    mutate = store.update.call_args[0][0]
+    saved: PortalConfig = mutate(PortalConfig())
     assert saved.audio_sink_address == _SPEAKER_MAC
 
 
