@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import base64
 import json
+import os
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -215,6 +217,8 @@ def test_status_defaults_when_no_files_exist(tmp_path: Path) -> None:
     assert status.authorized_keys == []
     assert status.applied_at is None
     assert status.error is None
+    # Nothing has ever been requested, so there's nothing pending to confirm.
+    assert status.confirmed is True
 
 
 async def test_status_reads_back_applied_keys(tmp_path: Path) -> None:
@@ -287,3 +291,85 @@ def test_status_falls_back_when_status_file_corrupt(tmp_path: Path) -> None:
     status = SshAccessService(tmp_path).status()
     assert status.enabled is True
     assert status.applied_at is None
+    # An unreadable status file can't confirm anything -- fall back to
+    # reporting the desired-state files' content as unconfirmed, not fact.
+    assert status.confirmed is False
+
+
+# ---------------------------------------------------------------------------
+# SshAccessService.status() -- confirmed (ADR-043's status-staleness gap)
+# ---------------------------------------------------------------------------
+
+
+async def test_status_unconfirmed_when_status_file_never_written(tmp_path: Path) -> None:
+    """Simulates a D-Bus trigger that errors/times out before the root unit
+    ever reports back: desired state lands on disk, but ssh_status.json is
+    never written at all. status() must not present has_key as confirmed
+    fact just because the desired-state file says so."""
+    svc = SshAccessService(tmp_path)
+    with patch.object(ssh_access.systemd1_dbus, "start_unit", new=AsyncMock()):
+        await svc.apply(authorized_keys=[_GOOD_KEY])
+    status = svc.status()
+    assert status.has_key is True
+    assert status.confirmed is False
+
+
+def test_status_unconfirmed_when_status_file_older_than_desired_state(tmp_path: Path) -> None:
+    """Simulates a stale ssh_status.json surviving a reboot: the Pi lost
+    power mid-run of the root apply script, so its EXIT trap (which would
+    normally rewrite ssh_status.json even on failure) never fired, leaving
+    behind a status file that predates the desired state it should describe."""
+    enabled_path = tmp_path / "ssh_enabled"
+    key_path = tmp_path / "ssh_authorized_key"
+    status_path = tmp_path / "ssh_status.json"
+
+    old_time = time.time() - 100
+    status_path.write_text(
+        json.dumps(
+            {
+                "enabled": False,
+                "has_key": False,
+                "applied_at": "2026-07-20T00:00:00Z",
+                "error": None,
+            }
+        )
+    )
+    os.utime(status_path, (old_time, old_time))
+
+    # A later apply() wrote new desired state, but the root unit never got
+    # to (re)write ssh_status.json to match -- e.g. the appliance rebooted
+    # mid-run.
+    enabled_path.write_text("true\n")
+    key_path.write_text(_GOOD_KEY + "\n")
+
+    status = SshAccessService(tmp_path).status()
+    assert status.confirmed is False
+    # Behavior for enabled/has_key is unchanged (still the stale status
+    # file's content) -- only `confirmed` signals it's unverified.
+    assert status.enabled is False
+
+
+def test_status_confirmed_when_status_file_newer_than_desired_state(tmp_path: Path) -> None:
+    enabled_path = tmp_path / "ssh_enabled"
+    key_path = tmp_path / "ssh_authorized_key"
+    status_path = tmp_path / "ssh_status.json"
+
+    old_time = time.time() - 100
+    enabled_path.write_text("true\n")
+    key_path.write_text(_GOOD_KEY + "\n")
+    os.utime(enabled_path, (old_time, old_time))
+    os.utime(key_path, (old_time, old_time))
+
+    status_path.write_text(
+        json.dumps(
+            {
+                "enabled": True,
+                "has_key": True,
+                "applied_at": "2026-07-28T00:00:00Z",
+                "error": None,
+            }
+        )
+    )
+
+    status = SshAccessService(tmp_path).status()
+    assert status.confirmed is True

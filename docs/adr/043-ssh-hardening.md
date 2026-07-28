@@ -262,27 +262,32 @@ after a reset meant to return the appliance to factory defaults.
   — already present in the lock file at the version pinned for tests, so
   this adds no new resolved package, only moves an existing one from `dev`
   to the main dependency list.
-- `GET /api/v1/ssh/status` can briefly show a state that was requested but
-  never actually confirmed applied. `SshAccessService.apply()` writes its
-  desired-state files (`ssh_enabled`, `ssh_authorized_key`) *before*
-  triggering `companion-ssh-apply.service`, and `status()`'s `enabled`/
-  `has_key` fall back to reading those same desired-state files whenever
-  `ssh_status.json` (the root unit's own report) is stale or missing. Two
-  ways that fallback gets exercised for real: the Pi loses power mid-run of
-  the root script (its `EXIT` trap, which normally rewrites
-  `ssh_status.json` on every completion including failures, only fires on a
-  clean exit — not a hard power loss, so a stale status can survive a
-  reboot); or `systemd1_dbus.start_unit` itself times out or errors before
-  the unit ever reports back (D-Bus down, polkit misconfigured), in which
-  case the desired-state write already happened but nothing ever confirms
-  it landed. In both cases `authorized_keys` (always read live from
-  companion's own key file) can show newer content than `enabled`/`has_key`
-  actually reflect, with no error surfaced. `companion-ssh-apply.service`
-  completes in well under a second in normal operation and the timeout is a
-  generous 30s backstop, so this needs a genuine infrastructure fault to hit
-  — accepted as a known gap rather than blocking on it; see the SEC-01
-  follow-up tracking a fix (either the router surfacing apply() failures as
-  an explicit "unconfirmed" status, or a boot-time reconciliation pass).
+- ~~`GET /api/v1/ssh/status` can briefly show a state that was requested but
+  never actually confirmed applied.~~ **Fixed.** `SshStatus`/
+  `SshStatusResponse` now carry a `confirmed: bool` field. `SshAccessService.
+  status()` derives it by comparing `ssh_status.json`'s mtime against the
+  desired-state files' (`ssh_enabled`, `ssh_authorized_key`): the root unit
+  always writes desired state first and only writes `ssh_status.json` once
+  it (or its `EXIT` trap) has actually run, so a status file that predates
+  the current desired state means the root side's report is missing or
+  stale. This is a pure read-time check — it needs no boot-time
+  reconciliation pass, since every call to `status()` re-derives `confirmed`
+  from current file mtimes, catching both known failure paths: the Pi
+  losing power mid-run of the root script (its `EXIT` trap, which normally
+  rewrites `ssh_status.json` on every completion including failures, only
+  fires on a clean exit — not a hard power loss, so a stale status can
+  survive a reboot, but now reads back as `confirmed: false` rather than
+  fact); and `systemd1_dbus.start_unit` itself timing out or erroring before
+  the unit ever reports back (D-Bus down, polkit misconfigured) — in which
+  case `ssh_status.json` is simply never written, so `confirmed` is `false`
+  from the first `status()` call onward. `PUT /api/v1/ssh/settings` also now
+  catches an `apply()` failure explicitly (it previously had no `try`/
+  `except` around `await ssh.apply(...)`, so a D-Bus timeout there
+  propagated as an unhandled 500) and still returns the `SshStatusResponse`
+  shape with `confirmed: false`, rather than a bare 500. `authorized_keys`
+  is unchanged: it's still always read live from companion's own key file,
+  regardless of `confirmed` — that reflects what will be (or was just)
+  requested, not what the root side has verified.
 
 ## Rejected alternatives
 

@@ -177,6 +177,15 @@ class SshStatus:
     authorized_keys: list[str]
     applied_at: str | None
     error: str | None
+    # See ADR-043's Consequences section ("requested-but-unconfirmed"). False
+    # means ``enabled``/``has_key`` are not known to reflect what
+    # ``companion-ssh-apply.service`` (the root side) actually did -- either
+    # it has never run at all, or it last ran *before* the current desired
+    # state was written (a stale ``ssh_status.json`` that survived a reboot
+    # mid-apply, or a D-Bus trigger that errored/timed out before the unit
+    # reported back). Defaults to ``True`` so existing call sites that
+    # construct ``SshStatus`` directly (mocks, tests) don't need updating.
+    confirmed: bool = True
 
 
 class SshAccessService:
@@ -199,6 +208,16 @@ class SshAccessService:
         # of starting a fresh run — silently dropping the second call's state.
         self._lock = asyncio.Lock()
 
+    def _latest_desired_state_mtime(self) -> float | None:
+        """mtime of the most-recently-written desired-state file, if any exist.
+
+        ``None`` means neither file has ever been written -- a factory-fresh
+        appliance that has never had SSH touched, which is trivially
+        "confirmed" (there is no pending desired state to confirm).
+        """
+        mtimes = [p.stat().st_mtime for p in (self._enabled_file, self._key_file) if p.exists()]
+        return max(mtimes) if mtimes else None
+
     def status(self) -> SshStatus:
         """Current SSH access state.
 
@@ -213,6 +232,20 @@ class SshAccessService:
         it's readable without needing the root side to echo key content
         back. This is what lets the Portal show the actually-configured
         key(s) instead of a write-only field.
+
+        ``confirmed`` (see ADR-043's Consequences section) distinguishes
+        "known applied" from "requested, outcome unknown" by comparing
+        ``ssh_status.json``'s mtime against the desired-state files': the
+        root unit always writes desired state first and only writes
+        ``ssh_status.json`` once it (or its ``EXIT`` trap) has actually run,
+        so a status file that predates the current desired state means
+        either that unit run never happened (a D-Bus trigger that errored or
+        timed out before the unit reported back) or its report was lost (a
+        hard power loss mid-run, which skips the ``EXIT`` trap and lets a
+        stale ``ssh_status.json`` survive a reboot). This is a pure read-time
+        check -- it doesn't need a boot-time reconciliation pass to catch
+        the reboot case, since every call to :meth:`status` re-derives it
+        from current file mtimes.
         """
         enabled = self._enabled_file.exists() and self._enabled_file.read_text().strip() == "true"
         has_key = self._key_file.exists() and self._key_file.stat().st_size > 0
@@ -223,6 +256,8 @@ class SshAccessService:
         )
         applied_at: str | None = None
         error: str | None = None
+        desired_state_mtime = self._latest_desired_state_mtime()
+        confirmed = desired_state_mtime is None
 
         if self._status_file.exists():
             try:
@@ -234,6 +269,8 @@ class SshAccessService:
                 has_key = bool(data.get("has_key", has_key))
                 applied_at = data.get("applied_at")
                 error = data.get("error")
+                status_mtime = self._status_file.stat().st_mtime
+                confirmed = desired_state_mtime is None or status_mtime >= desired_state_mtime
 
         return SshStatus(
             enabled=enabled,
@@ -241,6 +278,7 @@ class SshAccessService:
             authorized_keys=authorized_keys,
             applied_at=applied_at,
             error=error,
+            confirmed=confirmed,
         )
 
     async def apply(self, *, authorized_keys: list[str] | None) -> None:

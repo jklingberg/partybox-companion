@@ -30,6 +30,7 @@ def _make_service(
     authorized_keys: list[str] | None = None,
     applied_at: str | None = None,
     error: str | None = None,
+    confirmed: bool = True,
 ) -> MagicMock:
     svc = MagicMock(spec=SshAccessService)
     svc.status = MagicMock(
@@ -39,6 +40,7 @@ def _make_service(
             authorized_keys=authorized_keys if authorized_keys is not None else [],
             applied_at=applied_at,
             error=error,
+            confirmed=confirmed,
         )
     )
     svc.apply = AsyncMock()
@@ -78,7 +80,16 @@ async def test_status_reflects_service() -> None:
         "authorized_keys": [_GOOD_KEY],
         "applied_at": "2026-07-23T00:00:00Z",
         "error": None,
+        "confirmed": True,
     }
+
+
+async def test_status_surfaces_unconfirmed() -> None:
+    svc = _make_service(enabled=True, has_key=True, confirmed=False)
+    async with _make_client(svc) as client:
+        r = await client.get("/api/v1/ssh/status")
+    assert r.status_code == 200
+    assert r.json()["confirmed"] is False
 
 
 async def test_status_requires_auth_when_configured() -> None:
@@ -187,6 +198,24 @@ async def test_put_settings_none_leaves_keys_untouched() -> None:
         r = await client.put("/api/v1/ssh/settings", json={})
     assert r.status_code == 200
     svc.apply.assert_awaited_once_with(authorized_keys=None)
+
+
+async def test_put_settings_apply_failure_returns_unconfirmed_status_not_500() -> None:
+    """A D-Bus trigger that errors/times out before the root unit reports
+    back must not surface as an unhandled 500 -- the desired-state write
+    already happened, so the router should degrade to the (now-unconfirmed,
+    per ADR-043) status instead of propagating the exception."""
+    svc = _make_service(has_key=True, confirmed=False)
+    svc.apply.side_effect = TimeoutError("companion-ssh-apply.service did not report back")
+    async with _make_client(svc) as client:
+        r = await client.put(
+            "/api/v1/ssh/settings",
+            json={"authorized_keys": [_GOOD_KEY]},
+        )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["confirmed"] is False
+    svc.apply.assert_awaited_once_with(authorized_keys=[_GOOD_KEY])
 
 
 async def test_put_settings_requires_auth_when_configured() -> None:

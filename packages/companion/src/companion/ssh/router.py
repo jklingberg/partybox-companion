@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -15,6 +16,8 @@ from companion.services.ssh_access import (
     validate_authorized_keys_block,
 )
 
+log = logging.getLogger(__name__)
+
 
 class SshStatusResponse(BaseModel):
     enabled: bool
@@ -22,6 +25,12 @@ class SshStatusResponse(BaseModel):
     authorized_keys: list[str]
     applied_at: str | None = None
     error: str | None = None
+    # See ADR-043's Consequences section / SshStatus.confirmed. False means
+    # enabled/has_key are not known to reflect what the root apply unit
+    # actually did -- e.g. the D-Bus trigger below timed out or errored, or
+    # (after a reboot) a stale ssh_status.json survived a hard power loss
+    # mid-apply.
+    confirmed: bool = True
 
 
 class SshGithubImportRequest(BaseModel):
@@ -87,6 +96,7 @@ def make_ssh_router(
             authorized_keys=s.authorized_keys,
             applied_at=s.applied_at,
             error=s.error,
+            confirmed=s.confirmed,
         )
 
     @router.post(
@@ -124,6 +134,14 @@ def make_ssh_router(
         /api/v1/ssh/status`` remains available to poll independently (e.g.
         after a page reload), the same pattern ``GET /api/v1/wifi/status``
         uses for the (genuinely long-running) WiFi connect flow.
+
+        ``ssh.apply()`` can raise if the D-Bus trigger itself fails or times
+        out (systemd down, polkit misconfigured) — the desired-state files
+        it writes *before* triggering the unit are already on disk by then,
+        so the failure is caught here rather than left to become an
+        unhandled 500: the response still carries whatever ``ssh.status()``
+        reports, with ``confirmed=False`` (see ``SshStatus.confirmed``)
+        making it explicit that this outcome wasn't verified applied.
         """
         authorized_keys = body.authorized_keys
         # An empty list (clear the configured key(s)) and None (leave them
@@ -136,7 +154,10 @@ def make_ssh_router(
             except InvalidKeyError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-        await ssh.apply(authorized_keys=authorized_keys)
+        try:
+            await ssh.apply(authorized_keys=authorized_keys)
+        except Exception:
+            log.warning("ssh apply failed to confirm applied state", exc_info=True)
 
         s = ssh.status()
         return SshStatusResponse(
@@ -145,6 +166,7 @@ def make_ssh_router(
             authorized_keys=s.authorized_keys,
             applied_at=s.applied_at,
             error=s.error,
+            confirmed=s.confirmed,
         )
 
     return router
