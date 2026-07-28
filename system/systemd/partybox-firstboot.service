@@ -1,7 +1,7 @@
 [Unit]
 Description=Generate a random per-device local-console password on first boot
 Documentation=https://github.com/jklingberg/partybox-companion
-# See ADR-042 and image/config/partybox-firstboot.sh. Must run and complete
+# See ADR-043 and image/config/partybox-firstboot.sh. Must run and complete
 # before any getty offers a login prompt, so the generated password is in
 # /etc/issue by the time anyone can actually log in.
 #

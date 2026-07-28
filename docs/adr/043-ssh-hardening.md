@@ -1,4 +1,4 @@
-# ADR-042: SSH Hardening — No Shared Default Credentials
+# ADR-043: SSH Hardening — No Shared Default Credentials
 
 **Status:** Accepted
 

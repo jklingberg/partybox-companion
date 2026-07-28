@@ -1,4 +1,4 @@
-"""Unit tests for the systemd D-Bus StartUnit call (ADR-042).
+"""Unit tests for the systemd D-Bus StartUnit call (ADR-043).
 
 Mocks dbus-fast's MessageBus/proxy chain rather than talking to a real
 system bus — see test_login1_dbus.py's docstring for the same reasoning and

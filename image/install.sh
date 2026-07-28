@@ -381,10 +381,10 @@ WWANEnabled=true
 NM_STATE_EOF
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 10b. SSH access (ADR-042 / SEC-01)
+# 10b. SSH access (ADR-043 / SEC-01)
 #
 # Creates the login user but leaves SSH itself DISABLED and key-only, on
-# every image (production and dev alike -- see ADR-042 for why there is no
+# every image (production and dev alike -- see ADR-043 for why there is no
 # build-time flag to restore password auth). The pi/raspberry shared default
 # password that used to be set here is gone entirely, along with the
 # PasswordAuthentication yes drop-in that made this image less safe than a
@@ -522,14 +522,14 @@ EOF
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 10d. companion-ssh-apply.service — root helper the Portal's SSH toggle
-# triggers over D-Bus (ADR-042)
+# triggers over D-Bus (ADR-043)
 #
 # Never enabled/started here -- it only ever runs on demand, triggered by
 # companion.service (as the unprivileged 'companion' user) calling
 # org.freedesktop.systemd1.Manager.StartUnit over D-Bus. The polkit rule
 # below is what authorizes that call, scoped to exactly this unit name.
 # ──────────────────────────────────────────────────────────────────────────────
-log "Installing companion-ssh-apply.service (SSH access helper, ADR-042)"
+log "Installing companion-ssh-apply.service (SSH access helper, ADR-043)"
 install -m 755 \
     "${PARTYBOX_SRC_DIR}/image/config/companion-ssh-apply.sh" \
     /usr/local/bin/companion-ssh-apply
@@ -540,7 +540,7 @@ install -m 0644 \
 log "Installing polkit rule for companion -> systemd1 (companion-ssh-apply.service only)"
 cat > /etc/polkit-1/rules.d/53-companion-ssh-apply.rules << 'POLKIT_EOF'
 // Grant the companion system user permission to start exactly one named
-// unit -- companion-ssh-apply.service (ADR-042) -- not the
+// unit -- companion-ssh-apply.service (ADR-043) -- not the
 // org.freedesktop.systemd1.manage-units namespace generally. Unlike the
 // NetworkManager rule above (namespace-scoped, because NM's action-ID
 // surface is fragile across versions -- see ADR-021) and the logind rule
@@ -560,16 +560,16 @@ chmod 0644 /etc/polkit-1/rules.d/53-companion-ssh-apply.rules
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 10e. partybox-firstboot.service — random per-device local-console password
-# (ADR-042)
+# (ADR-043)
 #
 # Must run on the device's real first boot, not during this chroot-based
-# image build -- see ADR-042 for why building the random password in here
+# image build -- see ADR-043 for why building the random password in here
 # would just reproduce SEC-01 (every device from the same image sharing one
 # "random" password). systemctl enable creates the want-symlink only; it
 # does not run the unit now, matching the same reasoning as companion.service
 # above.
 # ──────────────────────────────────────────────────────────────────────────────
-log "Installing partybox-firstboot.service (per-device console password, ADR-042)"
+log "Installing partybox-firstboot.service (per-device console password, ADR-043)"
 install -m 755 \
     "${PARTYBOX_SRC_DIR}/image/config/partybox-firstboot.sh" \
     /usr/local/bin/partybox-firstboot

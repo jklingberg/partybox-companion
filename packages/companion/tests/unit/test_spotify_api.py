@@ -441,7 +441,7 @@ async def test_factory_reset_resilient_to_bond_removal_failure(tmp_path: Path) -
 
 async def test_factory_reset_clears_ssh_access(tmp_path: Path) -> None:
     """ADR-031: new runtime state must be torn down on reset or documented as
-    exempt. SSH access (ADR-042) isn't exempt -- a fresh image ships with SSH
+    exempt. SSH access (ADR-043) isn't exempt -- a fresh image ships with SSH
     disabled and no key, so reset must match that."""
     ssh = MagicMock()
     ssh.apply = AsyncMock()

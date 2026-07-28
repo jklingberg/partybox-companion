@@ -1,6 +1,6 @@
 """SSH access management: Portal-driven enable/disable + key provisioning.
 
-See ADR-042. ``companion.service`` runs with ``NoNewPrivileges=true`` and
+See ADR-043. ``companion.service`` runs with ``NoNewPrivileges=true`` and
 ``ProtectSystem=strict`` and has no sudoers grant, so it cannot itself write
 ``/home/pi/.ssh/authorized_keys`` or toggle ``ssh.service`` — there is no
 existing system D-Bus interface for "write this file for another user" the
@@ -60,7 +60,7 @@ _GITHUB_KEYS_URL = "https://github.com/{username}.keys"
 _GITHUB_FETCH_TIMEOUT = 10.0
 
 # Anchored at the key-type token rather than searching for it anywhere in the
-# line — see the module docstring / ADR-042: OpenSSH's authorized_keys format
+# line — see the module docstring / ADR-043: OpenSSH's authorized_keys format
 # allows an options prefix (command=...,no-pty ssh-ed25519 ...) before the key
 # type, and matching anywhere would let a pasted or GitHub-fetched "key" smuggle
 # in a forced command or other option. Only bare key lines are accepted.

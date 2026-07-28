@@ -3,12 +3,12 @@
 Talks to ``org.freedesktop.systemd1`` over the system bus via ``dbus-fast`` —
 the same backend ``bluez_dbus.py`` and ``login1_dbus.py`` already use (see
 ``login1_dbus.py``'s docstring for the general pattern this mirrors). This
-exists solely to let ``SshAccessService`` (ADR-042) trigger the root-owned
+exists solely to let ``SshAccessService`` (ADR-043) trigger the root-owned
 ``companion-ssh-apply.service`` oneshot unit: ``companion`` runs with
 ``NoNewPrivileges=true`` and no sudoers grant, which rules out a raw
 ``sudo systemctl start ...`` subprocess call outright. Going through
 ``systemd1`` over D-Bus, authorized by a polkit rule scoped to exactly that
-one unit name (installed by ``install.sh``, see ADR-042), sidesteps that
+one unit name (installed by ``install.sh``, see ADR-043), sidesteps that
 entirely: no Linux capability or setuid path is involved.
 
 This module deliberately does *not* use ``from __future__ import

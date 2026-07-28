@@ -1,7 +1,7 @@
 #!/bin/bash
 # Applies the SSH access state SshAccessService (companion, unprivileged)
 # writes to /var/lib/companion/{ssh_enabled,ssh_authorized_key} -- see
-# ADR-042. Runs as root via companion-ssh-apply.service, triggered by
+# ADR-043. Runs as root via companion-ssh-apply.service, triggered by
 # companion over D-Bus (systemd1 Manager.StartUnit), authorized by a polkit
 # rule scoped to exactly this unit name (installed by install.sh).
 #

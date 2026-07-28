@@ -3,7 +3,7 @@
 # console* login (UART serial / physical HDMI+keyboard), on the device's
 # real first boot -- never at image-build time, so every flashed device
 # gets its own password rather than every device from one image build
-# sharing whatever got baked in. See ADR-042.
+# sharing whatever got baked in. See ADR-043.
 #
 # Completely independent of SSH: SSH ships disabled by default and, once
 # enabled via the Portal, is always key-only -- this password is never
@@ -35,7 +35,7 @@ echo "pi:${PASSWORD}" | chpasswd
 # distro-default /etc/issue content follows. getty/serial-getty re-read this
 # file fresh on every login prompt, so it stays visible on every subsequent
 # boot too, not just this one -- it goes stale only if the password is later
-# changed locally (see ADR-042's stated caveat).
+# changed locally (see ADR-043's stated caveat).
 {
     printf 'PartyBox Companion -- local console password for "pi": %s\n' "${PASSWORD}"
     printf '(Generated once on first boot; NOT the SSH password -- SSH ships\n'

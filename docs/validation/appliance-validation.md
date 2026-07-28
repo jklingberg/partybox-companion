@@ -66,7 +66,7 @@ Each scenario execution records:
   provisioned via captive portal.
 - Access: `ssh pi@partybox.local`, once SSH is enabled and a key added via the
   Portal (Settings → SSH access) — SSH ships disabled by default with no
-  fixed password (ADR-042); see CLAUDE.md for the one-time enable flow.
+  fixed password (ADR-043); see CLAUDE.md for the one-time enable flow.
 - REST base: `http://partybox.local/api/v1` (unauthenticated by default).
 - Key probes:
   - `GET /health` → `{status, version, ble_connected, audio_ready}`

@@ -4,7 +4,7 @@ Documentation=https://github.com/jklingberg/partybox-companion
 
 # Never started at boot -- only ever triggered on demand by companion.service
 # (running as the unprivileged 'companion' user) over D-Bus, authorized by a
-# polkit rule scoped to exactly this unit name. See ADR-042 and
+# polkit rule scoped to exactly this unit name. See ADR-043 and
 # image/config/companion-ssh-apply.sh.
 
 [Service]

@@ -397,7 +397,7 @@ def make_services_router(
            remembered speaker — reverting to factory defaults.
         4. Restarts Spotify Connect so its advertised name reflects the
            reset immediately.
-        5. Disables SSH and clears the provisioned key(s) (ADR-042) — a
+        5. Disables SSH and clears the provisioned key(s) (ADR-043) — a
            fresh image ships with SSH disabled and no key, so a reset must
            match that per ADR-031's "indistinguishable from a freshly-flashed
            image" contract; otherwise the previous owner's key would still

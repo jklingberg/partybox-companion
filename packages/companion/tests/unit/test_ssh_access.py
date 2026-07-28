@@ -1,4 +1,4 @@
-"""Unit tests for SshAccessService and its validation helpers (ADR-042)."""
+"""Unit tests for SshAccessService and its validation helpers (ADR-043)."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Tests for the SSH access REST endpoints (ADR-042 / SEC-01)."""
+"""Tests for the SSH access REST endpoints (ADR-043 / SEC-01)."""
 
 from __future__ import annotations
 
