@@ -737,9 +737,9 @@ const S = {
   wifi: null,
   config: { spotify_connect_name: 'PartyBox', spotify_bitrate: 320 },
   //: SSH access status ({enabled, has_key, authorized_keys, applied_at,
-  //: error} | null) -- fetched on demand when the Settings sheet opens
-  //: (auth-gated, so it isn't part of the unauthenticated main refresh()
-  //: cycle).
+  //: error, confirmed} | null) -- fetched on demand when the Settings sheet
+  //: opens (auth-gated, so it isn't part of the unauthenticated main
+  //: refresh() cycle).
   ssh: null,
   apiKey: localStorage.getItem('_pb_key') || null,
   ws: null,
@@ -846,7 +846,10 @@ function bootMock() {
   S.config  = MOCK_CONFIG;
   S.battery = MOCK_BATTERY;
   S.healthDetails = MOCK_HEALTH_DETAILS;
-  S.ssh = { enabled: false, has_key: false, authorized_keys: [], applied_at: null, error: null };
+  S.ssh = {
+    enabled: false, has_key: false, authorized_keys: [], applied_at: null, error: null,
+    confirmed: true,
+  };
 
   if (MOCK_STATE === 'off') { S.health = { ...MOCK_HEALTH, ble_connected: false, speaker_state: 'off', audio_ready: false }; S.battery = null; }
   if (MOCK_STATE === 'blocked') { S.health = { ...MOCK_HEALTH, ble_connected: false, speaker_state: 'off' }; S.battery = null; }
@@ -1840,7 +1843,12 @@ function renderSshStatusLine() {
   if (!el) return;
   if (!S.ssh) { el.textContent = ''; return; }
   if (S.ssh.error) { el.textContent = 'Last apply failed: ' + S.ssh.error; return; }
-  el.textContent = S.ssh.enabled ? 'SSH is enabled.' : 'SSH is disabled.';
+  const state = S.ssh.enabled ? 'SSH is enabled.' : 'SSH is disabled.';
+  // confirmed === false (ADR-043): the last change was requested but never
+  // verified applied (root unit didn't report back in time, or a stale
+  // status survived a reboot mid-apply) -- say so rather than presenting
+  // enabled/has_key as fact.
+  el.textContent = S.ssh.confirmed === false ? state + ' (unconfirmed — retry Save)' : state;
 }
 
 async function loadSshStatus() {
