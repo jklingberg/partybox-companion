@@ -287,7 +287,24 @@ after a reset meant to return the appliance to factory defaults.
   shape with `confirmed: false`, rather than a bare 500. `authorized_keys`
   is unchanged: it's still always read live from companion's own key file,
   regardless of `confirmed` — that reflects what will be (or was just)
-  requested, not what the root side has verified.
+  requested, not what the root side has verified. Two things worth stating
+  explicitly about how to read the resulting field combinations: (1)
+  `confirmed: true` covers two different situations that both happen to
+  need no follow-up action — "the root side's report is present and
+  verified up to date" *and* "neither desired-state file has ever been
+  written at all" (a factory-fresh appliance). The second case says nothing
+  about `enabled`/`has_key` themselves (both default to `false`); it must
+  not be read as "SSH is verified enabled," only as "nothing is left
+  unconfirmed" — check `enabled`/`has_key` separately for the actual state.
+  (2) When `confirmed` is `false`, `error` (like `enabled`/`has_key`/
+  `applied_at`) is the *last confirmed report, if any exists* — not a live
+  diagnosis of whatever request is currently pending. Concretely: if
+  `ssh_status.json` exists but predates the current desired state (the
+  stale-reboot case), its `error` can be left over from a *previous*,
+  different request. `PUT /api/v1/ssh/settings` never writes its own
+  `apply()` exception message into `error` — that failure surfaces only as
+  `confirmed: false`, so a client shouldn't assume a non-null `error`
+  explains the most recent call.
 
 ## Rejected alternatives
 

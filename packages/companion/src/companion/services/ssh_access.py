@@ -185,6 +185,16 @@ class SshStatus:
     # mid-apply, or a D-Bus trigger that errored/timed out before the unit
     # reported back). Defaults to ``True`` so existing call sites that
     # construct ``SshStatus`` directly (mocks, tests) don't need updating.
+    #
+    # ``True`` covers two genuinely different situations -- don't read it as
+    # "SSH is verified enabled", only as "no pending request is left
+    # unconfirmed": (a) the root side's report is present and up to date
+    # (see ``SshAccessService._is_confirmed``), or (b) neither desired-state
+    # file has ever been written at all (a factory-fresh appliance) --
+    # there's nothing pending to confirm, but that says nothing about
+    # ``enabled``/``has_key`` themselves (which default to ``False`` in that
+    # case). Always check ``enabled``/``has_key`` separately for the actual
+    # state.
     confirmed: bool = True
 
 
@@ -218,6 +228,34 @@ class SshAccessService:
         mtimes = [p.stat().st_mtime for p in (self._enabled_file, self._key_file) if p.exists()]
         return max(mtimes) if mtimes else None
 
+    @staticmethod
+    def _is_confirmed(status_mtime: float | None, desired_state_mtime: float | None) -> bool:
+        """The invariant behind ``SshStatus.confirmed`` (ADR-043), isolated
+        so it has exactly one place to read and one place to change.
+
+        **Invariant: ``ssh_status.json`` only counts as confirming the
+        current desired state if it was written at or after the newest
+        desired-state file.** ``SshAccessService.apply()`` always writes
+        the desired-state files *first* and only *then* triggers the root
+        unit, which writes ``ssh_status.json`` last (on success or, via its
+        ``EXIT`` trap, on failure) -- so that ordering is guaranteed as long
+        as the unit actually ran to the point of writing it. A status file
+        older than the desired state it's supposed to describe (or missing
+        entirely) means the run that should have produced a fresh one either
+        never happened or never finished, regardless of what it says.
+
+        *status_mtime* is ``None`` when ``ssh_status.json`` doesn't exist or
+        couldn't be read at all. *desired_state_mtime* is ``None`` when
+        neither desired-state file has ever been written (factory-fresh) --
+        that case returns ``True`` because there is nothing pending to
+        confirm, not because anything has been verified applied.
+        """
+        if desired_state_mtime is None:
+            return True
+        if status_mtime is None:
+            return False
+        return status_mtime >= desired_state_mtime
+
     def status(self) -> SshStatus:
         """Current SSH access state.
 
@@ -234,18 +272,20 @@ class SshAccessService:
         key(s) instead of a write-only field.
 
         ``confirmed`` (see ADR-043's Consequences section) distinguishes
-        "known applied" from "requested, outcome unknown" by comparing
-        ``ssh_status.json``'s mtime against the desired-state files': the
-        root unit always writes desired state first and only writes
-        ``ssh_status.json`` once it (or its ``EXIT`` trap) has actually run,
-        so a status file that predates the current desired state means
-        either that unit run never happened (a D-Bus trigger that errored or
-        timed out before the unit reported back) or its report was lost (a
-        hard power loss mid-run, which skips the ``EXIT`` trap and lets a
-        stale ``ssh_status.json`` survive a reboot). This is a pure read-time
-        check -- it doesn't need a boot-time reconciliation pass to catch
-        the reboot case, since every call to :meth:`status` re-derives it
-        from current file mtimes.
+        "known applied" from "requested, outcome unknown" -- see
+        :meth:`_is_confirmed` for the exact invariant. This is a pure
+        read-time check -- it doesn't need a boot-time reconciliation pass
+        to catch the reboot case, since every call to :meth:`status`
+        re-derives it from current file mtimes.
+
+        When ``confirmed`` is ``False``, treat ``enabled``/``has_key``/
+        ``applied_at``/``error`` as the *last confirmed report, if any* --
+        not as a description of whatever request is currently pending.
+        Concretely: if ``ssh_status.json`` exists but predates the current
+        desired state (the stale-reboot case), ``error`` can be left over
+        from a *previous*, different request rather than explaining why the
+        current one hasn't confirmed -- it's the last thing the root side
+        actually said, not a live diagnosis of the pending one.
         """
         enabled = self._enabled_file.exists() and self._enabled_file.read_text().strip() == "true"
         has_key = self._key_file.exists() and self._key_file.stat().st_size > 0
@@ -256,8 +296,8 @@ class SshAccessService:
         )
         applied_at: str | None = None
         error: str | None = None
+        status_mtime: float | None = None
         desired_state_mtime = self._latest_desired_state_mtime()
-        confirmed = desired_state_mtime is None
 
         if self._status_file.exists():
             try:
@@ -270,7 +310,8 @@ class SshAccessService:
                 applied_at = data.get("applied_at")
                 error = data.get("error")
                 status_mtime = self._status_file.stat().st_mtime
-                confirmed = desired_state_mtime is None or status_mtime >= desired_state_mtime
+
+        confirmed = self._is_confirmed(status_mtime, desired_state_mtime)
 
         return SshStatus(
             enabled=enabled,

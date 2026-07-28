@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable
 
+from dbus_fast import DBusError
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
@@ -24,12 +25,23 @@ class SshStatusResponse(BaseModel):
     has_key: bool
     authorized_keys: list[str]
     applied_at: str | None = None
+    # The root apply unit's own last report, if any -- see SshStatus.error.
+    # Only meaningful together with `confirmed`: when `confirmed` is False,
+    # this (like `enabled`/`has_key`/`applied_at`) is the *last confirmed
+    # report, if one exists* -- it can be left over from a previous, distinct
+    # request rather than explaining the currently-pending one. It is not
+    # populated from whatever exception `PUT .../settings` itself may have
+    # caught (see that route) -- that failure only ever surfaces as
+    # `confirmed=False`, not as a change to this field.
     error: str | None = None
     # See ADR-043's Consequences section / SshStatus.confirmed. False means
     # enabled/has_key are not known to reflect what the root apply unit
     # actually did -- e.g. the D-Bus trigger below timed out or errored, or
     # (after a reboot) a stale ssh_status.json survived a hard power loss
-    # mid-apply.
+    # mid-apply. True covers both "verified up to date" and "nothing has
+    # ever been requested" (a factory-fresh appliance) -- it is not a claim
+    # that SSH is verified enabled, only that nothing is left unconfirmed;
+    # check enabled/has_key separately for the actual state.
     confirmed: bool = True
 
 
@@ -138,10 +150,16 @@ def make_ssh_router(
         ``ssh.apply()`` can raise if the D-Bus trigger itself fails or times
         out (systemd down, polkit misconfigured) — the desired-state files
         it writes *before* triggering the unit are already on disk by then,
-        so the failure is caught here rather than left to become an
-        unhandled 500: the response still carries whatever ``ssh.status()``
-        reports, with ``confirmed=False`` (see ``SshStatus.confirmed``)
-        making it explicit that this outcome wasn't verified applied.
+        so that specific failure is caught here rather than left to become
+        an unhandled 500: the response still carries whatever
+        ``ssh.status()`` reports, with ``confirmed=False`` (see
+        ``SshStatus.confirmed``) making it explicit that this outcome wasn't
+        verified applied. Only the exception types ``systemd1_dbus.
+        start_unit``/``SshAccessService.apply`` can actually raise are
+        caught here (D-Bus failures, the job-wait timeout, desired-state
+        file I/O) — a genuine programming error elsewhere is deliberately
+        left to propagate as a real 500 rather than being silently
+        downgraded to an "unconfirmed" status.
         """
         authorized_keys = body.authorized_keys
         # An empty list (clear the configured key(s)) and None (leave them
@@ -156,7 +174,13 @@ def make_ssh_router(
 
         try:
             await ssh.apply(authorized_keys=authorized_keys)
-        except Exception:
+        except DBusError, TimeoutError, OSError:
+            # DBusError/TimeoutError: systemd1_dbus.start_unit's D-Bus call
+            # or its wait for JobRemoved. OSError: the bus connection itself
+            # (D-Bus down) or the desired-state file writes in
+            # SshAccessService.apply/_atomic_write. All three are exactly
+            # the "desired state was written, but nothing confirms it was
+            # applied" case this endpoint exists to degrade gracefully from.
             log.warning("ssh apply failed to confirm applied state", exc_info=True)
 
         s = ssh.status()

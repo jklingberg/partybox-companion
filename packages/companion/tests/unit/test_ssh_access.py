@@ -217,8 +217,36 @@ def test_status_defaults_when_no_files_exist(tmp_path: Path) -> None:
     assert status.authorized_keys == []
     assert status.applied_at is None
     assert status.error is None
-    # Nothing has ever been requested, so there's nothing pending to confirm.
+    # confirmed=True here means "nothing pending to confirm", NOT "SSH is
+    # verified enabled" -- enabled/has_key are False in the same breath, and
+    # that's the actual state to look at. See SshAccessService._is_confirmed
+    # and ADR-043's Consequences section.
     assert status.confirmed is True
+
+
+# ---------------------------------------------------------------------------
+# SshAccessService._is_confirmed -- the confirmed invariant in isolation
+# ---------------------------------------------------------------------------
+
+
+def test_is_confirmed_true_when_nothing_ever_requested() -> None:
+    """desired_state_mtime=None means neither desired-state file has ever
+    been written -- nothing pending, not "verified enabled"."""
+    assert SshAccessService._is_confirmed(None, None) is True
+    assert SshAccessService._is_confirmed(123.0, None) is True
+
+
+def test_is_confirmed_false_when_status_file_missing() -> None:
+    assert SshAccessService._is_confirmed(None, 100.0) is False
+
+
+def test_is_confirmed_false_when_status_older_than_desired_state() -> None:
+    assert SshAccessService._is_confirmed(100.0, 200.0) is False
+
+
+def test_is_confirmed_true_when_status_at_or_after_desired_state() -> None:
+    assert SshAccessService._is_confirmed(200.0, 100.0) is True
+    assert SshAccessService._is_confirmed(100.0, 100.0) is True
 
 
 async def test_status_reads_back_applied_keys(tmp_path: Path) -> None:
