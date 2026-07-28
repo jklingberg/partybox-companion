@@ -98,6 +98,7 @@ class _FakeBluezClient:
         self.trusted: str | None = None
         self.connected: str | None = None
         self.removed: str | None = None
+        self.cancel_pairing_calls: list[str] = []
 
     async def __aenter__(self) -> _FakeBluezClient:
         return self
@@ -138,6 +139,13 @@ class _FakeBluezClient:
 
     async def remove_device(self, mac: str) -> None:
         self.removed = mac
+
+    async def cancel_pairing(self, mac: str) -> None:
+        # Real BluezClient.cancel_pairing() swallows its own D-Bus failures
+        # (see test_bluez_dbus.py) — the fake mirrors that contract by never
+        # raising, regardless of cancel_pairing_error, so callers can't
+        # accidentally rely on catching an exception from it.
+        self.cancel_pairing_calls.append(mac)
 
 
 def _patch_bluez(client: _FakeBluezClient) -> _patch[Any]:
@@ -325,6 +333,19 @@ async def test_pairable_set_then_cleared_on_success() -> None:
     assert fake.pairable_calls == [True, False]
 
 
+async def test_cancel_pairing_called_even_on_success() -> None:
+    """cancel_pairing() runs unconditionally once a MAC is known — including
+    on success. Harmless: BlueZ has nothing to cancel by then (#98)."""
+    svc = _service()
+    fake = _FakeBluezClient(discovered_mac=_SPEAKER_MAC)
+
+    with _patch_bluez(fake):
+        await _run_to_completion(svc)
+
+    assert svc.status.state == PairingState.IDLE
+    assert fake.cancel_pairing_calls == [_SPEAKER_MAC]
+
+
 async def test_pairable_cleared_when_no_device_discovered() -> None:
     svc = _service()
     fake = _FakeBluezClient(discovered_mac=None)
@@ -360,6 +381,8 @@ async def test_no_device_discovered_transitions_to_failed() -> None:
     assert svc.status.state == PairingState.FAILED
     assert svc.status.error is not None
     assert fake.paired is None
+    # No MAC was ever discovered — nothing to cancel (#98).
+    assert fake.cancel_pairing_calls == []
 
 
 # ---------------------------------------------------------------------------
@@ -379,6 +402,9 @@ async def test_not_visible_on_bredr_transitions_to_failed() -> None:
     assert "pairing mode" in svc.status.error
     assert fake.waited_for == _SPEAKER_MAC
     assert fake.paired is None
+    # MAC is known even though Pair() was never reached — cancel_pairing is
+    # still invoked defensively; a harmless no-op on real BlueZ (#98).
+    assert fake.cancel_pairing_calls == [_SPEAKER_MAC]
 
 
 async def test_pairable_cleared_when_not_visible_on_bredr() -> None:
@@ -420,6 +446,34 @@ async def test_pair_failure_transitions_to_failed() -> None:
     assert fake.connected is None
 
 
+async def test_pair_failure_cancels_in_flight_pairing() -> None:
+    """The core #98 regression: a failed Pair() must not leak a BlueZ
+    pairing attempt — cancel_pairing() is invoked with the same MAC."""
+    svc = _service()
+    fake = _FakeBluezClient(pair_error=PairingFailedError("SSP failed"))
+
+    with _patch_bluez(fake):
+        await _run_to_completion(svc)
+
+    assert fake.cancel_pairing_calls == [_SPEAKER_MAC]
+
+
+async def test_pair_failure_message_survives_cancel_pairing_cleanup() -> None:
+    """cancel_pairing() runs in the same finally block as set_pairable(False)
+    — it must not overwrite the FAILED state/message already set for the
+    original pairing failure (#98)."""
+    svc = _service()
+    fake = _FakeBluezClient(pair_error=PairingFailedError("SSP failed"))
+
+    with _patch_bluez(fake):
+        await _run_to_completion(svc)
+
+    assert svc.status.state == PairingState.FAILED
+    assert svc.status.error is not None
+    assert "pairing mode" in svc.status.error
+    assert "SSP failed" not in svc.status.error
+
+
 # ---------------------------------------------------------------------------
 # Unexpected errors
 # ---------------------------------------------------------------------------
@@ -435,6 +489,16 @@ async def test_unexpected_error_transitions_to_failed() -> None:
     assert svc.status.state == PairingState.FAILED
     assert svc.status.error is not None
     assert "dbus exploded" in svc.status.error
+
+
+async def test_unexpected_error_still_cancels_in_flight_pairing() -> None:
+    svc = _service()
+    fake = _FakeBluezClient(connect_error=RuntimeError("dbus exploded"))
+
+    with _patch_bluez(fake):
+        await _run_to_completion(svc)
+
+    assert fake.cancel_pairing_calls == [_SPEAKER_MAC]
 
 
 # ---------------------------------------------------------------------------
