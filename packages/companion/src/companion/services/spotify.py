@@ -79,6 +79,7 @@ log = logging.getLogger(__name__)
 _RESTART_DELAY = 5.0
 _NOT_FOUND_RETRY = 60.0
 _EVENT_READ_TIMEOUT = 2.0
+_ONEVENT_SELFTEST_TIMEOUT = 5.0
 _DEFAULT_RUNTIME_DIR = Path(tempfile.gettempdir()) / "companion"
 
 type PlaybackState = Literal["stopped", "playing", "paused"]
@@ -339,7 +340,7 @@ class SpotifyService:
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
             )
-            rc = await asyncio.wait_for(proc.wait(), timeout=5.0)
+            rc = await asyncio.wait_for(proc.wait(), timeout=_ONEVENT_SELFTEST_TIMEOUT)
         except (OSError, TimeoutError) as exc:
             if proc is not None:
                 # Reached only via the wait_for timeout — exec() itself

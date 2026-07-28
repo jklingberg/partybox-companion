@@ -302,6 +302,42 @@ async def test_check_onevent_executable_logs_error_on_nonzero_exit(
     assert "exited 1 during startup self-test" in caplog.text
 
 
+async def test_check_onevent_executable_kills_hung_process_on_timeout(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A --onevent target that never exits must be killed, not leaked as an orphan."""
+    script = tmp_path / "onevent"
+    script.write_text("#!/bin/sh\nsleep 30\n")
+    script.chmod(0o755)
+    svc = _service(runtime_dir=tmp_path)
+    svc._onevent_path = script
+    monkeypatch.setattr("companion.services.spotify._ONEVENT_SELFTEST_TIMEOUT", 0.05)
+
+    real_create_subprocess_exec = asyncio.create_subprocess_exec
+    created: list[asyncio.subprocess.Process] = []
+
+    async def _capture_create_subprocess_exec(
+        *args: object, **kwargs: object
+    ) -> asyncio.subprocess.Process:
+        proc = await real_create_subprocess_exec(*args, **kwargs)  # type: ignore[arg-type]
+        created.append(proc)
+        return proc
+
+    monkeypatch.setattr(
+        "companion.services.spotify.asyncio.create_subprocess_exec",
+        _capture_create_subprocess_exec,
+    )
+
+    with caplog.at_level(logging.ERROR, logger="companion.services.spotify"):
+        await svc._check_onevent_executable()  # must not raise, must not hang
+
+    assert "failed a startup self-test" in caplog.text
+    assert len(created) == 1
+    # If the timeout handler actually killed it, the process exits almost
+    # immediately; without the fix, this would hang for the full sleep 30.
+    await asyncio.wait_for(created[0].wait(), timeout=2.0)
+
+
 async def test_event_socket_round_trip(tmp_path: Path) -> None:
     """A client connecting to the event socket and sending PLAYER_EVENT updates state."""
     svc = _service(runtime_dir=tmp_path)
