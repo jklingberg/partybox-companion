@@ -606,14 +606,14 @@
     <div class="section" id="ssh-section">
       <div class="section-title">SSH access</div>
       <div class="field-hint" style="margin-bottom:14px">
-        Off by default. Add a key below to turn SSH on — password login is
-        never available. Remove all keys to turn it off again.
+        Off by default. This box always shows what's currently authorized —
+        edit it and Apply to change that. Password login is never available.
       </div>
       <div class="field">
         <label for="ssh-key-input">Authorized public key(s)</label>
         <textarea id="ssh-key-input" rows="3" placeholder="ssh-ed25519 AAAA... (one per line)"
           style="resize:vertical;min-height:46px;background:var(--bg);border:1px solid var(--border);border-radius:var(--r-sm);color:var(--ink);padding:12px 14px;font-size:13px;font-family:ui-monospace,monospace;width:100%"></textarea>
-        <span class="field-hint">Paste one or more authorized_keys lines, or import below. Leave blank to keep whatever key(s) are already configured.</span>
+        <span class="field-hint">One key per line. Add a line and Apply to allow it in; delete a line (or clear the box) and Apply to remove it — an empty box means SSH is off.</span>
       </div>
       <div class="field" style="flex-direction:row;gap:8px;margin-top:0;align-items:flex-end">
         <div style="flex:1">
@@ -625,7 +625,6 @@
       <div class="flow-msg info" id="ssh-msg" style="text-align:left;margin-top:8px"></div>
       <div class="btn-row" style="margin-top:14px">
         <button class="btn btn-heat" data-action="save-ssh">Apply SSH settings</button>
-        <button class="btn btn-ghost" data-action="disable-ssh">Disable SSH</button>
       </div>
       <div class="field-hint" id="ssh-status-line" style="margin-top:10px"></div>
     </div>
@@ -1503,7 +1502,6 @@ document.addEventListener('click', e => {
     'save-settings': saveSettings,
     'ssh-github-import': sshGithubImport,
     'save-ssh': saveSsh,
-    'disable-ssh': disableSsh,
     'factory-reset-start': factoryResetStart,
     'factory-reset-cancel': factoryResetCancel,
     'factory-reset-confirm': factoryResetConfirm,
@@ -1518,6 +1516,16 @@ document.addEventListener('click', e => {
     'submit-key': submitKey,
   };
   if (handlers[action]) handlers[action]();
+});
+
+// Escape closes whichever dismissable sheet is open, same as its own X/Cancel
+// button. auth-overlay is deliberately excluded — it has no close action of
+// its own (the appliance requires the key), so there's nothing for Escape to
+// trigger there.
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return;
+  if (!document.getElementById('settings-overlay').classList.contains('hidden')) { closeSettings(); return; }
+  if (!document.getElementById('health-overlay').classList.contains('hidden')) { closeHealth(); return; }
 });
 
 // ==========================================================================
@@ -1654,12 +1662,14 @@ async function openSettings() {
   document.getElementById('settings-about').textContent =
     'partybox-companion' + (S.health ? ' · v' + S.health.version : '');
 
-  document.getElementById('ssh-key-input').value = '';
   document.getElementById('ssh-github-user').value = '';
   setFlowMsg('ssh-msg', '', '');
   document.getElementById('settings-overlay').classList.remove('hidden');
 
   if (!MOCK) await loadSshStatus();
+  // The box always reflects what's actually authorized right now, not a
+  // blank write-only field — see the SSH access section below.
+  document.getElementById('ssh-key-input').value = (S.ssh && S.ssh.authorized_keys || []).join('\n');
   renderSshStatusLine();
 }
 function closeSettings() {
@@ -1707,13 +1717,17 @@ async function saveSettings() {
 }
 
 // -- SSH access (ADR-043) --------------------------------------------------
-// There is no separate enable/disable control: whether SSH is on is derived
-// entirely from whether a key is configured (server-side too, see
-// SshAccessService.apply). Apply installs whatever is in the key field;
-// Disable SSH clears it. This replaced an earlier design with an
-// independent "Enable SSH" toggle next to the key field — real-world use
-// showed people would add a key, click Apply, and never notice the toggle
-// was a second, separate step, leaving a key configured but SSH still off.
+// The key field is the single source of truth, round-tripped both ways: it
+// always shows what's actually authorized (populated from GET
+// /api/v1/ssh/status in openSettings, not left blank), and Apply always
+// replaces server state with exactly what's in the field — so clearing it
+// and clicking Apply disables SSH, no separate control needed. Whether SSH
+// is on is derived entirely from whether a key is configured (server-side
+// too, see SshAccessService.apply). This replaced an earlier design with an
+// independent "Enable SSH" toggle plus a blank-on-open field — real-world
+// use showed people adding a key, clicking Apply, and never noticing the
+// toggle was a second, separate step, leaving a key configured but SSH
+// still off with no way to see that from the (always-blank) field.
 function renderSshStatusLine() {
   const el = document.getElementById('ssh-status-line');
   if (!el) return;
@@ -1754,7 +1768,7 @@ async function sshGithubImport() {
     const existing = input.value.trim();
     input.value = existing ? existing + '\n' + data.keys.join('\n') : data.keys.join('\n');
     const n = data.keys.length;
-    setFlowMsg('ssh-msg', 'ok', `Imported ${n} key${n === 1 ? '' : 's'} from GitHub user ${username}. Review below, then Apply to enable SSH.`);
+    setFlowMsg('ssh-msg', 'ok', `Imported ${n} key${n === 1 ? '' : 's'} from GitHub user ${username}. Review below, then Apply.`);
   } catch (_) {
     setFlowMsg('ssh-msg', 'err', 'Could not reach github.com.');
   } finally {
@@ -1763,12 +1777,19 @@ async function sshGithubImport() {
   }
 }
 
-async function putSshSettings(body, okMessage) {
+async function saveSsh() {
+  const keyText = document.getElementById('ssh-key-input').value.trim();
+  // The field is the whole desired state, always — an empty box is a
+  // legitimate value (it means "no keys", i.e. disable SSH), not "leave
+  // unchanged". `[]` is sent explicitly rather than omitting the field.
+  const authorized_keys = keyText ? keyText.split('\n').map(l => l.trim()).filter(Boolean) : [];
+  const okMessage = authorized_keys.length ? 'SSH enabled.' : 'SSH disabled.';
+
   try {
     const r = await fetch('/api/v1/ssh/settings', {
       method: 'PUT',
       headers: authHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify(body),
+      body: JSON.stringify({ authorized_keys }),
     });
     if (r.status === 401) { showAuth(); return; }
     if (!r.ok) {
@@ -1777,28 +1798,13 @@ async function putSshSettings(body, okMessage) {
       return;
     }
     S.ssh = await r.json();
+    document.getElementById('ssh-key-input').value = S.ssh.authorized_keys.join('\n');
     renderSshStatusLine();
     setFlowMsg('ssh-msg', 'ok', okMessage);
     toast(okMessage);
   } catch (_) {
     setFlowMsg('ssh-msg', 'err', 'Could not apply SSH settings.');
   }
-}
-
-async function saveSsh() {
-  const keyText = document.getElementById('ssh-key-input').value.trim();
-  // A blank textarea means "leave the previously configured key(s) alone",
-  // not "clear them" — omitting the field entirely is how the API
-  // distinguishes the two (see PUT /api/v1/ssh/settings). Use "Disable SSH"
-  // to explicitly clear them.
-  if (!keyText) { setFlowMsg('ssh-msg', 'err', 'Paste a key or import one from GitHub first.'); return; }
-  const authorized_keys = keyText.split('\n').map(l => l.trim()).filter(Boolean);
-  await putSshSettings({ authorized_keys }, 'SSH enabled.');
-}
-
-async function disableSsh() {
-  document.getElementById('ssh-key-input').value = '';
-  await putSshSettings({ authorized_keys: [] }, 'SSH disabled.');
 }
 
 // Factory reset is a two-step in-sheet flow (typed confirmation) rather than
