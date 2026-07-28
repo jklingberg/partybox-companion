@@ -22,8 +22,16 @@ Usage::
     python -m companion.services._le_reclaim
 
 Output protocol (single line on stdout):
-  "ok:<n>"       — n stale connections were disconnected (0 = none found)
-  "err:<detail>" — enumeration or disconnect failed
+  "ok:<n>:<seen>" — n stale connections were disconnected (0 = none found);
+                    seen = how many PartyBox-named random-address device
+                    objects existed in BlueZ's cache at all, connected or
+                    not (n <= seen always). Lets a caller tell "checked, and
+                    BlueZ has no record of the speaker at all right now"
+                    apart from "checked, saw it, but it wasn't connected" —
+                    both collapse to n=0 otherwise, and during a 2026-07-23
+                    outage this ran an estimated 40+ times with zero
+                    visibility into which case it was.
+  "err:<detail>"  — enumeration or disconnect failed
 """
 
 from __future__ import annotations
@@ -61,16 +69,18 @@ async def _reclaim() -> None:
         )
 
         count = 0
+        seen = 0
         for path, interfaces in managed.items():
             device_props = interfaces.get("org.bluez.Device1")
             if device_props is None:
-                continue
-            if _prop(device_props, "Connected") is not True:
                 continue
             if _prop(device_props, "AddressType") != "random":
                 continue  # never touch the BR/EDR A2DP link
             name = _prop(device_props, "Name") or _prop(device_props, "Alias") or ""
             if not isinstance(name, str) or _NAME_MARKER not in name:
+                continue
+            seen += 1
+            if _prop(device_props, "Connected") is not True:
                 continue
             # Per-device failure containment: one wedged Device1 object (a
             # Disconnect that times out, say) must not stop the remaining
@@ -87,7 +97,7 @@ async def _reclaim() -> None:
                 print(f"note: disconnect failed for {path}: {exc}", file=sys.stderr, flush=True)
                 continue
             count += 1
-        print(f"ok:{count}", flush=True)
+        print(f"ok:{count}:{seen}", flush=True)
     except Exception as exc:
         print(f"err:{exc}", flush=True)
     finally:

@@ -1,0 +1,9 @@
+# Codex CLI project-scoped config (https://developers.openai.com/codex/config-advanced).
+# Applies only once this project is marked trusted — see .devcontainer/post-create.sh,
+# which bootstraps that trust for the devcontainer's checkout path.
+#
+# Codex's built-in "Auto" mode: reads/edits/runs commands in the workspace
+# without prompting, but still asks before touching anything outside the
+# workspace or hitting the network.
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
