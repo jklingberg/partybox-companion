@@ -407,16 +407,25 @@ fi
 log "Leaving SSH daemon disabled by default"
 systemctl disable ssh 2>/dev/null || true
 
-# Explicit even though Bookworm's default is already PasswordAuthentication
-# prohibit-password -- states the appliance's actual security posture
-# directly rather than relying on an upstream default that could change.
-# KbdInteractiveAuthentication no closes the same door for PAM-based
-# challenge-response prompts.
+# Explicit even though Bookworm's default already leaves password auth off
+# for root (PermitRootLogin defaults to prohibit-password) -- states the
+# appliance's actual security posture directly rather than relying on an
+# upstream default that could change. KbdInteractiveAuthentication no closes
+# the same door for PAM-based challenge-response prompts.
+#
+# PermitRootLogin no goes a step further than the prohibit-password default:
+# prohibit-password only blocks *password* auth for root, it still permits
+# root login via a key. root has no password (locked, see
+# partybox-firstboot.service) and no authorized_keys of its own, so that gap
+# is unreachable either way today -- but setting it here means a future
+# ~root/.ssh/authorized_keys (accidental or otherwise) can never become a
+# working root login path.
 mkdir -p /etc/ssh/sshd_config.d
 cat > /etc/ssh/sshd_config.d/10-partybox.conf << 'EOF'
 PasswordAuthentication no
 KbdInteractiveAuthentication no
 PubkeyAuthentication yes
+PermitRootLogin no
 EOF
 
 # ──────────────────────────────────────────────────────────────────────────────
