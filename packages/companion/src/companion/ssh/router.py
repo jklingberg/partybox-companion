@@ -32,18 +32,21 @@ class SshGithubImportResponse(BaseModel):
 
 
 class SshSettingsRequest(BaseModel):
-    enabled: bool
     authorized_keys: list[str] | None = Field(
         default=None,
         description=(
             "Omit this field (or send it as `null`) to leave any previously "
-            "configured key(s) untouched. Send an empty list `[]` to "
-            "explicitly clear them. Send a non-empty list to replace them. "
+            "configured key(s) — and therefore the enabled state — "
+            "untouched. Send an empty list `[]` to clear them and disable "
+            "SSH. Send a non-empty list to replace them and enable SSH. "
             "These three cases are distinct — an empty list is NOT the same "
             "as omitting the field, so don't default a form field to `[]` "
-            "unless you actually mean 'clear the key(s)'. Each entry is one "
-            "authorized_keys-formatted line (as returned by the "
-            "github-import endpoint, or pasted directly by the user)."
+            "unless you actually mean 'clear the key(s) and disable SSH'. "
+            "Each entry is one authorized_keys-formatted line (as returned "
+            "by the github-import endpoint, or pasted directly by the "
+            "user). There is no separate enable/disable flag: whether SSH "
+            "ends up on is derived entirely from whether a key ends up "
+            "configured."
         ),
     )
 
@@ -103,7 +106,7 @@ def make_ssh_router(
     @router.put(
         "/settings",
         response_model=SshStatusResponse,
-        summary="Enable/disable SSH and set the authorized key(s)",
+        summary="Set the authorized key(s) — SSH follows automatically",
     )
     async def put_ssh_settings(body: SshSettingsRequest) -> SshStatusResponse:
         """Apply SSH settings.
@@ -128,10 +131,7 @@ def make_ssh_router(
             except InvalidKeyError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-        try:
-            await ssh.apply(enabled=body.enabled, authorized_keys=authorized_keys)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        await ssh.apply(authorized_keys=authorized_keys)
 
         s = ssh.status()
         return SshStatusResponse(

@@ -224,20 +224,18 @@ class SshAccessService:
 
         return SshStatus(enabled=enabled, has_key=has_key, applied_at=applied_at, error=error)
 
-    async def apply(self, *, enabled: bool, authorized_keys: list[str] | None) -> None:
+    async def apply(self, *, authorized_keys: list[str] | None) -> None:
         """Persist desired state and trigger the root apply unit.
 
         *authorized_keys* of ``None`` leaves any previously configured
-        key(s) untouched; an empty list clears them. Raises ``ValueError``
-        if *enabled* is ``True`` but no key would end up configured —
-        refusing to bring up ``ssh.service`` with nothing able to
-        authenticate against it (``PasswordAuthentication`` stays ``no``
-        regardless). This check happens *before* any file is written, so a
-        rejected call is a true no-op: it never corrupts the previously
-        applied desired state (a naive write-then-validate order would leave
-        the key file cleared even though the call raised, and a later
-        unrelated call could then trigger the root unit against that
-        leftover empty file and delete a real, working key on the Pi).
+        key(s) untouched; an empty list clears them. There is no separate
+        "enabled" input — whether ``ssh.service`` ends up running is derived
+        entirely from whether a key ends up configured: a key means SSH is
+        on, no key means it's off. This keeps the two states that used to be
+        settable independently (a stored key with SSH switched off) from
+        existing at all, since that combination has no legitimate use and
+        was the one users kept landing in by accident (toggle left alone
+        after adding a key).
 
         Waits for ``companion-ssh-apply.service`` to actually finish (see
         ``systemd1_dbus.start_unit``) before returning, so by the time this
@@ -248,16 +246,11 @@ class SshAccessService:
 
             if authorized_keys is not None:
                 prospective_has_key = bool(authorized_keys)
+                body = ("\n".join(authorized_keys) + "\n") if authorized_keys else ""
+                _atomic_write(self._key_file, body)
             else:
                 prospective_has_key = self._key_file.exists() and self._key_file.stat().st_size > 0
 
-            if enabled and not prospective_has_key:
-                raise ValueError("cannot enable SSH with no public key configured")
-
-            if authorized_keys is not None:
-                body = ("\n".join(authorized_keys) + "\n") if authorized_keys else ""
-                _atomic_write(self._key_file, body)
-
-            _atomic_write(self._enabled_file, "true\n" if enabled else "false\n")
+            _atomic_write(self._enabled_file, "true\n" if prospective_has_key else "false\n")
 
             await systemd1_dbus.start_unit(_APPLY_UNIT)

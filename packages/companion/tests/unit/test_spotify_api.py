@@ -448,7 +448,7 @@ async def test_factory_reset_clears_ssh_access(tmp_path: Path) -> None:
     client, _, _ = _reset_client(tmp_path, ssh=ssh)
     async with client:
         await client.post("/api/v1/factory-reset")
-    ssh.apply.assert_awaited_once_with(enabled=False, authorized_keys=[])
+    ssh.apply.assert_awaited_once_with(authorized_keys=[])
 
 
 async def test_factory_reset_resilient_to_ssh_teardown_failure(tmp_path: Path) -> None:

@@ -143,10 +143,10 @@ async def test_put_settings_applies_and_returns_status() -> None:
     async with _make_client(svc) as client:
         r = await client.put(
             "/api/v1/ssh/settings",
-            json={"enabled": True, "authorized_keys": [_GOOD_KEY]},
+            json={"authorized_keys": [_GOOD_KEY]},
         )
     assert r.status_code == 200
-    svc.apply.assert_awaited_once_with(enabled=True, authorized_keys=[_GOOD_KEY])
+    svc.apply.assert_awaited_once_with(authorized_keys=[_GOOD_KEY])
 
 
 async def test_put_settings_rejects_invalid_key() -> None:
@@ -154,7 +154,7 @@ async def test_put_settings_rejects_invalid_key() -> None:
     async with _make_client(svc) as client:
         r = await client.put(
             "/api/v1/ssh/settings",
-            json={"enabled": True, "authorized_keys": ["not-a-key"]},
+            json={"authorized_keys": ["not-a-key"]},
         )
     assert r.status_code == 400
     svc.apply.assert_not_called()
@@ -165,33 +165,24 @@ async def test_put_settings_empty_list_clears_keys_without_validation_error() ->
     async with _make_client(svc) as client:
         r = await client.put(
             "/api/v1/ssh/settings",
-            json={"enabled": False, "authorized_keys": []},
+            json={"authorized_keys": []},
         )
     assert r.status_code == 200
-    svc.apply.assert_awaited_once_with(enabled=False, authorized_keys=[])
+    svc.apply.assert_awaited_once_with(authorized_keys=[])
 
 
 async def test_put_settings_none_leaves_keys_untouched() -> None:
     svc = _make_service()
     async with _make_client(svc) as client:
-        r = await client.put("/api/v1/ssh/settings", json={"enabled": False})
+        r = await client.put("/api/v1/ssh/settings", json={})
     assert r.status_code == 200
-    svc.apply.assert_awaited_once_with(enabled=False, authorized_keys=None)
-
-
-async def test_put_settings_surfaces_service_value_error_as_400() -> None:
-    svc = _make_service()
-    svc.apply = AsyncMock(side_effect=ValueError("cannot enable SSH with no public key configured"))
-    async with _make_client(svc) as client:
-        r = await client.put("/api/v1/ssh/settings", json={"enabled": True})
-    assert r.status_code == 400
-    assert "no public key configured" in r.json()["detail"]
+    svc.apply.assert_awaited_once_with(authorized_keys=None)
 
 
 async def test_put_settings_requires_auth_when_configured() -> None:
     svc = _make_service()
     settings = DaemonSettings(api=ApiSettings(api_key="secret"))
     async with _make_client(svc, daemon_settings=settings, with_auth=True) as client:
-        r = await client.put("/api/v1/ssh/settings", json={"enabled": False})
+        r = await client.put("/api/v1/ssh/settings", json={})
     assert r.status_code == 401
     svc.apply.assert_not_called()

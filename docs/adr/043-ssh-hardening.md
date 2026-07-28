@@ -58,7 +58,6 @@ per device.
 
 A new **SSH access** section in the Settings sheet lets the user:
 
-- Toggle SSH on/off.
 - Paste one or more `authorized_keys`-formatted public key lines directly, **or**
 - Enter a GitHub username; Companion fetches `https://github.com/<user>.keys`
   server-side (the same public, unauthenticated endpoint Ubuntu's installer
@@ -74,10 +73,21 @@ require the same API-key auth as `PUT /api/v1/config` (SEC-02): this
 endpoint can grant a persistent remote shell, which is a strictly higher-value
 target than anything else `PUT /api/v1/config` already gates.
 
-**Enabling with no key configured is rejected outright** (`ValueError` in
-`SshAccessService.apply`, surfaced as 400 by the router) — sshd would just
-come up with `PasswordAuthentication no` and nothing that can authenticate,
-which is a confusing dead end rather than a safe default.
+**There is no independent enable/disable toggle — whether `ssh.service` runs
+is derived entirely from whether a key ends up configured** (`SshAccessService.
+apply`: `enabled = bool(authorized_keys)`, always). The first shipped version
+of this UI had a separate "Enable SSH" checkbox next to the key field, on the
+reasoning that enabling with no key should be rejected outright as a
+confusing dead end. In practice that gave the checkbox and the key field two
+independent states that needed to agree, and real usage showed people adding
+a key, clicking Apply, and never noticing the checkbox was a second step —
+leaving a key configured but SSH still off, with no clear signal why. Tying
+`enabled` to key presence removes that state entirely: adding a key turns SSH
+on, clearing all keys (the Portal's **Disable SSH** button, or `PUT
+/api/v1/ssh/settings` with `authorized_keys: []`) turns it off. The dead-end
+case this was originally guarding against (`PasswordAuthentication no` with
+nothing able to authenticate) is now unreachable by construction rather than
+rejected at the API boundary.
 
 **Key validation** (`companion.services.ssh_access.validate_authorized_keys_block`)
 anchors its regex at the key-type token (`ssh-ed25519`, `ssh-rsa`,

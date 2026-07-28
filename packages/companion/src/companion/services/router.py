@@ -437,7 +437,7 @@ def make_services_router(
 
         if ssh is not None:
             try:
-                await ssh.apply(enabled=False, authorized_keys=[])
+                await ssh.apply(authorized_keys=[])
             except Exception as exc:
                 log.warning("Factory reset: SSH access teardown failed: %s", exc)
 
