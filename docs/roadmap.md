@@ -18,7 +18,7 @@ One intentional gap: `device_info.model()` and `serial_number()` raise `NotImple
 
 **M6 — Daemon**, **M7 — REST API**, **M8 — Companion Portal MVP**, **M9 — Spotify Connect**, **M10 — Portal UX**, **M11 — Companion Portal: Complete**, **M12 — Appliance Runtime**, and **M13 — Distribution & Packaging** are complete.
 
-**M14 — Network Provisioning**, **M15 — Unified Volume Model**, **M16 — First Boot Experience**, **M17 — Reliability**, and **M18 — Appliance Validation & QA** are complete. The appliance has been validated end-to-end on real hardware (RC13); one physical-action item (FAULT-05 stale-bond hardware recovery — fix merged, unit-tested) is deferred to M19's fresh-pairing validation. Next up is **M19 — Release Candidate**. See [runs/2026-07-02-rc13.md](validation/runs/2026-07-02-rc13.md).
+**M14 — Network Provisioning**, **M15 — Unified Volume Model**, **M16 — First Boot Experience**, **M17 — Reliability**, and **M18 — Appliance Validation & QA** are complete. The appliance has been validated end-to-end on real hardware (RC13), and the last outstanding physical-action item (FAULT-05 stale-bond hardware recovery) passed on 2026-07-28. Next up is **M19 — Release Candidate**. See [runs/2026-07-02-rc13.md](validation/runs/2026-07-02-rc13.md) and [runs/2026-07-28-fault-05-stale-bond-hw-validation.md](validation/runs/2026-07-28-fault-05-stale-bond-hw-validation.md) — the latter also surfaced [#98](https://github.com/jklingberg/partybox-companion/issues/98), a `v1.0 blocker` that must be fixed before tagging.
 
 ---
 
@@ -509,13 +509,13 @@ boot/reboot, speaker lifecycle, host lifecycle, Bluetooth contention
 (FAULT-01/02/03/04/06), network, resources, soak (11.5 h continuous), log
 quality, and the full REST/auth surface (API-01/02/03/04).
 
-**Deferred (do not block M18 close):**
-- **FAULT-05** — stale-bond recovery. The fix is merged and unit-tested
+**Deferred (do not block M18 close) — since closed:**
+- **FAULT-05** — stale-bond recovery. The fix was merged and unit-tested
   (a stale bond now yields a clean, classified failure instead of a
   traceback; see [ADR-028](adr/028-audio-readiness-model.md) and PR #44); the
-  end-to-end hardware recovery leg needs `bluetoothctl remove` + a
-  pairing-mode button press, so it is carried into **M19's fresh-pairing
-  validation** (the same physical action), tracked in the run report.
+  end-to-end hardware recovery leg needed `bluetoothctl remove` + a
+  pairing-mode button press, and **passed on 2026-07-28** — see
+  [runs/2026-07-28-fault-05-stale-bond-hw-validation.md](validation/runs/2026-07-28-fault-05-stale-bond-hw-validation.md).
 - **INC-2** — WirePlumber's `0.40` default sink volume ships music at 40 %
   (music quiet vs. loud native sounds). Confirmed audio-UX defect; the
   product fix (pin the A2DP node to 100 % on connect) is on the **M19** punch
