@@ -533,7 +533,7 @@ No significant new functionality. This milestone verifies that all the pieces wo
 
 **Goals:**
 - End-to-end validation on real hardware: flash a fresh SD card → boot → reach Portal → stream Spotify → reboot → stream again
-- Fresh-pairing validation: exercise `bluez_dbus.py`'s `org.bluez.Agent1` flow end to end — `Pair()`, agent registration, first-time bonding — against a not-yet-bonded speaker under Python 3.14. This path has never been hardware-verified (see M16 implementation notes and [ADR-029](adr/029-python-3-14-standardization.md)); everything validated so far is reconnect against an already-bonded device, not first pairing.
+- ~~Fresh-pairing validation~~ — **done.** `bluez_dbus.py`'s `org.bluez.Agent1` flow (`Pair()`, agent registration, first-time bonding against a not-yet-bonded speaker) passed in RC13's BOOT-02 (2026-07-03, see [runs/2026-07-02-rc13.md](validation/runs/2026-07-02-rc13.md)); the remaining stale-bond recovery leg (FAULT-05) passed 2026-07-28 (see [runs/2026-07-28-fault-05-stale-bond-hw-validation.md](validation/runs/2026-07-28-fault-05-stale-bond-hw-validation.md)). Both under Python 3.14 ([ADR-029](adr/029-python-3-14-standardization.md)). A separate defect surfaced during the FAULT-05 run — [#98](https://github.com/jklingberg/partybox-companion/issues/98), a `v1.0 blocker` — must still be fixed before tagging.
 - Documentation review: README, setup guide, and API reference are accurate and complete
 - API freeze: no breaking changes to `/api/v1/*` after this point
 - `CHANGELOG.md` drafted with user-visible changes since M6

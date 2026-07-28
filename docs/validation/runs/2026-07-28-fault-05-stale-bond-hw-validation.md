@@ -63,13 +63,19 @@ TX     : 44.7 KB/s during playback
 leaving `config.json` pointing at the now-unknown address. Verified immediately
 afterwards that the bond was gone and the config was untouched.
 
-AudioService's response:
+AudioService's response, captured in two separate polling windows (15:03:08–15:03:43,
+then 15:04:26 onward — the ~43 s gap between them was not captured, so at least
+one intermediate retry at the expected ~40 s backoff step is not shown below):
 
 ```
 15:03:15  WARNING A2DP connect failed for 50:1B:6A:14:FD:1D:
                   err:STALE_BOND:device unknown to BlueZ (re-pair required)
-15:03:20  WARNING (same, retry in 10s)
+15:03:20  WARNING (same, retry in 10s — reset to base after an unrelated
+                  "speaker woke up" BLE liveness event)
 15:03:31  WARNING (same, retry in 20s)
+          [gap: not captured, 15:03:43–15:04:26]
+15:04:32  WARNING (same, retry in 60s — consistent with an uncaptured 40s
+                  step at ~15:03:51, then the 60s cap)
 15:04:32  WARNING A2DP: 5 consecutive outright connect failures to
                   50:1B:6A:14:FD:1D — cooling down 300s instead of retrying immediately
 ```
@@ -78,9 +84,11 @@ AudioService's response:
 (`audio unavailable — 300s grace`) rather than deregistering immediately.
 
 The failure is **explicitly classified** (`STALE_BOND`) with an actionable
-remedy in the message, and the retry ladder backs off (10 s → 20 s → … → 5
-failures → 300 s cooldown) instead of hammering. This is exactly what FAULT-05
-requires — "must fail with a clear diagnostic (not silent retry-forever)".
+remedy in the message, and the retry ladder backs off (10 s → 20 s → 40 s
+[uncaptured] → 60 s → 5 failures → 300 s cooldown, matching `_RETRY_BASE`/
+`_RETRY_MAX`/`_FAILURE_LIMIT` in `companion/services/audio.py`) instead of
+hammering. This is exactly what FAULT-05 requires — "must fail with a clear
+diagnostic (not silent retry-forever)".
 
 Incidental observation: the BLE GATT control link was unaffected in kind — it
 dropped with the device object but reconnected on a fresh RPA and resumed
@@ -111,12 +119,13 @@ i.e. right after the button press — consistent with RC13's BOOT-02 finding tha
 the JBL answers BR/EDR inquiry only while in pairing mode.
 
 Notable interaction, and the reason this scenario is worth running on hardware:
-AudioService had entered its **300 s cooldown** one second before pairing
-succeeded. The `re-pair detected — retrying immediately` path broke that
-cooldown on the pairing event. Without it, a successful re-pair would have been
-followed by up to five minutes of silence with everything reporting healthy —
-a bug that no unit test would surface, since it only exists in the timing
-overlap between two independent state machines.
+AudioService had entered its **300 s cooldown** at 15:04:32, just **5 seconds**
+before pairing completed at 15:04:37. The `re-pair detected — retrying
+immediately` path broke that cooldown on the pairing event. Without it, a
+successful re-pair would have been followed by up to five minutes of silence
+with everything reporting healthy — a bug that no unit test would surface,
+since it only exists in the timing overlap between two independent state
+machines.
 
 **PASS.**
 
@@ -140,11 +149,14 @@ the service without a restart.
 
 ## Observation: audible A2DP disruption during the BLE reconnect window
 
-Immediately after a successful re-pair, the operator reported ~45 s of heavy
-stuttering. This correlates exactly with the BLE control link reconnecting:
+The operator reported ~45 s of heavy stuttering spanning the re-pair. This
+correlates with the BLE control link dropping and re-scanning — note the drop
+began 4 s *before* `Pairing: complete` (15:04:37), overlapping the tail of the
+pairing operation itself rather than following it:
 
 ```
 15:04:33  connection lost, will reconnect (56:3A:44:83:A7:3D)
+15:04:37  Pairing: complete   (from section 2, for reference)
 15:05:01  connection failed (attempt 4): could not connect to 61:F9:04:93:8D:15
 15:05:06  scan attempt 5 / scanning for speaker
 15:05:19  connected to 68:04:A5:67:4C:8F (attempt 5)
