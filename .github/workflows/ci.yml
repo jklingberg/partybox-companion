@@ -12,8 +12,8 @@ jobs:
     name: Lint & Format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v9.0.0
         with:
           version: "latest"
       - name: Install workspace
@@ -27,8 +27,8 @@ jobs:
     name: Type Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v9.0.0
         with:
           version: "latest"
       - name: Install workspace
@@ -50,8 +50,8 @@ jobs:
       matrix:
         package: [partybox, partyboxd, companion]
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v9.0.0
         with:
           version: "latest"
       - name: Install workspace
@@ -60,8 +60,9 @@ jobs:
         run: uv run pytest -m "not hardware"
         working-directory: packages/${{ matrix.package }}
       - name: Upload coverage
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v7
         with:
-          file: packages/${{ matrix.package }}/coverage.xml
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: packages/${{ matrix.package }}/coverage.xml
           flags: ${{ matrix.package }}
           fail_ci_if_error: false

@@ -49,9 +49,10 @@ packages = ["src/partybox"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = ["--cov=partybox"]
+addopts = ["--cov=partybox", "--cov-report=term-missing", "--cov-report=xml"]
 # This package-level config shadows the root [tool.pytest.ini_options] when
-# pytest runs from here, so asyncio_mode must be repeated. The SDK is async.
+# pytest runs from here, so asyncio_mode and the coverage report flags must
+# be repeated. The SDK is async.
 asyncio_mode = "auto"
 
 [tool.mypy]
