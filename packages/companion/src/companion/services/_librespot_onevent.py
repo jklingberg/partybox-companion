@@ -30,6 +30,12 @@ _CONNECT_TIMEOUT = 1.0
 
 
 def main() -> int:
+    # Configured here, not under `if __name__ == "__main__"`, so it also
+    # applies when this runs via the installed console-script entry point
+    # (librespot execs that path directly — see spotify.py's docstring), which
+    # never goes through this module's __main__ block. basicConfig() is a
+    # no-op if a handler is already installed (e.g. under pytest's caplog).
+    logging.basicConfig(level=logging.DEBUG, format="onevent: %(message)s")
     sock_path = os.environ.get("COMPANION_SPOTIFY_EVENT_SOCK")
     event = os.environ.get("PLAYER_EVENT", "")
     if not sock_path or not event:
@@ -50,5 +56,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.DEBUG, format="onevent: %(message)s")
     sys.exit(main())

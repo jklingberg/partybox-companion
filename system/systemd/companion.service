@@ -17,10 +17,12 @@ SupplementaryGroups=systemd-journal
 # The Portal writes config.json here; systemd creates the directory before ExecStart.
 Environment=COMPANION_DATA_DIR=/var/lib/companion
 
-# Production path for ephemeral runtime state (librespot --onevent launcher
-# script + its Unix event socket — see SpotifyService). Matches
-# RuntimeDirectory=companion below, which is what actually creates this
-# tmpfs-backed directory before ExecStart.
+# Production path for ephemeral runtime state (librespot --onevent's Unix
+# event socket — see SpotifyService; the --onevent target itself is the
+# partybox-librespot-onevent console-script in /opt/partybox-companion/bin/,
+# not a file under this dir, since this dir is a noexec tmpfs — issue #99).
+# Matches RuntimeDirectory=companion below, which is what actually creates
+# this tmpfs-backed directory before ExecStart.
 Environment=COMPANION_RUNTIME_DIR=/run/companion
 
 # The live PipeWire/WirePlumber session is the pi user's (see ADR-019 and the

@@ -15,18 +15,28 @@ from log scraping: librespot 0.8's stderr is silent across pause/resume (only
 track-load lines are logged at default verbosity), so a log-line heuristic
 can detect "started playing" but can never detect "paused" — see the M18
 validation notes this replaced. ``--onevent`` runs a program (see
-``_ensure_runtime_files``) for every playback event, including "paused",
-with the event name in the ``PLAYER_EVENT`` env var. That program
+``_onevent_path``) for every playback event, including "paused", with the
+event name in the ``PLAYER_EVENT`` env var. That program
 (``_librespot_onevent.py``) forwards the event over a Unix domain socket this
 service listens on — see ``_handle_event_connection``.
+
+librespot's ``--onevent`` takes a single executable path and cannot invoke
+``python -m ...`` directly, so the target is a real console-script
+(``partybox-librespot-onevent``, see ``pyproject.toml``) installed to the
+venv's ``bin/`` alongside the Python interpreter, resolved via
+``_onevent_path`` rather than a runtime-generated shell shim. An earlier
+version wrote that shim into ``runtime_dir``, which on the appliance is a
+``noexec`` tmpfs (``/run/companion``) — librespot could never execute it, so
+playback state silently never updated (issue #99). ``runtime_dir`` still
+holds the Unix event socket below, which doesn't need the exec bit.
 
 Event flow, librespot's playback event to a client watching the Portal::
 
     librespot
-        │  --onevent <script>, PLAYER_EVENT=playing|paused|stopped|... in env
+        │  --onevent <path>, PLAYER_EVENT=playing|paused|stopped|... in env
         ▼
-    generated shell shim (_ensure_runtime_files, runtime_dir/librespot-onevent.sh)
-        │  exec python -m companion.services._librespot_onevent
+    partybox-librespot-onevent  (console-script, venv bin/ — see _onevent_path)
+        │  exec's straight into _librespot_onevent.main()
         ▼
     _librespot_onevent.py  (short-lived subprocess, one per event)
         │  connects + writes PLAYER_EVENT to COMPANION_SPOTIFY_EVENT_SOCK
@@ -50,7 +60,6 @@ import ctypes
 import logging
 import os
 import re
-import shlex
 import shutil
 import signal
 import sys
@@ -70,6 +79,7 @@ log = logging.getLogger(__name__)
 _RESTART_DELAY = 5.0
 _NOT_FOUND_RETRY = 60.0
 _EVENT_READ_TIMEOUT = 2.0
+_ONEVENT_SELFTEST_TIMEOUT = 5.0
 _DEFAULT_RUNTIME_DIR = Path(tempfile.gettempdir()) / "companion"
 
 type PlaybackState = Literal["stopped", "playing", "paused"]
@@ -148,7 +158,12 @@ class SpotifyService:
         self._settings = settings
         self._volume_state = volume_state
         self._runtime_dir = runtime_dir
-        self._onevent_script_path = runtime_dir / "librespot-onevent.sh"
+        # The console-script entry point installed alongside this interpreter
+        # (see pyproject.toml's [project.scripts] and the module docstring) —
+        # not a path under runtime_dir. On the appliance /run/companion is a
+        # noexec tmpfs; a program librespot needs to actually execute cannot
+        # live there (issue #99).
+        self._onevent_path = Path(sys.executable).with_name("partybox-librespot-onevent")
         self._event_sock_path = runtime_dir / "spotify-events.sock"
         self._running = False
         self._state: PlaybackState = "stopped"
@@ -213,6 +228,7 @@ class SpotifyService:
     async def run(self) -> None:
         """Start librespot and restart after unexpected exits. Runs until cancelled."""
         log.info("Spotify service starting (device_name=%r)", self._settings.connect_name)
+        await self._check_onevent_executable()
         event_server = await self._start_event_server()
         try:
             while True:
@@ -231,7 +247,7 @@ class SpotifyService:
     # ------------------------------------------------------------------
 
     async def _start_event_server(self) -> asyncio.Server:
-        """Create the runtime dir/launcher script and bind the --onevent socket.
+        """Create the runtime dir and bind the --onevent event socket.
 
         Retries on OSError (e.g. the runtime dir isn't writable yet at early
         boot) instead of raising. This matters here specifically:
@@ -252,7 +268,7 @@ class SpotifyService:
         attempt = 0
         while True:
             try:
-                self._ensure_runtime_files()
+                self._ensure_runtime_dir()
                 self._event_sock_path.unlink(missing_ok=True)
                 server = await asyncio.start_unix_server(
                     self._handle_event_connection, path=str(self._event_sock_path)
@@ -278,26 +294,14 @@ class SpotifyService:
                     )
                 return server
 
-    def _ensure_runtime_files(self) -> None:
-        """Create the runtime dir and the librespot --onevent launcher script.
+    def _ensure_runtime_dir(self) -> None:
+        """Create the runtime dir that holds the --onevent event socket.
 
-        librespot's ``--onevent`` takes a single executable path — it cannot
-        invoke ``python -m ...`` directly — so this writes a tiny shell shim
-        that execs the real hook (:mod:`companion.services._librespot_onevent`)
-        via the current interpreter. Regenerated on every start so a Python
-        interpreter path change (e.g. venv rebuild) doesn't leave a stale shim.
-
-        The runtime dir is chmod'd 0700: it holds the event socket and this
-        executable script, and should not be readable by other local users.
+        Chmod'd 0700: the socket should not be reachable by other local users.
         On the appliance this is already true (RuntimeDirectoryMode=0700 in
         companion.service), but ``mkdir(exist_ok=True)`` does not update the
         mode of a pre-existing directory, and the dev-mode default (a temp
         dir) has no such guarantee — so it's set explicitly here regardless.
-
-        The script itself is written to a temp file and atomically renamed
-        into place (same filesystem, since both live in runtime_dir) so a
-        process interrupted mid-write never leaves librespot pointing at a
-        truncated or half-written launcher.
         """
         if self._runtime_dir.exists() and not self._runtime_dir.is_dir():
             # mkdir(exist_ok=True) would raise FileExistsError here anyway, but
@@ -310,14 +314,55 @@ class SpotifyService:
             )
         self._runtime_dir.mkdir(parents=True, exist_ok=True)
         self._runtime_dir.chmod(0o700)
-        script = (
-            "#!/bin/sh\n"
-            f"exec {shlex.quote(sys.executable)} -m companion.services._librespot_onevent\n"
-        )
-        tmp_path = self._onevent_script_path.with_name(self._onevent_script_path.name + ".tmp")
-        tmp_path.write_text(script)
-        tmp_path.chmod(0o755)
-        tmp_path.replace(self._onevent_script_path)
+
+    async def _check_onevent_executable(self) -> None:
+        """Startup self-test: can librespot actually execute ``_onevent_path``?
+
+        ``os.access(path, os.X_OK)`` alone isn't enough — it checks permission
+        bits, not whether the filesystem the path lives on allows execution at
+        all. A ``noexec`` mount (e.g. the appliance's ``/run`` prior to issue
+        #99) passes the permission check and then fails at exec() every
+        single time librespot calls it, with the only symptom being a
+        once-per-event WARN in librespot's own log and playback state frozen
+        forever. Actually launching the target here, once at startup, turns
+        that into a loud, immediate diagnostic instead.
+
+        Run with an empty environment so ``_librespot_onevent.main()`` takes
+        its early-return no-op path (no ``COMPANION_SPOTIFY_EVENT_SOCK`` /
+        ``PLAYER_EVENT``) — this exercises exactly the exec() call librespot
+        will make without forwarding a fake event anywhere.
+        """
+        proc: asyncio.subprocess.Process | None = None
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                str(self._onevent_path),
+                env={},
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            rc = await asyncio.wait_for(proc.wait(), timeout=_ONEVENT_SELFTEST_TIMEOUT)
+        except (OSError, TimeoutError) as exc:
+            if proc is not None:
+                # Reached only via the wait_for timeout — exec() itself
+                # succeeded, so there's a real orphan child to clean up.
+                with suppress(ProcessLookupError):
+                    proc.kill()
+            log.error(
+                "librespot --onevent target %s failed a startup self-test (%s) — "
+                "Spotify playback state will never update until this is fixed. "
+                "Common causes: the partybox-companion package needs "
+                "reinstalling, or this path is on a noexec filesystem.",
+                self._onevent_path,
+                exc,
+            )
+            return
+        if rc != 0:
+            log.error(
+                "librespot --onevent target %s exited %d during startup self-test "
+                "— Spotify playback state may not update correctly.",
+                self._onevent_path,
+                rc,
+            )
 
     async def _handle_event_connection(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -469,7 +514,7 @@ class SpotifyService:
             str(self._settings.bitrate),
             "--disable-audio-cache",
             "--onevent",
-            str(self._onevent_script_path),
+            str(self._onevent_path),
             "--emit-sink-events",
         ]
         if self._settings.backend is not None:
