@@ -22,6 +22,7 @@ import os
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
+from typing import Any
 
 import uvicorn
 from fastapi import FastAPI
@@ -35,7 +36,7 @@ from companion.config import AudioSettings, CompanionSettings, SpotifySettings
 from companion.config_store import ConfigStore
 from companion.services import login1_dbus, pipewire_volume
 from companion.services.adapter_recovery import reset_adapter
-from companion.services.audio import AudioService
+from companion.services.audio import AudioService, AudioServiceEvent
 from companion.services.audio_focus import AudioFocusService
 from companion.services.le_reclaim import disconnect_stale_speaker_links
 from companion.services.pairing import PairingService, PairingState
@@ -86,6 +87,58 @@ def _make_log_config(level: str) -> dict[str, object]:
 _AUDIO_GRACE_SECONDS = 300.0
 
 
+async def _wait_for_audio_event(
+    queue: asyncio.Queue[AudioServiceEvent],
+    spotify_task: asyncio.Task[None] | None,
+    *,
+    timeout: float | None = None,
+) -> AudioServiceEvent | None:
+    """Wait for the next audio event, racing it against ``spotify_task``.
+
+    Returns the event, or ``None`` if *timeout* elapses first (never happens
+    when *timeout* is ``None``). If *spotify_task* finishes before either of
+    those, its outcome is re-raised — SpotifyService.run() is only expected
+    to exit via cancellation (ADR-026), so any other exit (exception or a
+    bare return) is a supervised-task failure that must propagate to the
+    Supervisor rather than disappear. See issue #65.
+
+    When *spotify_task* is ``None`` there is nothing to race against, so this
+    just awaits (or times out on) the queue directly.
+    """
+    if spotify_task is None:
+        if timeout is None:
+            return await queue.get()
+        try:
+            return await asyncio.wait_for(queue.get(), timeout=timeout)
+        except TimeoutError:
+            return None
+
+    get_event = asyncio.ensure_future(queue.get())
+    waitables: set[asyncio.Future[Any]] = {get_event, spotify_task}
+
+    done, _pending = await asyncio.wait(
+        waitables, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
+    )
+
+    if spotify_task in done:
+        get_event.cancel()
+        with suppress(asyncio.CancelledError):
+            await get_event
+        exc = spotify_task.exception()
+        if exc is not None:
+            raise exc
+        raise RuntimeError("SpotifyService.run() exited unexpectedly without raising")
+
+    if get_event in done:
+        return get_event.result()
+
+    # Timeout elapsed with neither the event nor spotify_task ready.
+    get_event.cancel()
+    with suppress(asyncio.CancelledError):
+        await get_event
+    return None
+
+
 async def _gate_spotify_on_audio(audio: AudioService, spotify: SpotifyService) -> None:
     """Gate SpotifyService on audio readiness.
 
@@ -106,23 +159,20 @@ async def _gate_spotify_on_audio(audio: AudioService, spotify: SpotifyService) -
     SpotifyService.run() owns subprocess crash-recovery internally; this gate
     does not supervise it.  See ADR-026.
 
-    KNOWN GAP (github.com/jklingberg/partybox-companion/issues/65):
-    spotify_task below is a bare asyncio.create_task() and is only ever
-    awaited on the grace-period-timeout and cancellation paths — not on the
-    "audio stays ready" path, which is the common case.  An uncaught
-    exception from spotify.run() while audio is ready is therefore never
-    retrieved here, this coroutine keeps running as if nothing happened, and
-    the Supervisor (which only sees "spotify-audio-gate", not spotify.run()
-    itself) never restarts anything.  Despite what an earlier version of
-    this docstring claimed, an exception here does NOT currently propagate
-    to the Supervisor.  Fix tracked in the issue above.
+    Every wait on the audio-event queue also races spotify_task via
+    _wait_for_audio_event(), on both the "audio ready" and grace-period
+    paths — so an unexpected exit from spotify.run() propagates out of this
+    coroutine immediately instead of going unobserved (see issue #65).  That
+    lets the Supervisor's restart policy for "spotify-audio-gate" actually
+    apply.
     """
     queue = audio.subscribe()
     spotify_task: asyncio.Task[None] | None = None
 
     try:
         while True:
-            event = await queue.get()
+            event = await _wait_for_audio_event(queue, spotify_task)
+            assert event is not None  # no timeout passed on this path
 
             if event.audio_ready:
                 if spotify_task is None:
@@ -134,20 +184,20 @@ async def _gate_spotify_on_audio(audio: AudioService, spotify: SpotifyService) -
                         "audio gate: audio unavailable — %.0fs grace before stopping Spotify",
                         _AUDIO_GRACE_SECONDS,
                     )
-                    try:
-                        recovery = await asyncio.wait_for(queue.get(), timeout=_AUDIO_GRACE_SECONDS)
-                    except TimeoutError:
+                    recovery = await _wait_for_audio_event(
+                        queue, spotify_task, timeout=_AUDIO_GRACE_SECONDS
+                    )
+                    if recovery is None:
                         log.info("audio gate: grace period expired — stopping Spotify Connect")
                         spotify_task.cancel()
                         with suppress(asyncio.CancelledError):
                             await spotify_task
                         spotify_task = None
-                    else:
-                        if recovery.audio_ready:
-                            log.info("audio gate: audio restored within grace period")
+                    elif recovery.audio_ready:
+                        log.info("audio gate: audio restored within grace period")
     finally:
         audio.unsubscribe(queue)
-        if spotify_task is not None:
+        if spotify_task is not None and not spotify_task.done():
             spotify_task.cancel()
             with suppress(asyncio.CancelledError):
                 await spotify_task

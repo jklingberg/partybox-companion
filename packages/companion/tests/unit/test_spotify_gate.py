@@ -54,6 +54,34 @@ class _FakeSpotify:
             raise
 
 
+class _CrashingSpotify:
+    """SpotifyService stand-in whose run() raises shortly after starting."""
+
+    def __init__(self, exc: BaseException | None = None) -> None:
+        self.started = asyncio.Event()
+        self.run_count = 0
+        self._exc = exc if exc is not None else RuntimeError("librespot died")
+
+    async def run(self) -> None:
+        self.run_count += 1
+        self.started.set()
+        await asyncio.sleep(0)
+        raise self._exc
+
+
+class _ReturningSpotify:
+    """SpotifyService stand-in whose run() returns cleanly (a violated invariant)."""
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.run_count = 0
+
+    async def run(self) -> None:
+        self.run_count += 1
+        self.started.set()
+        await asyncio.sleep(0)
+
+
 # ---------------------------------------------------------------------------
 # Gate does not start Spotify until audio is ready
 # ---------------------------------------------------------------------------
@@ -245,6 +273,72 @@ async def test_unsubscribes_on_cancellation() -> None:
     task.cancel()
     with suppress(asyncio.CancelledError):
         await task
+
+    audio.unsubscribe.assert_called_once_with(q)
+
+
+# ---------------------------------------------------------------------------
+# spotify_task supervision (issue #65)
+# ---------------------------------------------------------------------------
+
+
+async def test_propagates_spotify_exception_while_audio_ready() -> None:
+    """An exception from spotify.run() must propagate even while audio stays ready.
+
+    This is the exact gap from issue #65: previously spotify_task was only
+    awaited on the grace-timeout and cancellation paths, so a crash on the
+    common "audio steady" path went unobserved and the Supervisor never
+    restarted anything.
+    """
+    q = _queue(True)
+    spotify = _CrashingSpotify(RuntimeError("librespot died"))
+
+    task = asyncio.create_task(_gate_spotify_on_audio(_audio_mock(q), spotify))
+
+    with pytest.raises(RuntimeError, match="librespot died"):
+        await asyncio.wait_for(task, timeout=1.0)
+
+    assert spotify.run_count == 1
+
+
+async def test_propagates_spotify_clean_return_while_audio_ready() -> None:
+    """A bare return from spotify.run() is also a violated invariant and must propagate."""
+    q = _queue(True)
+    spotify = _ReturningSpotify()
+
+    task = asyncio.create_task(_gate_spotify_on_audio(_audio_mock(q), spotify))
+
+    with pytest.raises(RuntimeError, match="exited unexpectedly"):
+        await asyncio.wait_for(task, timeout=1.0)
+
+
+@patch("companion.__main__._AUDIO_GRACE_SECONDS", 10.0)
+async def test_propagates_spotify_exception_during_grace_period() -> None:
+    """A crash while audio is briefly unavailable (mid grace-period wait) must also propagate."""
+    q = _queue(True)
+    spotify = _CrashingSpotify(RuntimeError("librespot died mid-grace"))
+    audio = _audio_mock(q)
+
+    task = asyncio.create_task(_gate_spotify_on_audio(audio, spotify))
+    await asyncio.sleep(0)  # gate: dequeue True, create spotify_task
+    await spotify.started.wait()
+
+    q.put_nowait(AudioReadyChanged(audio_ready=False))  # enter grace-period wait
+
+    with pytest.raises(RuntimeError, match="librespot died mid-grace"):
+        await asyncio.wait_for(task, timeout=1.0)
+
+
+async def test_unsubscribes_when_spotify_crashes() -> None:
+    """The finally block's cleanup must run (and not double-await the failed task)."""
+    q = _queue(True)
+    spotify = _CrashingSpotify(RuntimeError("boom"))
+    audio = _audio_mock(q)
+
+    task = asyncio.create_task(_gate_spotify_on_audio(audio, spotify))
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await asyncio.wait_for(task, timeout=1.0)
 
     audio.unsubscribe.assert_called_once_with(q)
 
