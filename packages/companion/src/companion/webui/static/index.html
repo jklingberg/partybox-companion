@@ -1692,6 +1692,15 @@ function startReconcilePoll() {
 // Settings sheet
 // ==========================================================================
 async function openSettings() {
+  // Re-fetch config rather than seeding the form from whatever S.config
+  // happened to hold — a background refresh() done just before a pairing
+  // completed would otherwise seed this form with a stale copy that
+  // Save then PUTs back (RACE-01 defense in depth; the actual fix is that
+  // the server now merges rather than replaces — see router.py).
+  if (!MOCK) {
+    const cRes = await get('/api/v1/config');
+    if (cRes && cRes.ok) S.config = await cRes.json();
+  }
   document.getElementById('set-spotify-name').value = S.config.spotify_connect_name || '';
   const br = String(S.config.spotify_bitrate || 320);
   const sel = document.getElementById('set-bitrate');
@@ -1798,11 +1807,11 @@ async function saveSettings() {
     const r = await fetch('/api/v1/config', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
+      // PUT merges onto server-side state (RACE-01) — only send the fields
+      // this form actually edits. Spreading S.config here would resend
+      // whatever audio_sink_address this session last saw, which could be
+      // stale and would clobber a pairing that happened since.
       body: JSON.stringify({
-        // PUT replaces the whole config, so fields not in this form (e.g.
-        // audio_sink_address, set by the pairing flow) must be carried
-        // forward from the last-known config rather than dropped.
-        ...S.config,
         spotify_connect_name: newSvcName,
         spotify_bitrate: newBitrate,
       }),

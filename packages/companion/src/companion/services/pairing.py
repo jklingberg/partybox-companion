@@ -30,7 +30,7 @@ from typing import Literal
 
 from partyboxd.eventbus import EventBus
 
-from companion.config_store import ConfigStore
+from companion.config_store import ConfigStore, PortalConfig
 from companion.services.audio import AudioService
 from companion.services.bluez_dbus import BluezClient, PairingFailedError
 
@@ -223,9 +223,14 @@ class PairingService:
                     await bluez.trust(mac)
                     await bluez.connect(mac)
 
-                    # Persist so AudioService survives reboots.
-                    cfg = self._config.read()
-                    self._config.write(cfg.model_copy(update={"audio_sink_address": mac}))
+                    # Persist so AudioService survives reboots. Goes through
+                    # ConfigStore.update() (not a bare read()+write()) so this
+                    # can't race a concurrent Settings-save PUT into clobbering
+                    # the address it just set (RACE-01).
+                    def _set_sink_address(cfg: PortalConfig, mac: str = mac) -> PortalConfig:
+                        return cfg.model_copy(update={"audio_sink_address": mac})
+
+                    await self._config.update(_set_sink_address)
                     log.info("Pairing: address %s saved to config", mac)
 
                     # Wake AudioService immediately without a process restart.
