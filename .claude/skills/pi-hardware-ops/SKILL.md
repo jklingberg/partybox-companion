@@ -32,6 +32,8 @@ rsync -e "ssh -o StrictHostKeyChecking=no" -av --delete <src> pi@partybox.local:
 
 `StrictHostKeyChecking=no` avoids an interactive host-key prompt on first contact.
 
+**`REMOTE HOST IDENTIFICATION HAS CHANGED` right after setting up SSH access on a re-flashed device is expected, not a MITM sign.** A fresh image generates a new SSH host key on first boot, so if `known_hosts` still has an entry from that device's *previous* flash (or from a different device that previously answered at the same `partybox`/`partybox.local` address), the new key won't match. `StrictHostKeyChecking=no` connects anyway; if you're not using that flag, clear the stale entry with `ssh-keygen -f ~/.ssh/known_hosts -R partybox` (and `-R partybox.local` for the other hostname) rather than treating it as a real MITM incident.
+
 The `pi` account still has a password, but it's random per device (generated on first real boot, never at image-build time — see ADR-043) and is for the **physical/UART console only**; it is never accepted over SSH (which stays key-only whenever it's enabled at all). If you need it, it's printed to `/etc/issue`, visible on the serial console or a directly attached keyboard/monitor.
 
 ### Port 22 answers but no key is accepted yet
