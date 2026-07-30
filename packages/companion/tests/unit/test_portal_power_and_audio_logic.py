@@ -246,3 +246,94 @@ def test_health_sheet_spotify_row_reflects_audio_connected(portal_src: str) -> N
     up = spotify_row(audio_connected=True, spotify_state="playing")
     assert up["state"] == "ok"
     assert up["text"] == "Playing"
+
+
+# ---------------------------------------------------------------------------
+# UX-03 — an in-progress pairing flow must outrank the speaker_state scenes
+#
+# Pairing is itself what makes the BLE control link flap (LE discovery, BR/EDR
+# inquiry, and the user holding the speaker's Bluetooth button), so
+# speaker_state 'unreachable' during a pairing attempt is expected noise, not
+# a fault. #89 fixed this for a never-paired appliance by checking
+# `!audio.address` ahead of speaker_state, but that proxy stops holding the
+# moment a bond persists an address — which happens seconds *before* A2DP
+# connects on a first pairing, and immediately on a re-pair. The scene then
+# fell through to SPEAKER_UNREACHABLE mid-flow ("Speaker seems to be on, but
+# not responding"), reported 2026-07-30.
+# ---------------------------------------------------------------------------
+
+
+def _derive_scene_with(portal_src: str, state: dict[str, object]) -> str:
+    scene_decl = re.search(r"const Scene = Object\.freeze\(\{.*?\}\);", portal_src, re.S)
+    assert scene_decl
+    derive_scene_fn = _extract_braced(portal_src, "function deriveScene() {")
+    js = f"""
+    {scene_decl.group(0)}
+    {derive_scene_fn}
+    global.S = {json.dumps(state)};
+    console.log(JSON.stringify(deriveScene()));
+    """
+    scene: str = json.loads(_run_node(js))
+    return scene
+
+
+@pytest.mark.parametrize(
+    ("flag", "expected"),
+    [
+        ("pairingActive", "pair"),
+        ("pairIntent", "pair"),
+        (None, "speaker-unreachable"),
+    ],
+)
+def test_pairing_flow_outranks_speaker_unreachable(
+    portal_src: str, flag: str | None, expected: str
+) -> None:
+    """A bonded address plus an unreachable BLE link is exactly the mid-pairing
+    state that used to hijack the flow. With either pairing flag set the scene
+    must stay PAIR; with neither, SPEAKER_UNREACHABLE is still correct.
+    """
+    state: dict[str, object] = {
+        "health": {
+            "speaker_state": "unreachable",
+            "audio_focus": "exclusive",
+            "audio_ready": False,
+        },
+        "powerPending": None,
+        "btResetStartedAt": None,
+        "fetchFailed": False,
+        # Bond completed and persisted an address; A2DP has not connected yet.
+        "audio": {"address": "50:1B:6A:14:FD:1D", "connected": False},
+        "pairingActive": False,
+        "pairIntent": False,
+    }
+    if flag is not None:
+        state[flag] = True
+
+    assert _derive_scene_with(portal_src, state) == expected
+
+
+def test_pairing_flags_do_not_mask_companion_liveness_scenes(portal_src: str) -> None:
+    """The pairing hold must sit *below* the Companion-liveness checks: if the
+    appliance itself is unreachable, that outranks any local pairing intent.
+    """
+    state: dict[str, object] = {
+        "health": None,
+        "fetchFailed": True,
+        "powerPending": None,
+        "btResetStartedAt": None,
+        "audio": None,
+        "pairingActive": True,
+        "pairIntent": True,
+    }
+    assert _derive_scene_with(portal_src, state) == "unreachable"
+
+
+def test_open_pair_records_intent_instead_of_faking_no_address(portal_src: str) -> None:
+    """The 'open-pair' action must not fake `audio.address = null` to force the
+    PAIR scene. That lie was overwritten by the next refresh()/audio_changed
+    (both assign address straight from the server), bouncing the user out of
+    the flow, and it made the health sheet call a paired speaker "Not paired".
+    """
+    handler = _extract_line(portal_src, "'open-pair':")
+    assert "S.audio.address = null" not in handler
+    assert "S.pairIntent = true" in handler
