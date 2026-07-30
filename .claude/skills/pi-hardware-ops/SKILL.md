@@ -18,7 +18,7 @@ If either stops resolving, don't treat it as an appliance fault — first try th
 
 1. Open the Portal (`http://partybox.local`) → **Settings → SSH access**.
 2. Either paste your public key or enter your GitHub username and click **Import** (fetches `https://github.com/<username>.keys`, the same public endpoint `ssh-import-id`/cloud-init use — requires the appliance already be on WiFi, since it needs outbound internet).
-3. Click **Apply SSH settings**. There is no separate enable toggle — having a key configured *is* what turns SSH on; click **Disable SSH** to clear the key(s) and turn it back off.
+3. Click **Save**. There is no separate enable toggle — having a key configured *is* what turns SSH on; click **Disable SSH** to clear the key(s) and turn it back off.
 
 After that, connect with your own key — no password, no `sshpass`:
 
@@ -48,7 +48,7 @@ If `ssh`/`rsync` to the Pi gets a TCP response on port 22 (banner exchange happe
    ```bash
    cat "$CLAUDE_CONFIG_DIR/ssh/partybox_ed25519.pub"
    ```
-   Tell the user: open the Portal (`http://partybox.local`) → **Settings → SSH access** → paste the printed key into the public-key field → **Apply SSH settings**.
+   Tell the user: open the Portal (`http://partybox.local`) → **Settings → SSH access** → paste the printed key into the public-key field → **Save**.
 4. Once they confirm it's applied, retry using that identity file explicitly:
    ```bash
    ssh -o StrictHostKeyChecking=no -i "$CLAUDE_CONFIG_DIR/ssh/partybox_ed25519" pi@partybox.local "<command>"
