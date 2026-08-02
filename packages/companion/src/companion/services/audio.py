@@ -208,6 +208,9 @@ class AudioService:
         self._connected_at: float | None = None
         self._flap_count = 0
         self._consecutive_failures = 0
+        #: True while a BR/EDR ConnectProfile page is in flight — see
+        #: :meth:`connecting` and :meth:`radio_busy`.
+        self._connecting = False
         if self._address is not None:
             self._address_ready.set()
 
@@ -215,6 +218,25 @@ class AudioService:
     def audio_ready(self) -> bool:
         """True when A2DP is connected and the appliance can produce audio."""
         return self._audio_ready
+
+    @property
+    def connecting(self) -> bool:
+        """True while a BR/EDR ``ConnectProfile`` page is in flight.
+
+        Set for the duration of :meth:`_connect` (up to the 35 s subprocess
+        timeout in :meth:`_run_subprocess`) — the page that occupies the
+        shared Bluetooth radio and competes with a concurrent BLE GATT
+        operation (see the standby-gate comment above ``_STANDBY_RECHECK``).
+        This is exactly the case a wake-from-standby resume produces: the
+        speaker answering DeviceManager's liveness probe again fires
+        ``retry_now()`` (``_recheck_audio_on_standby`` in
+        ``companion.__main__``), which starts this page at the same moment
+        DeviceManager's own health-check loop is still probing on its normal
+        15 s cadence — see :meth:`radio_busy`, which combines this with
+        :meth:`transport_active` for callers that want a single "back off
+        the radio" signal.
+        """
+        return self._connecting
 
     @property
     def status(self) -> AudioStatus:
@@ -248,15 +270,18 @@ class AudioService:
         Distinct from :attr:`audio_ready`, which only says the link exists:
         BlueZ's ``MediaTransport1`` goes ``active`` when the AVDTP stream
         starts and back to ``idle`` a few seconds after playback stops, so
-        this is the "audio is flowing right now" signal. Both
-        ``AudioFocusService`` and ``DeviceManager`` (via an injected
-        ``streaming_fn``) use it to skip radio-sensitive work outright while
-        audio is flowing — active LE scanning, and even a routine GATT
-        liveness probe, on the shared controller steals radio slots from the
-        live stream (observed as periodic stutter, 2026-07-17 and
-        2026-07-21). ``pending`` (the stream is being acquired) counts as
-        active so a check never lands right as playback starts. All failure
-        shapes collapse to False; callers treat the signal as advisory.
+        this is the "audio is flowing right now" signal. ``AudioFocusService``
+        and ``DeviceManager`` skip radio-sensitive work outright while audio
+        is flowing — active LE scanning, and even a routine GATT liveness
+        probe, on the shared controller steals radio slots from the live
+        stream (observed as periodic stutter, 2026-07-17 and 2026-07-21).
+        ``pending`` (the stream is being acquired) counts as active so a
+        check never lands right as playback starts. All failure shapes
+        collapse to False; callers treat the signal as advisory.
+
+        Both consumers are wired to :meth:`radio_busy`, not this method
+        directly — see its docstring for why streaming alone isn't the whole
+        signal they need.
 
         **Cost — not free, but bounded.** This is not a cheap in-memory
         lookup: it spawns a subprocess and makes a D-Bus round trip (see
@@ -271,6 +296,35 @@ class AudioService:
             return False
         _, line = await self._run_subprocess(self._address, "state")
         return line in ("active", "pending")
+
+    async def radio_busy(self) -> bool:
+        """True while the shared Bluetooth radio should not be disturbed.
+
+        Combines :attr:`connecting` with :meth:`transport_active`: both are
+        reasons for ``AudioFocusService`` and ``DeviceManager`` to skip a
+        radio-sensitive operation (LE scan, GATT liveness probe) outright,
+        via the ``streaming_fn`` each is constructed with.
+
+        ``transport_active`` alone only covers *steady-state* streaming —
+        while audio is already flowing. It says nothing about the moment a
+        speaker wakes from standby: DeviceManager's own liveness probe
+        succeeding is what fires ``retry_now()`` (see
+        ``_recheck_audio_on_standby`` in ``companion.__main__``), which
+        starts a BR/EDR ``ConnectProfile`` page — up to 35 s of radio
+        contention — while ``audio_ready`` is still False, so
+        ``transport_active`` reports False throughout it. Without
+        :attr:`connecting` in the mix, DeviceManager's health-check loop
+        keeps its normal 15 s cadence right through that page, landing a GATT
+        liveness probe on the same shared controller mid-page — observed as
+        a transient ``speaker_state: unreachable`` blip and audible
+        stuttering on the freshly (re)connected stream while both links
+        settle.
+
+        Checked first — a plain attribute read — before falling through to
+        :meth:`transport_active`'s subprocess/D-Bus round trip, so the common
+        "definitely not connecting" case stays cheap.
+        """
+        return self._connecting or await self.transport_active()
 
     def recheck_now(self) -> None:
         """Interrupt an idle wait and re-check the A2DP link immediately.
@@ -414,7 +468,12 @@ class AudioService:
                         self._address,
                         retry_delay,
                     )
-                    if await self._connect():
+                    self._connecting = True
+                    try:
+                        connect_ok = await self._connect()
+                    finally:
+                        self._connecting = False
+                    if connect_ok:
                         # ConnectProfile returned ok — trust it and wait briefly
                         # before the top-of-loop _is_connected() check.
                         # MediaTransport1 is created asynchronously after
