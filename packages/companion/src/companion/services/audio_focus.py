@@ -124,21 +124,23 @@ class AudioFocusService:
     attempt is running — scans are skipped then, so this service's discovery
     traffic never competes with the pairing flow's own discovery windows.
 
-    *streaming_fn* returns True while the A2DP transport is actively carrying
-    audio (see ``AudioService.transport_active``); the loop then skips
-    scanning OUTRIGHT, exactly like *ble_connected_fn* below — see that
-    parameter's docstring for the freshness trade-off this implies, and the
-    class docstring's "Scan cost" section for why per-click severity, not
-    just frequency, forced this from an initial relaxed-cadence approach.
-    ``None`` means "never streaming" (scan at *interval* always). The
-    callable must not raise — collapse failures to False. It is polled once
-    per loop iteration (at most every *interval*/``_STREAMING_STATE_RECHECK``
-    seconds — never in a tight loop), which is what makes
-    ``AudioService.transport_active``'s own subprocess-and-D-Bus cost
-    (documented on that method) acceptable here; an implementation must stay
-    in that same ballpark (fast, side-effect-free state lookup, not
-    unbounded I/O) or both this loop and ``DeviceManager``'s health-check
-    loop stall for as long as it takes to return.
+    *streaming_fn* returns True while the shared Bluetooth radio should not
+    be disturbed — either the A2DP transport is actively carrying audio, or
+    a BR/EDR reconnect page is in flight (see ``AudioService.radio_busy``);
+    the loop then skips scanning OUTRIGHT, exactly like *ble_connected_fn*
+    below — see that parameter's docstring for the freshness trade-off this
+    implies, and the class docstring's "Scan cost" section for why per-click
+    severity, not just frequency, forced this from an initial
+    relaxed-cadence approach. ``None`` means "never streaming" (scan at
+    *interval* always). The callable must not raise — collapse failures to
+    False. It is polled once per loop iteration (at most every
+    *interval*/``_STREAMING_STATE_RECHECK`` seconds — never in a tight
+    loop), which is what makes ``AudioService.radio_busy``'s own
+    subprocess-and-D-Bus cost (documented on ``transport_active``, which it
+    falls through to) acceptable here; an implementation must stay in that
+    same ballpark (fast, side-effect-free state lookup, not unbounded I/O)
+    or both this loop and ``DeviceManager``'s health-check loop stall for as
+    long as it takes to return.
 
     *ble_connected_fn*, when provided, gates scanning on DeviceManager
     holding its control connection: scans are skipped entirely while it does
