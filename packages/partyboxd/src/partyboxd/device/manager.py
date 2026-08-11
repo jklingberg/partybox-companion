@@ -57,6 +57,15 @@ _HEALTH_CHECK_INTERVAL = 15.0
 # AudioFocusService activity in the same window.
 _STREAMING_HEALTH_CHECK_INTERVAL = 60.0
 
+# How often to re-check whether playback has stopped while the scan/connect
+# loop is gated off by streaming (ADR-044). This is a state-poll cadence, not
+# a scan interval — no LE discovery happens on these iterations at all, so it
+# costs nothing on the radio and can stay short enough that reconnection
+# starts promptly once the music ends. Mirrors AudioFocusService's
+# _STREAMING_STATE_RECHECK, which gates its own scanning the same way and for
+# the same reason.
+_STREAMING_SCAN_RECHECK = 10.0
+
 # Upper bound on the probe itself. A wedged Bluetooth stack can hang an
 # ATT write instead of failing it; an unbounded probe would then hang the
 # health check that exists to detect exactly that state.
@@ -355,6 +364,10 @@ class DeviceManager:
         self._adapter_recover_fn = adapter_recover_fn
         self._stale_reclaim_fn = stale_reclaim_fn
         self._streaming_fn = streaming_fn
+        #: True while the scan/connect loop is deferred because audio is
+        #: streaming (ADR-044). Tracked only so the deferral logs once per
+        #: episode instead of every _STREAMING_SCAN_RECHECK seconds.
+        self._streaming_gated = False
         #: Consecutive clean-but-empty scans (reset by any scan that finds
         #: the speaker; see _note_empty_scan).
         self._empty_scans = 0
@@ -576,6 +589,8 @@ class DeviceManager:
         attempt = 0
         try:
             while True:
+                if await self._defer_for_streaming():
+                    continue
                 attempt += 1
                 await self._connect_and_maintain(attempt)
         except asyncio.CancelledError:
@@ -675,7 +690,7 @@ class DeviceManager:
         failures = 0
         while True:
             interval = _HEALTH_CHECK_INTERVAL
-            if self._streaming_fn is not None and await self._streaming_fn():
+            if await self._is_streaming():
                 interval = _STREAMING_HEALTH_CHECK_INTERVAL
             drain = asyncio.create_task(device.drain_until_disconnect())
             try:
@@ -1004,8 +1019,31 @@ class DeviceManager:
         not translate into an adapter cycle every few minutes forever. While
         suppressed, the failure counters keep their value, so the next failure
         after the cool-down expires re-triggers immediately.
+
+        Recovery is **never** run while A2DP audio is streaming (ADR-044).
+        The power-cycle is unconditionally fatal to an active stream — the
+        cool-down note above already says so — and on 2026-08-09 that was not
+        theoretical: a recovery fired 652s into a reconnect storm, dropped the
+        A2DP link as collateral damage, and the speaker then refused to
+        reconnect for long enough to burn the retry budget, the connect
+        cool-down and the Spotify grace period, removing the appliance from
+        every Spotify client for 26 minutes. Trading a wedge-recovery attempt
+        for continued playback is always correct here: the user is by
+        definition still hearing music, so the adapter is by definition not
+        wedged in a way that is hurting them right now. Deferral preserves the
+        counters and sets no cool-down, so recovery fires promptly on the first
+        failure after playback stops if the condition is real. The Portal's
+        manual reset is deliberately *not* gated — an operator asking for it
+        explicitly has overridden this judgement.
         """
         if self._adapter_recover_fn is None:
+            return
+        if await self._is_streaming():
+            log.warning(
+                "adapter recovery deferred while audio is streaming — will"
+                " re-evaluate when playback stops (%s) (ADR-044)",
+                reason,
+            )
             return
         now = asyncio.get_running_loop().time()
         if self._last_recovery is not None and now - self._last_recovery < _RECOVERY_COOLDOWN:
@@ -1024,6 +1062,80 @@ class DeviceManager:
             log.info("adapter recovery completed; resuming connect attempts")
         else:
             log.warning("adapter recovery reported failure; resuming connect attempts anyway")
+
+    async def _is_streaming(self) -> bool:
+        """True while A2DP audio is actively flowing; False when unknown.
+
+        Collapses both "no *streaming_fn* injected" and "*streaming_fn*
+        raised" to False, which is the safe direction for every caller: it
+        yields the pre-ADR-044 behaviour (scan freely, recover freely) rather
+        than silently disabling reconnection on a probe that has started
+        failing. ``__init__`` documents *streaming_fn* as never raising; this
+        makes that contract true at the call site instead of trusting it,
+        since an exception escaping here would otherwise kill the manager
+        task outright and take the whole control link down with it.
+        """
+        if self._streaming_fn is None:
+            return False
+        try:
+            return await self._streaming_fn()
+        except Exception as exc:
+            log.debug("streaming check failed, assuming not streaming: %s", exc)
+            return False
+
+    async def _defer_for_streaming(self) -> bool:
+        """Hold the scan/connect loop while A2DP audio is playing (ADR-044).
+
+        Returns True when the caller should skip this cycle entirely (having
+        slept ``_STREAMING_SCAN_RECHECK``), False to proceed with a normal
+        scan/connect attempt.
+
+        LE discovery and an A2DP stream share one radio: per ADR-028's btmon
+        capture, each scan's start/stop mode switch costs a ~440ms cluster of
+        A2DP TX gaps on this BCM4345 combo controller, independent of scan
+        duration. The reconnect loop therefore cannot scan its way back to
+        the speaker without audibly damaging the audio it exists to serve.
+        ``AudioFocusService`` already resolved the identical conflict by
+        skipping its scans outright while streaming; this is the same trade,
+        applied to the loop that turned out to be causing it far more often
+        (validation run 2026-08-11, PHYS-12: the control link drops ~60s into
+        playback and the ensuing six scans over two minutes were plainly
+        audible).
+
+        The trade-off is explicit: **BLE control being down while audio
+        streams is a normal, expected steady state**, not a fault to recover
+        from. ``ble_connected`` stays false and control commands stay
+        unavailable for as long as the music plays. That is a real functional
+        loss — power/battery/firmware queries are dead in the water — and it
+        is accepted because uninterrupted audio is the appliance's primary
+        job, and because the alternative (scanning anyway) does not actually
+        restore the link any faster: it just makes the failure audible. See
+        ADR-044 for the full argument and the paths considered instead.
+
+        ``_unreachable_since`` is cleared on entry so deferred time never
+        accrues toward ``_WEDGE_UNREACHABLE_TIMEOUT``. Without that, a long
+        listening session would hand the ADR-039 watchdog a 600s+ "unreachable"
+        measurement the moment playback stopped, and trigger an adapter
+        power-cycle for a link that was never given a chance to reconnect.
+        """
+        if not await self._is_streaming():
+            if self._streaming_gated:
+                self._streaming_gated = False
+                # Audio has stopped and the radio is ours again. Drop back to
+                # the base delay so the first post-playback attempt is prompt
+                # instead of inheriting a backoff grown before the deferral.
+                self._retry_delay = self._settings.reconnect_delay
+                log.info("audio stopped — resuming scan/connect for the control link")
+            return False
+        if not self._streaming_gated:
+            self._streaming_gated = True
+            log.info(
+                "audio is streaming — deferring control-link scan/connect until"
+                " playback stops (ADR-044)"
+            )
+        self._unreachable_since = None
+        await asyncio.sleep(_STREAMING_SCAN_RECHECK)
+        return True
 
     async def _sleep_and_backoff(self) -> None:
         """Sleep the current scan/connect retry delay, then grow it for next time.
