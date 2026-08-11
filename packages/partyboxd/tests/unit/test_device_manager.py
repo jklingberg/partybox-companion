@@ -28,6 +28,7 @@ from partyboxd.device.manager import (
     _HEALTH_CHECK_FAILURE_LIMIT,
     _POWER_COMMAND_GRACE,
     _RECONNECT_MAX,
+    _WEDGE_CONNECT_FAILURES,
     _WEDGE_UNREACHABLE_TIMEOUT,
     _WEDGE_WINDOW,
     DeviceManager,
@@ -1650,3 +1651,194 @@ async def test_scan_error_does_not_touch_beacon_seen(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr("partyboxd.device.manager.Scanner.find_with_presence", _broken)
     assert await manager._scan() is None
     assert manager.snapshot.beacon_seen is False  # unchanged from initial default
+
+
+# ---------------------------------------------------------------------------
+# radio contention: audio has priority over the control link (ADR-044)
+# ---------------------------------------------------------------------------
+
+
+def _streaming_manager(streaming: bool, **kw: object) -> tuple[DeviceManager, list[bool]]:
+    """Manager whose streaming_fn returns *streaming*, plus a call log."""
+    calls: list[bool] = []
+
+    async def streaming_fn() -> bool:
+        calls.append(streaming)
+        return streaming
+
+    return DeviceManager(_settings(), streaming_fn=streaming_fn, **kw), calls  # type: ignore[arg-type]
+
+
+async def test_scan_loop_defers_while_streaming(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Audio flowing means the cycle is skipped entirely — no LE discovery on
+    a radio that is carrying an A2DP stream (ADR-044)."""
+    monkeypatch.setattr("partyboxd.device.manager._STREAMING_SCAN_RECHECK", 0.01)
+    manager, calls = _streaming_manager(True)
+    assert await manager._defer_for_streaming() is True
+    assert calls == [True]
+
+
+async def test_scan_loop_proceeds_when_not_streaming() -> None:
+    """Silence means business as usual."""
+    manager, calls = _streaming_manager(False)
+    assert await manager._defer_for_streaming() is False
+    assert calls == [False]
+
+
+async def test_scan_loop_proceeds_without_streaming_fn() -> None:
+    """Standalone partyboxd injects no streaming_fn and must be unaffected."""
+    manager = _make_manager()
+    assert await manager._defer_for_streaming() is False
+
+
+async def test_deferral_does_not_accrue_unreachable_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Time spent deferred must not count toward _WEDGE_UNREACHABLE_TIMEOUT.
+
+    Otherwise a long listening session hands ADR-039's watchdog a 600s+
+    'unreachable' measurement the moment playback stops, and an adapter
+    power-cycle fires for a link never given one chance to reconnect.
+
+    The window is frozen and shifted forward on release, not reset: a genuine
+    wedge must resume accumulating where it left off.
+    """
+    monkeypatch.setattr("partyboxd.device.manager._STREAMING_SCAN_RECHECK", 0.01)
+    streaming = False
+
+    async def streaming_fn() -> bool:
+        return streaming
+
+    manager = DeviceManager(_settings(), streaming_fn=streaming_fn)
+    loop = asyncio.get_running_loop()
+    now = loop.time()
+    # Unreachable for 600s, of which the last 500s were spent deferred:
+    # only the first 100s represent time actually spent trying and failing.
+    manager._unreachable_since = now - 600.0
+    manager._streaming_gated = True
+    manager._streaming_gated_since = now - 500.0
+
+    assert await manager._defer_for_streaming() is False
+
+    assert manager._unreachable_since is not None
+    elapsed = loop.time() - manager._unreachable_since
+    assert 99.0 < elapsed < 101.0
+
+
+async def test_deferral_does_not_reset_unreachable_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression guard: deferring must not *clear* _unreachable_since.
+
+    streaming_fn is companion's ``radio_busy``, which reports True during
+    BR/EDR connect pages as well as streaming — and those recur exactly when
+    things are going badly. Clearing on every deferral would restart the
+    wedge timer on each failed A2DP retry, so ADR-039 could never fire in
+    the scenario it exists for.
+    """
+    monkeypatch.setattr("partyboxd.device.manager._STREAMING_SCAN_RECHECK", 0.01)
+    manager, _ = _streaming_manager(True)
+    manager._unreachable_since = asyncio.get_running_loop().time() - 300.0
+    assert await manager._defer_for_streaming() is True
+    assert manager._unreachable_since is not None
+
+
+async def test_resuming_after_playback_resets_backoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The first attempt after the music stops is prompt, not throttled by a
+    backoff grown before the deferral began."""
+    monkeypatch.setattr("partyboxd.device.manager._STREAMING_SCAN_RECHECK", 0.01)
+    streaming = True
+
+    async def streaming_fn() -> bool:
+        return streaming
+
+    manager = DeviceManager(_settings(reconnect_delay=5.0), streaming_fn=streaming_fn)
+    manager._retry_delay = _RECONNECT_MAX
+    assert await manager._defer_for_streaming() is True
+    streaming = False
+    assert await manager._defer_for_streaming() is False
+    assert manager._retry_delay == 5.0
+
+
+async def test_run_issues_no_scan_while_streaming(monkeypatch: pytest.MonkeyPatch) -> None:
+    """End-to-end: the run loop spins without touching the scanner."""
+    monkeypatch.setattr("partyboxd.device.manager._STREAMING_SCAN_RECHECK", 0.001)
+    scans: list[bool] = []
+
+    async def _record(*_: object, **__: object) -> ScanResult:
+        scans.append(True)
+        return ScanResult(device=None, beacon_seen=False)
+
+    monkeypatch.setattr("partyboxd.device.manager.Scanner.find_with_presence", _record)
+    manager, _ = _streaming_manager(True)
+    task = asyncio.create_task(manager.run())
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert scans == []
+
+
+async def test_adapter_recovery_deferred_while_streaming() -> None:
+    """The power-cycle is fatal to an active A2DP stream, so it never runs
+    while one exists — and deferring preserves the counters and sets no
+    cool-down, so it fires promptly once playback stops (ADR-044)."""
+    calls: list[bool] = []
+
+    async def recover() -> bool:
+        calls.append(True)
+        return True
+
+    manager, _ = _streaming_manager(True, adapter_recover_fn=recover)
+    await manager._maybe_recover("test wedge")
+    assert calls == []
+    assert manager._last_recovery is None
+
+
+async def test_adapter_recovery_fires_once_playback_stops() -> None:
+    """The same condition recovers normally in silence."""
+    calls: list[bool] = []
+
+    async def recover() -> bool:
+        calls.append(True)
+        return True
+
+    streaming = True
+
+    async def streaming_fn() -> bool:
+        return streaming
+
+    manager = DeviceManager(_settings(), adapter_recover_fn=recover, streaming_fn=streaming_fn)
+    await manager._maybe_recover("test wedge")
+    assert calls == []
+    streaming = False
+    await manager._maybe_recover("test wedge")
+    assert calls == [True]
+
+
+async def test_dense_failures_do_not_recover_while_streaming() -> None:
+    """The escalation path as a whole respects the gate, not just the leaf."""
+    calls: list[bool] = []
+
+    async def recover() -> bool:
+        calls.append(True)
+        return True
+
+    manager, _ = _streaming_manager(True, adapter_recover_fn=recover)
+    for _ in range(_WEDGE_CONNECT_FAILURES):
+        await manager._note_connect_failure()
+    assert calls == []
+
+
+async def test_streaming_check_failure_collapses_to_not_streaming() -> None:
+    """A raising streaming_fn must not kill the manager task or silently
+    disable reconnection — it degrades to pre-ADR-044 behaviour."""
+
+    async def broken() -> bool:
+        raise RuntimeError("D-Bus went away")
+
+    manager = DeviceManager(_settings(), streaming_fn=broken)
+    assert await manager._is_streaming() is False
+    assert await manager._defer_for_streaming() is False
