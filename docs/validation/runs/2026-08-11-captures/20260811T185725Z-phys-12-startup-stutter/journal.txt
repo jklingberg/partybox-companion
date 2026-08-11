@@ -1,0 +1,82 @@
+$ journalctl -u companion --since '15 min ago' --no-pager -o short-precise
+Aug 11 19:42:39.657306 partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+Aug 11 19:43:00.912567 partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+Aug 11 19:43:22.167883 partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+Aug 11 19:43:43.423232 partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+Aug 11 19:44:04.678558 partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+Aug 11 19:44:25.933787 partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+Aug 11 19:44:47.188773 partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+Aug 11 19:45:08.444574 partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+Aug 11 19:45:29.699902 partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+Aug 11 19:45:50.954863 partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+Aug 11 19:46:12.211121 partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+Aug 11 19:46:33.466337 partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+Aug 11 19:46:54.721697 partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+Aug 11 19:47:15.976975 partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+Aug 11 19:47:37.232508 partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+Aug 11 19:47:58.487951 partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+Aug 11 19:48:19.742988 partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+Aug 11 19:48:40.998698 partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+Aug 11 19:49:02.254189 partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+Aug 11 19:49:23.509655 partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+Aug 11 19:49:44.764119 partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+Aug 11 19:50:06.019509 partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+Aug 11 19:50:27.275638 partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+Aug 11 19:50:48.530578 partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+Aug 11 19:51:09.785795 partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+Aug 11 19:51:31.041801 partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+Aug 11 19:51:52.296905 partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+Aug 11 19:51:57.154747 partybox systemd[1]: Stopping companion.service - PartyBox Companion...
+Aug 11 19:51:57.217181 partybox companion[749]: INFO     uvicorn.error Shutting down
+Aug 11 19:51:57.317659 partybox companion[749]: INFO     uvicorn.error Waiting for application shutdown.
+Aug 11 19:51:57.317844 partybox companion[749]: INFO     companion.services.audio Audio service stopping
+Aug 11 19:51:57.317913 partybox companion[749]: INFO     companion.services.provisioning Provisioning service: cancelled -- cleaning up AP
+Aug 11 19:51:59.682438 partybox companion[749]: INFO     partyboxd.device.manager device manager stopping
+Aug 11 19:51:59.682438 partybox companion[749]: INFO     uvicorn.error Application shutdown complete.
+Aug 11 19:51:59.682438 partybox companion[749]: INFO     uvicorn.error Finished server process [749]
+Aug 11 19:51:59.685019 partybox systemd[1]: companion.service: Deactivated successfully.
+Aug 11 19:51:59.685527 partybox systemd[1]: Stopped companion.service - PartyBox Companion.
+Aug 11 19:51:59.685585 partybox systemd[1]: companion.service: Consumed 1h 30min 24.200s CPU time.
+Aug 11 19:51:59.714186 partybox systemd[1]: Starting companion.service - PartyBox Companion...
+Aug 11 19:52:06.105923 partybox systemd[1]: Started companion.service - PartyBox Companion.
+Aug 11 19:52:06.728972 partybox companion[57018]: INFO     uvicorn.error Started server process [57018]
+Aug 11 19:52:06.729380 partybox companion[57018]: INFO     uvicorn.error Waiting for application startup.
+Aug 11 19:52:06.729816 partybox companion[57018]: INFO     partyboxd.device.manager device manager started
+Aug 11 19:52:06.729908 partybox companion[57018]: INFO     partyboxd.device.manager scan attempt 1
+Aug 11 19:52:06.729985 partybox companion[57018]: INFO     partyboxd.device.manager scanning for speaker
+Aug 11 19:52:06.734926 partybox companion[57018]: INFO     companion.services.audio Audio service starting (sink=50:1B:6A:14:FD:1D)
+Aug 11 19:52:06.737971 partybox companion[57018]: INFO     uvicorn.error Application startup complete.
+Aug 11 19:52:06.739626 partybox companion[57018]: INFO     uvicorn.error Uvicorn running on http://0.0.0.0:80 (Press CTRL+C to quit)
+Aug 11 19:52:06.756706 partybox companion[57018]: INFO     companion.services.provisioning Provisioning service: checking WiFi state
+Aug 11 19:52:06.773955 partybox companion[57018]: INFO     companion.services.provisioning WiFi already connected -- provisioning not needed
+Aug 11 19:52:06.938675 partybox companion[57018]: INFO     companion.services.audio A2DP sink not connected, connecting to 50:1B:6A:14:FD:1D (retry in 10s)
+Aug 11 19:52:07.952775 partybox companion[57018]: WARNING  companion.services.audio A2DP connect failed for 50:1B:6A:14:FD:1D: err:'br-connection-unknown'
+Aug 11 19:52:20.595498 partybox companion[57018]: INFO     companion.services.audio A2DP sink not connected, connecting to 50:1B:6A:14:FD:1D (retry in 20s)
+Aug 11 19:52:22.455798 partybox companion[57018]: WARNING  companion.services.audio A2DP connect failed for 50:1B:6A:14:FD:1D: err:'br-connection-unknown'
+Aug 11 19:52:28.022972 partybox companion[57018]: INFO     partyboxd.device.manager connected to 72:60:29:A3:8A:D3 (attempt 1)
+Aug 11 19:52:31.093846 partybox companion[57018]: WARNING  partyboxd.device.manager could not read firmware version: timed out waiting for firmware version response
+Aug 11 19:52:37.078209 partybox companion[57018]: INFO     companion.services.audio_focus audio focus: unknown -> exclusive (source_count=0x04 connection_bits=0x01 payload=202101d7e4000028040000501b6a14fd1d00010000000000)
+Aug 11 19:52:44.508527 partybox companion[57018]: INFO     companion.services.audio A2DP: speaker in standby — holding off connect attempts (re-evaluating every 300s until it wakes)
+Aug 11 19:53:10.604823 partybox companion[57018]: INFO     companion.services.audio A2DP: speaker woke up — retrying immediately
+Aug 11 19:53:10.820195 partybox companion[57018]: INFO     companion.services.audio A2DP: speaker no longer in standby (on) — resuming connect attempts
+Aug 11 19:53:10.820323 partybox companion[57018]: INFO     companion.services.audio A2DP sink not connected, connecting to 50:1B:6A:14:FD:1D (retry in 10s)
+Aug 11 19:53:11.698800 partybox companion[57018]: INFO     companion.services.audio A2DP connection established to 50:1B:6A:14:FD:1D
+Aug 11 19:53:11.699114 partybox companion[57018]: INFO     companion.__main__ audio gate: audio ready — starting Spotify Connect
+Aug 11 19:53:11.699114 partybox companion[57018]: INFO     companion.services.spotify Spotify service starting (device_name='PartyBox')
+Aug 11 19:53:11.829821 partybox companion[57018]: INFO     companion.services.spotify Spotify service started (pid=57084, device='PartyBox')
+Aug 11 19:53:25.961584 partybox companion[57018]: INFO     partyboxd.device.manager battery recovered on re-probe: 100%
+Aug 11 19:54:12.037225 partybox companion[57018]: WARNING  partyboxd.device.manager connection lost, will reconnect (72:60:29:A3:8A:D3)
+Aug 11 19:54:12.038092 partybox companion[57018]: INFO     partyboxd.device.manager scan attempt 2
+Aug 11 19:54:12.038141 partybox companion[57018]: INFO     partyboxd.device.manager scanning for speaker
+Aug 11 19:54:25.051862 partybox companion[57018]: INFO     partyboxd.device.manager scan attempt 3
+Aug 11 19:54:25.052184 partybox companion[57018]: INFO     partyboxd.device.manager scanning for speaker
+Aug 11 19:54:43.065239 partybox companion[57018]: INFO     partyboxd.device.manager scan attempt 4
+Aug 11 19:54:43.065623 partybox companion[57018]: INFO     partyboxd.device.manager scanning for speaker
+Aug 11 19:55:11.280333 partybox companion[57018]: INFO     partyboxd.device.manager scan attempt 5
+Aug 11 19:55:11.280733 partybox companion[57018]: INFO     partyboxd.device.manager scanning for speaker
+Aug 11 19:55:30.504086 partybox companion[57018]: WARNING  companion.services.spotify librespot: [2026-08-11T18:55:30Z WARN  librespot_connect::state::context] couldn't load context info because: context is not available. type: Default
+Aug 11 19:55:59.294558 partybox companion[57018]: INFO     partyboxd.device.manager scan attempt 6
+Aug 11 19:55:59.295004 partybox companion[57018]: INFO     partyboxd.device.manager scanning for speaker
+Aug 11 19:56:16.146117 partybox companion[57018]: INFO     partyboxd.device.manager connected to 7F:BD:B7:44:8F:01 (attempt 6)
+Aug 11 19:56:16.354509 partybox companion[57018]: INFO     partyboxd.device.manager firmware version: 26.2.10
+Aug 11 19:56:16.565114 partybox companion[57018]: INFO     partyboxd.device.manager battery: 100% (full)

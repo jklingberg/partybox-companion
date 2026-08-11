@@ -1,0 +1,2 @@
+$ curl -s --max-time 5 http://localhost/api/v1/health
+{"status":"ok","version":"0.1.0rc16","ble_connected":true,"audio_ready":true,"speaker_state":"on","audio_focus":"exclusive"}
