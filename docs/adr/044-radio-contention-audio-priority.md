@@ -4,6 +4,7 @@
 **Date:** 2026-08-11
 **Amends:** [ADR-039](039-ble-controller-wedge-self-heal.md) (adapter recovery is now gated on playback), [ADR-042](042-ble-link-establishment-failure-storms.md) (reframes what a "storm" costs)
 **Builds on:** [ADR-028](028-audio-readiness-model.md) (the scan-cost finding), [ADR-035](035-state-ownership-and-signal-pipeline.md)
+**Depends on:** PR #107, which introduces `AudioService.radio_busy()` and wires it in as `DeviceManager`'s `streaming_fn`. This ADR's gates consume that signal, so they cover the BR/EDR reconnect page as well as steady-state streaming — a scan is equally unwelcome during either.
 
 ---
 
@@ -115,10 +116,19 @@ Concretely, in `DeviceManager`:
    explicitly has overridden this judgement.
 
 3. **Deferred time does not accrue toward the wedge timeout.**
-   `_defer_for_streaming()` clears `_unreachable_since` on entry. Otherwise a
-   long listening session would hand ADR-039's watchdog a 600 s+ "unreachable"
-   measurement the instant the music stopped, and trigger a power-cycle for a
-   link that had not yet been given one chance to reconnect.
+   On release, `_defer_for_streaming()` shifts `_unreachable_since` forward by
+   the duration just spent deferred. Otherwise a long listening session would
+   hand ADR-039's watchdog a 600 s+ "unreachable" measurement the instant the
+   music stopped, and trigger a power-cycle for a link that had not yet been
+   given one chance to reconnect.
+
+   The window is **frozen, not reset**. Simply clearing `_unreachable_since`
+   would be wrong once `streaming_fn` is `radio_busy` (below): that reports
+   True during BR/EDR connect pages as well as during playback, and those
+   recur precisely when things are going badly. Every failed A2DP retry would
+   restart the wedge timer, and ADR-039 could never fire in the scenario it
+   exists for. Freezing keeps a genuine wedge accumulating across playback,
+   just without counting the time we deliberately stood down.
 
 4. **`streaming_fn` failures collapse to "not streaming".**
    `_is_streaming()` centralises the call and swallows exceptions, yielding

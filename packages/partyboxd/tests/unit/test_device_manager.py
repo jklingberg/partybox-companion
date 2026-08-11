@@ -1699,12 +1699,48 @@ async def test_deferral_does_not_accrue_unreachable_time(
     Otherwise a long listening session hands ADR-039's watchdog a 600s+
     'unreachable' measurement the moment playback stops, and an adapter
     power-cycle fires for a link never given one chance to reconnect.
+
+    The window is frozen and shifted forward on release, not reset: a genuine
+    wedge must resume accumulating where it left off.
+    """
+    monkeypatch.setattr("partyboxd.device.manager._STREAMING_SCAN_RECHECK", 0.01)
+    streaming = False
+
+    async def streaming_fn() -> bool:
+        return streaming
+
+    manager = DeviceManager(_settings(), streaming_fn=streaming_fn)
+    loop = asyncio.get_running_loop()
+    now = loop.time()
+    # Unreachable for 600s, of which the last 500s were spent deferred:
+    # only the first 100s represent time actually spent trying and failing.
+    manager._unreachable_since = now - 600.0
+    manager._streaming_gated = True
+    manager._streaming_gated_since = now - 500.0
+
+    assert await manager._defer_for_streaming() is False
+
+    assert manager._unreachable_since is not None
+    elapsed = loop.time() - manager._unreachable_since
+    assert 99.0 < elapsed < 101.0
+
+
+async def test_deferral_does_not_reset_unreachable_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression guard: deferring must not *clear* _unreachable_since.
+
+    streaming_fn is companion's ``radio_busy``, which reports True during
+    BR/EDR connect pages as well as streaming — and those recur exactly when
+    things are going badly. Clearing on every deferral would restart the
+    wedge timer on each failed A2DP retry, so ADR-039 could never fire in
+    the scenario it exists for.
     """
     monkeypatch.setattr("partyboxd.device.manager._STREAMING_SCAN_RECHECK", 0.01)
     manager, _ = _streaming_manager(True)
-    manager._unreachable_since = 1.0
-    await manager._defer_for_streaming()
-    assert manager._unreachable_since is None
+    manager._unreachable_since = asyncio.get_running_loop().time() - 300.0
+    assert await manager._defer_for_streaming() is True
+    assert manager._unreachable_since is not None
 
 
 async def test_resuming_after_playback_resets_backoff(
