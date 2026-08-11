@@ -124,6 +124,31 @@ def test_build_command_includes_emit_sink_events() -> None:
     assert "--emit-sink-events" in svc._build_command()
 
 
+def test_build_command_pins_initial_volume_to_full() -> None:
+    """INC-2 stage 2: librespot's own default is 50%, ~3% amplitude on a log taper."""
+    svc = _service()
+    cmd = svc._build_command()
+    assert "--initial-volume" in cmd
+    idx = cmd.index("--initial-volume")
+    assert cmd[idx + 1] == "100"
+
+
+def test_build_command_uses_cubic_volume_taper() -> None:
+    """Cubic, not log (too steep) and not fixed (kills the phone's slider)."""
+    svc = _service()
+    cmd = svc._build_command()
+    assert "--volume-ctrl" in cmd
+    idx = cmd.index("--volume-ctrl")
+    assert cmd[idx + 1] == "cubic"
+
+
+def test_build_command_keeps_spotify_volume_control_usable() -> None:
+    """ "fixed" disables Spotify-side volume entirely — it must never be used here."""
+    svc = _service()
+    cmd = svc._build_command()
+    assert "fixed" not in cmd
+
+
 # ---------------------------------------------------------------------------
 # Playback state from librespot's --onevent hook
 # ---------------------------------------------------------------------------

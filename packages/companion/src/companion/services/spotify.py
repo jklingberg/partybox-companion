@@ -105,6 +105,49 @@ _LIBRESPOT_LEVEL_RE = re.compile(r"^\[\S+ (WARN|ERROR)\s")
 # Matches librespot lines like: mixer: set volume to 65535 (100%)
 _VOLUME_RE = re.compile(r"volume.*?\((\d+)%\)", re.IGNORECASE)
 
+# ---------------------------------------------------------------------------
+# librespot softvol tuning — the second half of INC-2
+# ---------------------------------------------------------------------------
+#
+# INC-2 (docs/validation/runs/2026-07-02-rc13.md) found music attenuated by two
+# cascaded software stages that the speaker's own native sounds bypass. Stage 1
+# (WirePlumber pinning every fresh A2DP sink to 0.064 linear / 40% perceived)
+# was fixed in the image config and by AudioService's explicit pin — see
+# ADR-028 § "Volume floor from mixin.stateless" and ADR-022's PipeWire addendum.
+# Stage 2 is librespot's own softvol mixer, and it was never addressed: RC13's
+# punch list said "pin softvol to fixed", which is why these constants exist.
+#
+# librespot's shipped softvol defaults (verified against librespot 0.8, the
+# version raspotify installs — see image/install.sh § 2) are
+# --initial-volume 50, --volume-ctrl log, --volume-range 60.0. Running the log
+# mapping from librespot's playback/src/mixer/mappings.rs at 50%:
+#
+#     db_ratio     = 10^(60/20)        = 1000
+#     ideal_factor = ln(1000)          ≈ 6.908
+#     gain         = e^(6.908 * 0.5) / 1000 ≈ 0.0316   (-30 dB, ~3% amplitude)
+#
+# So an untouched librespot plays music at roughly 3% amplitude. With stage 1
+# now pinned at 1.00 this is the dominant attenuator in the chain, and it is
+# what "low volume after a fresh flash" actually is.
+#
+# Deliberately NOT "fixed": that is documented to disable Spotify volume
+# control outright (raspotify advertises LIBRESPOT_VOLUME_CTRL=fixed as exactly
+# that), so the slider in the phone's Spotify app would stop doing anything
+# audible — and librespot#1008 had it start muted despite --initial-volume=100.
+# Keeping a real taper preserves phone-side control.
+#
+# Cubic instead of log because its curve is far less brutal in the usable range
+# — from mappings.rs, at 50% it is (0.5 * 0.9 + 0.1)^3 ≈ 0.166 (-15.6 dB) vs
+# log's -30 dB — and because it is the same perceptual curve wpctl uses, so the
+# Portal slider (which drives the PipeWire sink) and the Spotify slider finally
+# behave alike. That convergence on one volume authority is ADR-022's intent.
+#
+# Tuning: these are the two knobs. Lower _INITIAL_VOLUME if 100% clips on this
+# speaker; add "--volume-range" with a value below 60.0 to compress the taper
+# further (a smaller range raises the gain floor at every slider position).
+_VOLUME_CTRL = "cubic"
+_INITIAL_VOLUME = 100
+
 
 @dataclass(frozen=True)
 class SpotifyStatus:
@@ -516,6 +559,11 @@ class SpotifyService:
             "--onevent",
             str(self._onevent_path),
             "--emit-sink-events",
+            # Stage 2 of INC-2 — see the softvol tuning block above.
+            "--volume-ctrl",
+            _VOLUME_CTRL,
+            "--initial-volume",
+            str(_INITIAL_VOLUME),
         ]
         if self._settings.backend is not None:
             cmd += ["--backend", self._settings.backend]
