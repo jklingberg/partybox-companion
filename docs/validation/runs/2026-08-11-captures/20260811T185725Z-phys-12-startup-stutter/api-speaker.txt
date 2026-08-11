@@ -1,0 +1,2 @@
+$ curl -s --max-time 5 http://localhost/api/v1/speaker
+{"connected":true,"address":"7F:BD:B7:44:8F:01","firmware":"26.2.10","battery":100}

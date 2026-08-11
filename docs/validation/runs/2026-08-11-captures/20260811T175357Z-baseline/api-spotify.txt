@@ -1,0 +1,2 @@
+$ curl -s --max-time 5 http://localhost/api/v1/spotify
+{"running":false,"state":"stopped","device_name":"PartyBox"}
