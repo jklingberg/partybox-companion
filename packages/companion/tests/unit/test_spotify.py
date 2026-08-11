@@ -124,13 +124,22 @@ def test_build_command_includes_emit_sink_events() -> None:
     assert "--emit-sink-events" in svc._build_command()
 
 
-def test_build_command_pins_initial_volume_to_full() -> None:
-    """INC-2 stage 2: librespot's own default is 50%, ~3% amplitude on a log taper."""
+def test_build_command_starts_slider_mid_travel() -> None:
+    """INC-2 stage 2: start mid-slider so there is headroom in both directions."""
     svc = _service()
     cmd = svc._build_command()
     assert "--initial-volume" in cmd
     idx = cmd.index("--initial-volume")
-    assert cmd[idx + 1] == "100"
+    assert cmd[idx + 1] == "50"
+
+
+def test_build_command_compresses_volume_range() -> None:
+    """A range below librespot's 60 dB default keeps mid-slider near 47% gain."""
+    svc = _service()
+    cmd = svc._build_command()
+    assert "--volume-range" in cmd
+    idx = cmd.index("--volume-range")
+    assert float(cmd[idx + 1]) == 15.0
 
 
 def test_build_command_uses_cubic_volume_taper() -> None:

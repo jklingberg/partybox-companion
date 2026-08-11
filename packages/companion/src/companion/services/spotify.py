@@ -142,11 +142,29 @@ _VOLUME_RE = re.compile(r"volume.*?\((\d+)%\)", re.IGNORECASE)
 # Portal slider (which drives the PipeWire sink) and the Spotify slider finally
 # behave alike. That convergence on one volume authority is ADR-022's intent.
 #
-# Tuning: these are the two knobs. Lower _INITIAL_VOLUME if 100% clips on this
-# speaker; add "--volume-range" with a value below 60.0 to compress the taper
-# further (a smaller range raises the gain floor at every slider position).
+# _VOLUME_RANGE compresses the taper: a smaller range raises the gain floor at
+# every slider position, so less digital attenuation is applied. 15.0 was chosen
+# from a hardware listening session (2026-08-11) — the operator wanted mid-slider
+# to sit at roughly 47% of full output, and cubic/15 gives 47.7%:
+#
+#     slider   25%     50%     75%    100%
+#     gain    30.3%   47.7%   70.6%  100.0%
+#     dB     -10.4    -6.4    -3.0     0.0
+#
+# Quality note: softvol attenuation happens in float and is then quantised to
+# S16 with TPDF dither (librespot's defaults), costing ~1 bit of resolution per
+# 6 dB. Mid-slider is ~1.1 bits — negligible, and far better than the shipped
+# log/60 default's 5 bits at the same position. Slider 100% is bit-transparent.
+# Because of this, loudness should be raised with the speaker's own amplifier
+# (AVRCP absolute volume, which acts after every digital stage) rather than by
+# boosting anything here — see the SBC-XQ / AVRCP actuator follow-up issues.
+#
+# _INITIAL_VOLUME is where the slider starts on each librespot start (there is
+# no volume cache: --disable-audio-cache and no --cache). 50 puts it mid-travel
+# so there is headroom in both directions.
 _VOLUME_CTRL = "cubic"
-_INITIAL_VOLUME = 100
+_INITIAL_VOLUME = 50
+_VOLUME_RANGE = 15.0
 
 
 @dataclass(frozen=True)
@@ -564,6 +582,8 @@ class SpotifyService:
             _VOLUME_CTRL,
             "--initial-volume",
             str(_INITIAL_VOLUME),
+            "--volume-range",
+            str(_VOLUME_RANGE),
         ]
         if self._settings.backend is not None:
             cmd += ["--backend", self._settings.backend]
