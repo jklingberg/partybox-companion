@@ -142,29 +142,46 @@ _VOLUME_RE = re.compile(r"volume.*?\((\d+)%\)", re.IGNORECASE)
 # Portal slider (which drives the PipeWire sink) and the Spotify slider finally
 # behave alike. That convergence on one volume authority is ADR-022's intent.
 #
-# _VOLUME_RANGE compresses the taper: a smaller range raises the gain floor at
-# every slider position, so less digital attenuation is applied. 15.0 was chosen
-# from a hardware listening session (2026-08-11) — the operator wanted mid-slider
-# to sit at roughly 47% of full output, and cubic/15 gives 47.7%:
+# _VOLUME_RANGE is how far DOWN the slider reaches: slider 100% is unity in
+# every case (min_norm cancels out), and a larger range lowers every position
+# below it. So this knob adjusts the bottom of the slider without touching the
+# top — which is exactly how it was tuned.
 #
-#     slider   25%     50%     75%    100%
-#     gain    30.3%   47.7%   70.6%  100.0%
-#     dB     -10.4    -6.4    -3.0     0.0
+# 30.0 comes from a second listening session (2026-08-12), after the speaker's
+# amplifier was brought under control by services.avrcp_volume. The first pass
+# used 15.0, chosen (2026-08-11) to put mid-slider near 47% while the amplifier
+# was still starved at 40/127 — a deliberate compression to claw back loudness
+# digitally. Once amp_baseline made the amplifier carry loudness properly, that
+# compression stopped being necessary and started being a problem: the operator
+# approved the level at slider 100% but found the lower end too loud, since
+# cubic/15 never drops below ~17.8% however far the slider comes down.
+#
+#     range    1%      25%     50%     75%    100%
+#     15      17.8%   30.3%   47.7%   70.6%  100.0%   (first pass)
+#     30       3.2%   11.6%   28.5%   57.0%  100.0%   (current)
 #
 # Quality note: softvol attenuation happens in float and is then quantised to
 # S16 with TPDF dither (librespot's defaults), costing ~1 bit of resolution per
-# 6 dB. Mid-slider is ~1.1 bits — negligible, and far better than the shipped
-# log/60 default's 5 bits at the same position. Slider 100% is bit-transparent.
-# Because of this, loudness should be raised with the speaker's own amplifier
-# (AVRCP absolute volume, which acts after every digital stage) rather than by
-# boosting anything here — see the SBC-XQ / AVRCP actuator follow-up issues.
+# 6 dB. Mid-slider is ~1.8 bits at range 30 (was ~1.1 at range 15), still far
+# better than the shipped log/60 default's 5 bits at the same position — and
+# the cost lands only where the slider is low, i.e. where a lost bit is least
+# audible. Slider 100% is bit-transparent at any range.
+#
+# Because of this, loudness must be raised with the speaker's own amplifier
+# (AVRCP absolute volume, which acts after every digital stage and so costs no
+# resolution) rather than by shrinking the range here: slider 100% is already
+# unity, so there is nothing above it to reach without clipping.
 #
 # _INITIAL_VOLUME is where the slider starts on each librespot start (there is
 # no volume cache: --disable-audio-cache and no --cache). 50 puts it mid-travel
-# so there is headroom in both directions.
+# so there is headroom in both directions — the operator's explicit preference
+# (2026-08-11), expressed as a slider *position* rather than a loudness. Note
+# that widening the range therefore made startup quieter (28.5% vs 47.7% before)
+# without the position changing; 68 would restore the old startup loudness if
+# that trade is ever judged the wrong way round.
 _VOLUME_CTRL = "cubic"
 _INITIAL_VOLUME = 50
-_VOLUME_RANGE = 15.0
+_VOLUME_RANGE = 30.0
 
 
 @dataclass(frozen=True)
