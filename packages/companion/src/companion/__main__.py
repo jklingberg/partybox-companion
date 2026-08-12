@@ -34,7 +34,7 @@ from partyboxd.device.events import SpeakerStateChangedEvent, VolumeChangedEvent
 
 from companion.config import AudioSettings, CompanionSettings, SpotifySettings
 from companion.config_store import ConfigStore
-from companion.services import login1_dbus, pipewire_volume
+from companion.services import avrcp_volume, login1_dbus, pipewire_volume
 from companion.services.adapter_recovery import reset_adapter
 from companion.services.audio import AudioService, AudioServiceEvent
 from companion.services.audio_focus import AudioFocusService
@@ -391,13 +391,38 @@ async def _run(
     # A2DP address: prefer the persisted config value (set by first-time pairing)
     # over the env-var default so the Portal-saved address survives reboots.
     audio_sink = portal_cfg.audio_sink_address or companion_settings.audio.sink_address
+    audio_settings = AudioSettings(
+        sink_address=audio_sink,
+        amp_baseline=companion_settings.audio.amp_baseline,
+    )
+
+    async def pin_volume_stages() -> None:
+        """Pin the PipeWire sink, then floor the speaker's amplifier.
+
+        The two controllable stages below the Spotify slider (see
+        ``companion.services.avrcp_volume`` for the full chain). Stage 2 runs
+        first and unconditionally: it is a cheap local ``wpctl`` call and the one
+        INC-2 stage 2 was about, so it must not be skipped when the AVRCP
+        round-trip is slow or the speaker exposes no absolute volume at all.
+
+        Reads the address from ``audio`` rather than closing over ``audio_sink``
+        so a re-pair (``update_address``) is picked up. ``audio`` is assigned by
+        the statement below — safe for the same reason as ``speaker_state_fn``:
+        this only ever runs from ``audio.run()``.
+        """
+        await pipewire_volume.pin_sink_volume(volume_state.level)
+        address = audio.status.address
+        if address is None:
+            return
+        await avrcp_volume.raise_amp_to_baseline(address, audio_settings.amp_baseline)
+
     audio = AudioService(
-        AudioSettings(sink_address=audio_sink),
+        audio_settings,
         # `manager` is assigned below — safe: this closure is only called
         # from audio.run(), well after _run() finishes constructing
         # everything and hands off to the supervisor.
         speaker_state_fn=lambda: manager.snapshot.speaker_state,
-        pin_volume_fn=lambda: pipewire_volume.pin_sink_volume(volume_state.level),
+        pin_volume_fn=pin_volume_stages,
     )
     pairing = PairingService(config_store, audio)
     audio_focus = AudioFocusService(

@@ -27,6 +27,7 @@ class AudioSettings(BaseModel):
     Override with environment variables::
 
         COMPANION_AUDIO__SINK_ADDRESS="50:1B:6A:14:FD:1D"
+        COMPANION_AUDIO__AMP_BASELINE=64
 
     Set ``sink_address`` to the Bluetooth Classic (public) MAC address of the
     speaker. When set, the daemon establishes and maintains the A2DP connection
@@ -35,6 +36,18 @@ class AudioSettings(BaseModel):
     """
 
     sink_address: str | None = None
+
+    #: Lowest speaker-amplifier level (AVRCP absolute volume, 0-127) the
+    #: appliance will accept on a fresh A2DP connect. Raised to this if the
+    #: speaker reports lower; never lowered — see
+    #: ``companion.services.avrcp_volume``, which explains the floor semantics
+    #: and why this cannot be derived from the digital gain stages.
+    #:
+    #: PROVISIONAL. Hardware (2026-08-12) bracketed it only loosely: the
+    #: speaker's remembered 40 was the INC-2 symptom and 127 was far too loud.
+    #: Half scale is a deliberately neutral placeholder pending one calibration
+    #: listen; set it from that session rather than treating it as validated.
+    amp_baseline: int = Field(default=64, ge=0, le=127)
 
 
 class SpotifySettings(BaseModel):
