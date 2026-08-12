@@ -178,6 +178,35 @@ Loudness headroom must always be taken from stage 3. Stage 1 at slider 100% is
 already unity and bit-transparent; there is nothing above it to reach without
 clipping.
 
+#### Smoke subset — run on every volume change
+
+The full catalog below is a release gate. These five are the ones worth
+re-running after **any** change to a volume constant, to the floor, or to the
+audio path — roughly ten minutes, three of them fully automatable. They were
+chosen to cover the most distinct failure modes per minute, not to be
+representative: between them they touch all three stages, the one defect that
+shipped silently, and the one contract users feel directly.
+
+| ID | Level | Why this one is in the set | A failure means |
+|---|---|---|---|
+| VOL-20 | A | One command, and it gates everything after it: a sink below unity silently invalidates every subjective judgement that follows. **Run it first.** | INC-2 stage 1 has regressed — `pin_sink_volume`, its wiring, or the WirePlumber override. |
+| VOL-07 | A | Restart companion and watch the floor fire. Exercises the whole stage-3 path — wiring, read, write, log line — against a real reconnect, with no hardware handling. | The floor is not running, or is skipping silently. Historically the most common shape of this bug. |
+| VOL-10 | A | Stale-cache regression. Set the amp to exactly `amp_baseline`, force a reconnect, confirm a write still happens. | The strictly-greater comparison has been "tidied" back to `>=`, re-opening a defect that shipped, was audible, and produced no log line. |
+| VOL-05 | S | Knob above baseline must survive a reconnect. The one behavioural contract an operator notices immediately. | The floor is lowering, and will fight the operator's knob every few minutes as the link re-establishes. |
+| VOL-02 | M | Slider 1% and 100% by ear. The only check of what a person actually experiences; catches taper regressions that every probe will call healthy. | The taper or the baseline is wrong regardless of what the numbers say — trust this over the numbers. |
+
+Before and after any of them, dump all three stages in one go — judging one
+stage without the other two is the single most common way to reach a wrong
+conclusion here:
+
+```bash
+pgrep -a librespot | head -1                                   # stage 1 flags
+XDG_RUNTIME_DIR=/run/user/1000 wpctl get-volume @DEFAULT_AUDIO_SINK@   # stage 2
+sudo -u companion /opt/partybox-companion/bin/python \
+  -m companion.services._a2dp_connect <MAC> volume             # stage 3
+journalctl -u companion --since "-5min" | grep -iE "avrcp|A2DP connection"
+```
+
 #### Calibration (subjective — requires ears)
 
 | ID | Level | Scenario |
