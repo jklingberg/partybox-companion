@@ -38,18 +38,23 @@ about while leaving any deliberate adjustment above it alone.
 What the speaker persists (hardware, 2026-08-12)
 ------------------------------------------------
 The speaker keeps its **knob** position as persistent state and treats an AVRCP
-absolute-volume write as **session state**. Every new A2DP transport starts from
-the knob position, whatever we last wrote:
+absolute-volume write as **session state**. It reverts to the knob position both
+on a new transport *and* part-way through a live session:
 
 * set 52 by knob, write 70 over AVRCP, restart -> speaker reports 52 again
 * floor raised 52 -> 64; next reconnect reported 52 again, and re-raised
+* floor raised 40 -> 64 on connect; ten minutes later, **same transport, no
+  reconnect**, the amplifier read 40 again — and the operator heard it
 
-So this floor is not a one-shot migration — it re-applies on every fresh connect,
-which is what makes it self-healing and why it must stay cheap and quiet. It also
-means a future AVRCP-driven volume *actuator* (the ``POST /api/v1/volume`` path)
-would be giving callers session-scoped volume that silently resets to the knob
-position on the next reconnect. Anything built on top has to either re-assert
-after each connect or expose that reset honestly; do not assume a write sticks.
+That last case is why a connect-time write is not sufficient on its own, and why
+``companion.__main__._maintain_amp_floor`` re-asserts the floor on a timer for
+the life of the session. Treat a write here as something the speaker may undo at
+any moment, not as state you can set once.
+
+The same caveat governs anything built on top: an AVRCP-driven volume *actuator*
+(the ``POST /api/v1/volume`` path) would be handing callers session-scoped volume
+that silently drifts back toward the knob position. It has to re-assert, or
+expose that drift honestly — do not assume a write sticks.
 
 Units
 -----
