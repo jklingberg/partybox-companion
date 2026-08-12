@@ -37,19 +37,34 @@ about while leaving any deliberate adjustment above it alone.
 
 What the speaker persists (hardware, 2026-08-12)
 ------------------------------------------------
-The speaker keeps its **knob** position as persistent state and treats an AVRCP
-absolute-volume write as **session state**. Every new A2DP transport starts from
-the knob position, whatever we last wrote:
+Characterised on hardware by controlled experiment (2026-08-12). The speaker's
+**knob** writes a persistent store; an AVRCP write is scoped to the current A2DP
+connection:
 
-* set 52 by knob, write 70 over AVRCP, restart -> speaker reports 52 again
-* floor raised 52 -> 64; next reconnect reported 52 again, and re-raised
+=========================  ============================================
+Knob move                  writes the speaker's persistent store
+AVRCP write                valid for the current A2DP connection
+Stream ``idle``/``active`` **survives** — 52 held across a 2-min teardown
+Time passing               **survives** — 88 held for 8 min, 28 samples
+A2DP reconnect             **lost** — reverts to the knob value
+Speaker power cycle        **lost** — reverts to the knob value
+=========================  ============================================
 
-So this floor is not a one-shot migration — it re-applies on every fresh connect,
-which is what makes it self-healing and why it must stay cheap and quiet. It also
-means a future AVRCP-driven volume *actuator* (the ``POST /api/v1/volume`` path)
-would be giving callers session-scoped volume that silently resets to the knob
-position on the next reconnect. Anything built on top has to either re-assert
-after each connect or expose that reset honestly; do not assume a write sticks.
+The last two are why this module exists: on a power cycle with the knob at 20,
+the speaker came back reporting 20 and the floor restored the baseline unprompted.
+
+The first two are why nothing more than a connect-time write is needed, and are
+worth stating as explicit negative results because the obvious next instinct is
+to add maintenance. There is no mid-session drift to correct: a periodic
+re-assert (tried, reverted — see the PR discussion) and a transport-state hook
+were both tested against hardware and neither had a fault to fix. The value is
+lost exactly and only when the connection is remade, which is exactly when
+``pin_volume_fn`` already fires. Do not add polling here without new evidence.
+
+The same model governs anything built on top: an AVRCP-driven volume *actuator*
+(the ``POST /api/v1/volume`` path) would give callers volume that holds for the
+session but silently returns to the knob position on the next reconnect. It has
+to re-assert on connect, or expose that reset honestly.
 
 Units
 -----
