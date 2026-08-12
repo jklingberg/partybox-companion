@@ -126,17 +126,30 @@ async def test_raise_amp_to_baseline_never_lowers() -> None:
     setter.assert_not_awaited()
 
 
-async def test_raise_amp_to_baseline_no_write_when_already_at_baseline() -> None:
+async def test_raise_amp_to_baseline_writes_when_read_equals_baseline() -> None:
+    """A read equal to the baseline is untrustworthy, so it must still write.
+
+    BlueZ's Volume is a cache and the baseline is the only value this function
+    writes, so "already at the baseline" is exactly what a stale cache looks like.
+    Observed on hardware 2026-08-12: knob at 20, BlueZ reporting 52, the floor
+    skipping, and the amplifier audibly stuck at 20 for the whole session.
+    """
     setter = AsyncMock(return_value=True)
     with (
         patch.object(avrcp_volume, "get_amp_volume", AsyncMock(return_value=64)),
         patch.object(avrcp_volume, "set_amp_volume", setter),
     ):
         await avrcp_volume.raise_amp_to_baseline(_ADDRESS, 64)
-    setter.assert_not_awaited()
+    setter.assert_awaited_once_with(_ADDRESS, 64)
 
 
-async def test_raise_amp_to_baseline_no_write_when_level_unknown() -> None:
+@pytest.fixture
+def no_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Collapse the retry backoff so the None paths do not really sleep."""
+    monkeypatch.setattr(avrcp_volume, "_VOLUME_WAIT_DELAY", 0)
+
+
+async def test_raise_amp_to_baseline_no_write_when_level_unknown(no_wait: None) -> None:
     """No reported level means no absolute volume to pin — leave the speaker alone."""
     setter = AsyncMock(return_value=True)
     with (
@@ -144,6 +157,60 @@ async def test_raise_amp_to_baseline_no_write_when_level_unknown() -> None:
         patch.object(avrcp_volume, "set_amp_volume", setter),
     ):
         await avrcp_volume.raise_amp_to_baseline(_ADDRESS, 64)
+    setter.assert_not_awaited()
+
+
+async def test_raise_amp_to_baseline_retries_while_volume_absent(no_wait: None) -> None:
+    """BlueZ can expose MediaTransport1.Volume after the transport itself.
+
+    Reading once raced that window: losing it left the amplifier unraised for the
+    whole session, silently reproducing INC-2.
+    """
+    getter = AsyncMock(side_effect=[None, None, 40])
+    setter = AsyncMock(return_value=True)
+    with (
+        patch.object(avrcp_volume, "get_amp_volume", getter),
+        patch.object(avrcp_volume, "set_amp_volume", setter),
+    ):
+        await avrcp_volume.raise_amp_to_baseline(_ADDRESS, 52)
+    assert getter.await_count == 3
+    setter.assert_awaited_once_with(_ADDRESS, 52)
+
+
+async def test_raise_amp_to_baseline_gives_up_after_bounded_attempts(no_wait: None) -> None:
+    """Bounded: a speaker with no absolute volume never grows the property."""
+    getter = AsyncMock(return_value=None)
+    setter = AsyncMock(return_value=True)
+    with (
+        patch.object(avrcp_volume, "get_amp_volume", getter),
+        patch.object(avrcp_volume, "set_amp_volume", setter),
+    ):
+        await avrcp_volume.raise_amp_to_baseline(_ADDRESS, 52)
+    assert getter.await_count == avrcp_volume._VOLUME_WAIT_ATTEMPTS
+    setter.assert_not_awaited()
+
+
+async def test_raise_amp_to_baseline_reads_once_when_volume_already_present() -> None:
+    """The common case must not pay for the retry, nor sleep at all."""
+    getter = AsyncMock(return_value=40)
+    with (
+        patch.object(avrcp_volume, "get_amp_volume", getter),
+        patch.object(avrcp_volume, "set_amp_volume", AsyncMock(return_value=True)),
+    ):
+        await avrcp_volume.raise_amp_to_baseline(_ADDRESS, 52)
+    assert getter.await_count == 1
+
+
+async def test_raise_amp_to_baseline_no_retry_when_already_above_baseline() -> None:
+    """An at-or-above reading is a definitive answer — do not keep polling."""
+    getter = AsyncMock(return_value=100)
+    setter = AsyncMock(return_value=True)
+    with (
+        patch.object(avrcp_volume, "get_amp_volume", getter),
+        patch.object(avrcp_volume, "set_amp_volume", setter),
+    ):
+        await avrcp_volume.raise_amp_to_baseline(_ADDRESS, 52)
+    assert getter.await_count == 1
     setter.assert_not_awaited()
 
 

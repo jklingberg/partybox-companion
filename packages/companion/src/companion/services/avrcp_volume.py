@@ -66,6 +66,24 @@ The same model governs anything built on top: an AVRCP-driven volume *actuator*
 session but silently returns to the knob position on the next reconnect. It has
 to re-assert on connect, or expose that reset honestly.
 
+The read is a cache, not a measurement
+--------------------------------------
+``MediaTransport1.Volume`` is BlueZ's cached view, updated when the speaker sends
+an AVRCP notification — it is not a query. Two consequences, both of which have
+bitten this module:
+
+* It can be **absent** on a fresh connect, until the peer's first notification
+  (see ``_VOLUME_WAIT_ATTEMPTS``).
+* It can be **stale**: after a reconnect it may still hold the value we wrote
+  last session while the speaker has reverted to its knob level. Observed with
+  the knob at 20 and BlueZ reporting 52.
+
+So never treat a read as proof of the speaker's state. In particular, do not skip
+a write because the read already matches what you were about to write — that is
+indistinguishable from a stale cache, and is why
+:func:`raise_amp_to_baseline` compares strictly greater rather than
+greater-or-equal.
+
 Units
 -----
 AVRCP absolute volume is a 0-127 scale (``org.bluez.MediaTransport1.Volume``).
@@ -91,6 +109,21 @@ _TIMEOUT = 10.0
 
 #: Highest value the AVRCP absolute-volume scale can express.
 AVRCP_MAX = 127
+
+# BlueZ only creates MediaTransport1.Volume once the peer has sent its first
+# AVRCP volume notification, and AVRCP/AVCTP setup can lag the AVDTP transport
+# that AudioService waits for (_POST_CONNECT_SETTLE, 5s). Reading exactly once
+# therefore races that window: lose it, and the floor silently skips for the
+# whole session while the amplifier sits wherever the speaker left it — the
+# original INC-2 symptom, intermittently, and invisible above DEBUG.
+#
+# So the read is retried briefly. Bounded rather than open-ended because a
+# speaker that implements no absolute volume at all never grows the property,
+# and that case is indistinguishable from "not yet" (both read as "none"). Kept
+# short deliberately: this runs inside AudioService's connect loop, which cannot
+# service recheck/retry nudges while it waits.
+_VOLUME_WAIT_ATTEMPTS = 4
+_VOLUME_WAIT_DELAY = 1.5
 
 
 async def _run_helper(address: str, command: str) -> str | None:
@@ -173,6 +206,24 @@ async def set_amp_volume(address: str, level: int) -> bool:
     return False
 
 
+async def _wait_for_amp_volume(address: str) -> int | None:
+    """Read the amplifier level, retrying while the peer has not reported one yet.
+
+    Returns the level, or ``None`` once the attempts are exhausted. Does not sleep
+    after the final attempt, and returns immediately on the first success — so the
+    common case (property already present) costs exactly one read.
+    """
+    for attempt in range(1, _VOLUME_WAIT_ATTEMPTS + 1):
+        level = await get_amp_volume(address)
+        if level is not None:
+            if attempt > 1:
+                log.debug("AVRCP volume: level appeared on attempt %d", attempt)
+            return level
+        if attempt < _VOLUME_WAIT_ATTEMPTS:
+            await asyncio.sleep(_VOLUME_WAIT_DELAY)
+    return None
+
+
 async def raise_amp_to_baseline(address: str, baseline: int) -> None:
     """Raise the speaker's amplifier to *baseline* if it is currently below it.
 
@@ -181,18 +232,41 @@ async def raise_amp_to_baseline(address: str, baseline: int) -> None:
     module's docstring for why a floor rather than a pin. Best-effort throughout:
     every failure path logs and returns.
 
+    Retries the read for up to ``_VOLUME_WAIT_ATTEMPTS`` attempts, because the
+    ``Volume`` property can appear after the transport does — see the constants.
+
     Raises:
         ValueError: if *baseline* is outside [0, 127].
     """
     if not (0 <= baseline <= AVRCP_MAX):
         raise ValueError(f"baseline must be 0-{AVRCP_MAX}, got {baseline!r}")
-    current = await get_amp_volume(address)
+    current = await _wait_for_amp_volume(address)
     if current is None:
-        log.debug("AVRCP volume: no reported amplifier level, leaving it alone")
+        # Not DEBUG: this means the floor did not apply, so music may be quiet for
+        # the rest of the session. Worth one visible line, since the alternative is
+        # a silent recurrence of INC-2 with nothing in the log to point at.
+        log.info(
+            "AVRCP volume: no absolute volume reported after %d attempts over %.1fs — "
+            "amplifier left as-is (the speaker may not implement absolute volume)",
+            _VOLUME_WAIT_ATTEMPTS,
+            _VOLUME_WAIT_DELAY * (_VOLUME_WAIT_ATTEMPTS - 1),
+        )
         return
-    if current >= baseline:
+    # Strictly greater, deliberately: a reading that *equals* the baseline is not
+    # trustworthy, because the baseline is the only value this function ever
+    # writes. BlueZ's Volume is a cache, and on a fresh connect it can still hold
+    # the previous session's written value while the speaker has reverted to its
+    # knob level — so "already at the baseline" is exactly what a stale cache
+    # looks like. Observed on hardware 2026-08-12: knob at 20, BlueZ reporting 52,
+    # the floor skipping, and the amplifier audibly at 20 for the whole session.
+    #
+    # Writing on equality costs one redundant AVRCP write per connect and closes
+    # that hole. A reading strictly above the baseline is still respected: that
+    # cannot have come from this function, so it is a genuine knob-up, and the
+    # knob is the operator's way up (see AudioSettings.amp_baseline).
+    if current > baseline:
         log.debug(
-            "AVRCP volume: amplifier at %d/%d, at or above baseline %d — leaving it alone",
+            "AVRCP volume: amplifier at %d/%d, above baseline %d — leaving it alone",
             current,
             AVRCP_MAX,
             baseline,
