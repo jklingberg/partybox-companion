@@ -134,7 +134,7 @@ def test_build_command_sets_initial_slider_position() -> None:
     cmd = svc._build_command()
     assert "--initial-volume" in cmd
     idx = cmd.index("--initial-volume")
-    assert cmd[idx + 1] == "35"
+    assert cmd[idx + 1] == "50"
 
 
 def test_build_command_sets_volume_range() -> None:

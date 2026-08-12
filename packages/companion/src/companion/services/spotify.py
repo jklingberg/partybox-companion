@@ -174,11 +174,18 @@ _VOLUME_RE = re.compile(r"volume.*?\((\d+)%\)", re.IGNORECASE)
 #
 # _INITIAL_VOLUME is where the slider starts on each librespot start (there is no
 # volume cache: --disable-audio-cache and no --cache, so this applies fresh every
-# time). 35 was chosen by ear (2026-08-12) once the range and the amplifier were
-# both settled: startup at 50 (28.5% gain) was judged slightly loud, and 35 gives
-# 17.1%. It is the right knob for "startup is too loud" precisely because it moves
-# only the starting position — unlike _VOLUME_RANGE or amp_baseline, it leaves both
-# ends of the slider (1% and 100%) bit-for-bit unchanged.
+# time). 50 gives 28.5% gain under cubic/30. It is the right knob for adjusting
+# startup loudness, because it moves only the starting position — unlike
+# _VOLUME_RANGE or amp_baseline, it leaves both ends of the slider (1% and 100%)
+# bit-for-bit unchanged.
+#
+# Briefly set to 35 (17.1%) on 2026-08-12 when startup at 50 was judged slightly
+# loud, then reverted the same day. The reason is the first bullet below: this is
+# not a once-a-day "startup" value, it applies on every librespot start including
+# crash respawns and service restarts. At 17% each of those reads as a fault
+# rather than a fresh start — and it did, costing an hour of misdiagnosis while a
+# genuine amplifier bug was also in play. Keep this high enough that an
+# unexpected respawn is not alarming.
 #
 # Two things this does NOT control, both of which surprised us on hardware:
 #
@@ -194,7 +201,7 @@ _VOLUME_RE = re.compile(r"volume.*?\((\d+)%\)", re.IGNORECASE)
 #     lines do not reach the journal at our log level. If a change here appears to
 #     have no effect, suspect this before suspecting the flag.
 _VOLUME_CTRL = "cubic"
-_INITIAL_VOLUME = 35
+_INITIAL_VOLUME = 50
 _VOLUME_RANGE = 30.0
 
 
