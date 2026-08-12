@@ -124,6 +124,40 @@ def test_build_command_includes_emit_sink_events() -> None:
     assert "--emit-sink-events" in svc._build_command()
 
 
+def test_build_command_starts_slider_mid_travel() -> None:
+    """INC-2 stage 2: start mid-slider so there is headroom in both directions."""
+    svc = _service()
+    cmd = svc._build_command()
+    assert "--initial-volume" in cmd
+    idx = cmd.index("--initial-volume")
+    assert cmd[idx + 1] == "50"
+
+
+def test_build_command_compresses_volume_range() -> None:
+    """A range below librespot's 60 dB default keeps mid-slider near 47% gain."""
+    svc = _service()
+    cmd = svc._build_command()
+    assert "--volume-range" in cmd
+    idx = cmd.index("--volume-range")
+    assert float(cmd[idx + 1]) == 15.0
+
+
+def test_build_command_uses_cubic_volume_taper() -> None:
+    """Cubic, not log (too steep) and not fixed (kills the phone's slider)."""
+    svc = _service()
+    cmd = svc._build_command()
+    assert "--volume-ctrl" in cmd
+    idx = cmd.index("--volume-ctrl")
+    assert cmd[idx + 1] == "cubic"
+
+
+def test_build_command_keeps_spotify_volume_control_usable() -> None:
+    """ "fixed" disables Spotify-side volume entirely — it must never be used here."""
+    svc = _service()
+    cmd = svc._build_command()
+    assert "fixed" not in cmd
+
+
 # ---------------------------------------------------------------------------
 # Playback state from librespot's --onevent hook
 # ---------------------------------------------------------------------------
