@@ -43,17 +43,27 @@ class AudioSettings(BaseModel):
     #: ``companion.services.avrcp_volume``, which explains the floor semantics
     #: and why this cannot be derived from the digital gain stages.
     #:
-    #: Calibrated by ear on hardware (2026-08-12), with the Spotify slider at
-    #: 100% — i.e. unity digital gain, so the amplifier was the only variable.
-    #: The speaker's remembered 40 was the INC-2 symptom, 127 was far too loud,
-    #: and 72 was judged the right level for slider-100%.
+    #: Calibrated by ear on hardware (2026-08-12) against the final taper
+    #: (cubic, range 30), and validated at BOTH slider extremes — 1% and 100%
+    #: were each judged right. That is a stronger check than the single-point
+    #: judgements that preceded it, two of which pointed in opposite directions
+    #: because the slider position was not held constant between them.
+    #:
+    #:      40   the INC-2 symptom (the speaker's own remembered level)
+    #:      52   accepted across the whole slider span
+    #:      72   too loud at every slider position
+    #:     127   far too loud
+    #:
+    #: 52 is also the level the operator had independently arrived at earlier by
+    #: turning the speaker's own knob, which corroborates it as a real
+    #: preference rather than an artefact of one listening pass.
     #:
     #: It only has to be a sane floor, not anyone's maximum: the operator's
-    #: accompanying decision was that the speaker's own knob is the way up when
-    #: someone wants more. That also settles what happens below the baseline —
-    #: the knob is for going louder, so a level under this one is drift to be
-    #: corrected rather than an instruction to respect.
-    amp_baseline: int = Field(default=72, ge=0, le=127)
+    #: decision was that the speaker's own knob is the way up when someone wants
+    #: more. That also settles what happens below the baseline — the knob is for
+    #: going louder, so a level under this one is drift to be corrected rather
+    #: than an instruction to respect.
+    amp_baseline: int = Field(default=52, ge=0, le=127)
 
 
 class SpotifySettings(BaseModel):
