@@ -43,11 +43,17 @@ class AudioSettings(BaseModel):
     #: ``companion.services.avrcp_volume``, which explains the floor semantics
     #: and why this cannot be derived from the digital gain stages.
     #:
-    #: PROVISIONAL. Hardware (2026-08-12) bracketed it only loosely: the
-    #: speaker's remembered 40 was the INC-2 symptom and 127 was far too loud.
-    #: Half scale is a deliberately neutral placeholder pending one calibration
-    #: listen; set it from that session rather than treating it as validated.
-    amp_baseline: int = Field(default=64, ge=0, le=127)
+    #: Calibrated by ear on hardware (2026-08-12), with the Spotify slider at
+    #: 100% — i.e. unity digital gain, so the amplifier was the only variable.
+    #: The speaker's remembered 40 was the INC-2 symptom, 127 was far too loud,
+    #: and 72 was judged the right level for slider-100%.
+    #:
+    #: It only has to be a sane floor, not anyone's maximum: the operator's
+    #: accompanying decision was that the speaker's own knob is the way up when
+    #: someone wants more. That also settles what happens below the baseline —
+    #: the knob is for going louder, so a level under this one is drift to be
+    #: corrected rather than an instruction to respect.
+    amp_baseline: int = Field(default=72, ge=0, le=127)
 
 
 class SpotifySettings(BaseModel):
