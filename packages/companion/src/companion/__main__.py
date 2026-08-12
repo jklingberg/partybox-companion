@@ -86,13 +86,6 @@ def _make_log_config(level: str) -> dict[str, object]:
 
 _AUDIO_GRACE_SECONDS = 300.0
 
-# How often to re-check that the speaker has not reverted its amplifier below
-# amp_baseline (see _maintain_amp_floor). Each check costs one subprocess, so
-# this sits in the same 10-60s band as the other BlueZ pollers here rather than
-# going lower; the trade is that a revert can go uncorrected for up to one
-# interval before the level comes back.
-_AMP_FLOOR_INTERVAL = 30.0
-
 
 async def _wait_for_audio_event(
     queue: asyncio.Queue[AudioServiceEvent],
@@ -261,49 +254,6 @@ async def _recheck_audio_on_standby(manager: DeviceManager, audio: AudioService)
                     audio.recheck_now()
     finally:
         manager.unsubscribe(queue)
-
-
-async def _maintain_amp_floor(
-    audio: AudioService, baseline: int, interval: float = _AMP_FLOOR_INTERVAL
-) -> None:
-    """Hold the speaker's amplifier at or above *baseline* for the whole session.
-
-    ``pin_volume_fn`` raises the amplifier once per fresh A2DP connect, and that
-    turned out not to be enough: the speaker reverts to its own remembered level
-    *during* a live session, not only on a new transport. Observed 2026-08-12 —
-    the connect-time floor set 64, and ten minutes later, same transport and no
-    reconnect in between, the amplifier read 40 again. A single write is silently
-    undone and INC-2's symptom returns mid-listen, which is exactly what the
-    operator heard.
-
-    Polls rather than subscribing to BlueZ's ``PropertiesChanged`` on
-    ``MediaTransport1.Volume``. Every BlueZ call in this package must run in a
-    subprocess (bleak owns a dbus-fast ``MessageBus`` on this loop), so a signal
-    subscription would need a persistent helper streaming events back — a much
-    larger change for a fault that a cheap poll corrects within one interval, and
-    one that would have to avoid retriggering on its own writes. One subprocess
-    per *interval* is the same order of cost as the other pollers here (see
-    ``AudioService.transport_active``, which documents that cost).
-
-    Only ever raises, never lowers: the speaker's knob is the operator's way up
-    (see ``AudioSettings.amp_baseline``), so a level below the baseline is drift
-    to correct rather than a deliberate instruction to respect. Turning the knob
-    *above* the baseline is therefore left completely alone.
-
-    Sleeps before its first check so it does not duplicate the connect-time pin.
-    Runs until cancelled. Expected failures — no transport, a speaker with no
-    absolute-volume support, a BlueZ error — are already absorbed by
-    ``raise_amp_to_baseline``; anything else propagates to the Supervisor rather
-    than being swallowed here.
-    """
-    while True:
-        await asyncio.sleep(interval)
-        if not audio.audio_ready:
-            continue
-        address = audio.status.address
-        if address is None:
-            continue
-        await avrcp_volume.raise_amp_to_baseline(address, baseline)
 
 
 _IDLE_SHUTDOWN_CHECK_INTERVAL = 15.0  # matches ADR-033's health-check cadence
@@ -594,11 +544,6 @@ async def _run(
     supervisor.register(
         "idle-battery-shutdown",
         lambda: _idle_battery_shutdown(manager),
-        policy=RestartPolicy(initial_delay=1.0, max_delay=30.0),
-    )
-    supervisor.register(
-        "amp-floor",
-        lambda: _maintain_amp_floor(audio, audio_settings.amp_baseline),
         policy=RestartPolicy(initial_delay=1.0, max_delay=30.0),
     )
 
