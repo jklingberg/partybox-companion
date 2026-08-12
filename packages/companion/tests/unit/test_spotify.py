@@ -124,8 +124,12 @@ def test_build_command_includes_emit_sink_events() -> None:
     assert "--emit-sink-events" in svc._build_command()
 
 
-def test_build_command_starts_slider_mid_travel() -> None:
-    """INC-2 stage 2: start mid-slider so there is headroom in both directions."""
+def test_build_command_sets_initial_slider_position() -> None:
+    """Startup level only — tuned by ear without touching either end of the slider.
+
+    Lowering this moves the starting position and nothing else; 1% and 100% stay
+    exactly as calibrated, unlike a change to the range or the amp baseline.
+    """
     svc = _service()
     cmd = svc._build_command()
     assert "--initial-volume" in cmd
@@ -133,13 +137,17 @@ def test_build_command_starts_slider_mid_travel() -> None:
     assert cmd[idx + 1] == "50"
 
 
-def test_build_command_compresses_volume_range() -> None:
-    """A range below librespot's 60 dB default keeps mid-slider near 47% gain."""
+def test_build_command_sets_volume_range() -> None:
+    """Range sets how far DOWN the slider reaches; 100% is unity regardless.
+
+    Tuned to 30 dB by ear once the speaker's amplifier carried loudness — the
+    earlier 15 dB never dropped below ~17.8%, which made the low end too loud.
+    """
     svc = _service()
     cmd = svc._build_command()
     assert "--volume-range" in cmd
     idx = cmd.index("--volume-range")
-    assert float(cmd[idx + 1]) == 15.0
+    assert float(cmd[idx + 1]) == 30.0
 
 
 def test_build_command_uses_cubic_volume_taper() -> None:

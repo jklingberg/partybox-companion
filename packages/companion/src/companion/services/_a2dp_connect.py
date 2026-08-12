@@ -13,6 +13,12 @@ Output protocol (single line on stdout):
                                        — the A2DP MediaTransport1 stream state;
                                          "none" when no transport exists (link
                                          down) or on any error
+  volume:   "<0-127>" | "none"         — the speaker's own AVRCP absolute volume;
+                                         "none" when no transport exists, the
+                                         peer exposes no Volume property, or on
+                                         any error
+  volume=<0-127>:
+            "ok" | "err:<detail>"      — set the speaker's AVRCP absolute volume
 
 The first colon-delimited token after ``err:`` is the machine-readable status
 code and is the *only* thing the parent should branch on — see
@@ -167,9 +173,93 @@ async def _state(address: str) -> None:
         bus.disconnect()
 
 
+async def _volume_get(address: str) -> None:
+    from dbus_fast import BusType
+    from dbus_fast.aio import MessageBus
+    from dbus_fast.aio.proxy_object import ProxyInterface
+
+    bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
+    try:
+        introspection = await bus.introspect(_BLUEZ, "/")
+        obj = bus.get_proxy_object(_BLUEZ, "/", introspection)
+        manager: ProxyInterface = obj.get_interface("org.freedesktop.DBus.ObjectManager")
+        objects = await asyncio.wait_for(
+            manager.call_get_managed_objects(),  # type: ignore[attr-defined]
+            timeout=5,
+        )
+        device_prefix = _device_path(address) + "/"
+        for object_path, interfaces in objects.items():
+            transport = interfaces.get("org.bluez.MediaTransport1")
+            if transport is None or not object_path.startswith(device_prefix):
+                continue
+            uuid = transport["UUID"].value.lower()
+            if uuid != _A2DP_SOURCE_UUID and uuid != _A2DP_SINK_UUID:
+                continue
+            # Volume only exists once the peer has reported an AVRCP absolute
+            # volume. A speaker that implements no absolute volume at all never
+            # gains the property, which is indistinguishable here from "link
+            # down" — both are "none", both mean "nothing to pin".
+            volume = transport.get("Volume")
+            if volume is None:
+                print("none", flush=True)
+                return
+            print(int(volume.value), flush=True)
+            return
+        print("none", flush=True)
+    except Exception:
+        print("none", flush=True)
+    finally:
+        bus.disconnect()
+
+
+async def _volume_set(address: str, level: int) -> None:
+    from dbus_fast import BusType, Variant
+    from dbus_fast.aio import MessageBus
+    from dbus_fast.aio.proxy_object import ProxyInterface
+
+    bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
+    try:
+        introspection = await bus.introspect(_BLUEZ, "/")
+        obj = bus.get_proxy_object(_BLUEZ, "/", introspection)
+        manager: ProxyInterface = obj.get_interface("org.freedesktop.DBus.ObjectManager")
+        objects = await asyncio.wait_for(
+            manager.call_get_managed_objects(),  # type: ignore[attr-defined]
+            timeout=5,
+        )
+        device_prefix = _device_path(address) + "/"
+        for object_path, interfaces in objects.items():
+            transport = interfaces.get("org.bluez.MediaTransport1")
+            if transport is None or not object_path.startswith(device_prefix):
+                continue
+            uuid = transport["UUID"].value.lower()
+            if uuid != _A2DP_SOURCE_UUID and uuid != _A2DP_SINK_UUID:
+                continue
+            transport_introspection = await bus.introspect(_BLUEZ, object_path)
+            transport_obj = bus.get_proxy_object(_BLUEZ, object_path, transport_introspection)
+            props: ProxyInterface = transport_obj.get_interface("org.freedesktop.DBus.Properties")
+            # BlueZ accepts the write and caches it immediately, then forwards it
+            # to the speaker over AVRCP. The speaker applies it asynchronously
+            # (~2-10s observed on hardware) and re-notifies its own level
+            # afterwards, so a read-back right after this returns proves nothing
+            # about whether the speaker obeyed. Callers must not verify that way.
+            await asyncio.wait_for(
+                props.call_set(  # type: ignore[attr-defined]
+                    "org.bluez.MediaTransport1", "Volume", Variant("q", level)
+                ),
+                timeout=5,
+            )
+            print("ok", flush=True)
+            return
+        print("err:no A2DP transport", flush=True)
+    except Exception as exc:
+        print(f"err:{exc}", flush=True)
+    finally:
+        bus.disconnect()
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("err:usage: _a2dp_connect.py <MAC> [check|state]", flush=True)
+        print("err:usage: _a2dp_connect.py <MAC> [check|state|volume|volume=<0-127>]", flush=True)
         sys.exit(1)
     address = sys.argv[1]
     command = sys.argv[2] if len(sys.argv) > 2 else "connect"
@@ -177,5 +267,17 @@ if __name__ == "__main__":
         asyncio.run(_check(address))
     elif command == "state":
         asyncio.run(_state(address))
+    elif command == "volume":
+        asyncio.run(_volume_get(address))
+    elif command.startswith("volume="):
+        try:
+            requested = int(command[len("volume=") :])
+        except ValueError:
+            print("err:volume must be an integer 0-127", flush=True)
+            sys.exit(1)
+        if not (0 <= requested <= 127):
+            print(f"err:volume must be 0-127, got {requested}", flush=True)
+            sys.exit(1)
+        asyncio.run(_volume_set(address, requested))
     else:
         asyncio.run(_connect(address))

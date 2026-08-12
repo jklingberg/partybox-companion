@@ -32,9 +32,9 @@ from partyboxd.config import Settings as DaemonSettings
 from partyboxd.device import DeviceManager
 from partyboxd.device.events import SpeakerStateChangedEvent, VolumeChangedEvent
 
-from companion.config import AudioSettings, CompanionSettings, SpotifySettings
+from companion.config import CompanionSettings, SpotifySettings
 from companion.config_store import ConfigStore
-from companion.services import login1_dbus, pipewire_volume
+from companion.services import avrcp_volume, login1_dbus, pipewire_volume
 from companion.services.adapter_recovery import reset_adapter
 from companion.services.audio import AudioService, AudioServiceEvent
 from companion.services.audio_focus import AudioFocusService
@@ -256,6 +256,32 @@ async def _recheck_audio_on_standby(manager: DeviceManager, audio: AudioService)
         manager.unsubscribe(queue)
 
 
+async def _pin_volume_stages(
+    audio: AudioService, volume_state: VolumeState, amp_baseline: int
+) -> None:
+    """Pin the PipeWire sink, then floor the speaker's amplifier.
+
+    The two controllable stages below the Spotify slider (see
+    ``companion.services.avrcp_volume`` for the full chain), run once per fresh
+    A2DP connect as ``AudioService``'s ``pin_volume_fn``.
+
+    Stage 2 (the sink) runs first and unconditionally: it is a cheap local
+    ``wpctl`` call and the one INC-2 stage 2 was actually about, so it must not be
+    skipped when the AVRCP round-trip is slow or the speaker exposes no absolute
+    volume at all. Stage 3 (the amplifier) is best-effort on top.
+
+    Takes *audio* rather than an address so a re-pair (``update_address``) is
+    picked up, and so the caller does not have to resolve the address before
+    ``AudioService`` exists. Module-level rather than a closure so it can be
+    tested directly.
+    """
+    await pipewire_volume.pin_sink_volume(volume_state.level)
+    address = audio.status.address
+    if address is None:
+        return
+    await avrcp_volume.raise_amp_to_baseline(address, amp_baseline)
+
+
 _IDLE_SHUTDOWN_CHECK_INTERVAL = 15.0  # matches ADR-033's health-check cadence
 
 #: Fixed thresholds, not Portal-configurable (ADR-038). Real-world timing is
@@ -391,13 +417,19 @@ async def _run(
     # A2DP address: prefer the persisted config value (set by first-time pairing)
     # over the env-var default so the Portal-saved address survives reboots.
     audio_sink = portal_cfg.audio_sink_address or companion_settings.audio.sink_address
+    # model_copy rather than rebuilding field by field: a rebuild silently drops
+    # any AudioSettings field not named here, so adding a third setting later
+    # would quietly stop it reaching AudioService — no type error, no test
+    # failure, just a setting that appears to be ignored.
+    audio_settings = companion_settings.audio.model_copy(update={"sink_address": audio_sink})
+
     audio = AudioService(
-        AudioSettings(sink_address=audio_sink),
+        audio_settings,
         # `manager` is assigned below — safe: this closure is only called
         # from audio.run(), well after _run() finishes constructing
         # everything and hands off to the supervisor.
         speaker_state_fn=lambda: manager.snapshot.speaker_state,
-        pin_volume_fn=lambda: pipewire_volume.pin_sink_volume(volume_state.level),
+        pin_volume_fn=lambda: _pin_volume_stages(audio, volume_state, audio_settings.amp_baseline),
     )
     pairing = PairingService(config_store, audio)
     audio_focus = AudioFocusService(

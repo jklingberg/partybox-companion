@@ -77,6 +77,24 @@ Each scenario execution records:
   - `wpctl status` / `pw-cli ls Node` (PipeWire sink state)
   - `systemd-analyze`, `systemd-analyze critical-chain companion.service`
   - `free -m`, `ps -o rss,vsz,etime -p $(pgrep -f companion)`, `top -bn1`
+- Volume probes (VAL-VOL) — read all three stages, never just one:
+  - stage 1: `pgrep -a librespot` (the live `--volume-ctrl` / `--initial-volume`
+    / `--volume-range` flags). librespot's own mixer lines do **not** reach the
+    journal at the default level, so the slider's current position is not
+    directly observable — infer it, or raise `COMPANION_LOG_LEVEL`.
+  - stage 2: `XDG_RUNTIME_DIR=/run/user/1000 wpctl get-volume @DEFAULT_AUDIO_SINK@`
+    (expect `Volume: 1.00`), and `GET /volume`
+  - stage 3: `sudo -u companion /opt/partybox-companion/bin/python -m \
+    companion.services._a2dp_connect <MAC> volume` → `0-127` or `none`;
+    `… <MAC> volume=<n>` to set; `… <MAC> state` for the transport
+    (`active` / `idle` / `none`)
+  - floor actions: `journalctl -u companion | grep -i avrcp`
+
+**AVRCP caveat:** stage 3 reads come from BlueZ's cache, not the speaker. It can
+be absent (before the peer's first notification), stale (holding a previous
+session's write after a reconnect), or a low placeholder on a fresh transport.
+Treat a read as evidence only when it is stable and no write or reconnect
+happened in the preceding ~10 s.
 
 **Timing convention:** recovery times are measured from the injected event to
 the first healthy probe result, polling at 1–2 s intervals. Report median-ish
@@ -144,6 +162,144 @@ physical relocation).
 | STREAM-03 | M | **Pause/resume + repeated skips.** Exercise librespot event churn; verify no state desync between `spotify` endpoint, logs, and audible behaviour. |
 | STREAM-04 | A | **Idle → resume.** After ≥1 h fully idle (connected, no stream), start a synthetic stream; verify no WirePlumber endpoint degradation (the ADR-028 regression check). |
 
+### VAL-VOL — Volume chain
+
+Audible output is the product of **three** independent gain stages. Most volume
+defects in this project's history were one stage being wrong while the other two
+looked fine, so every scenario below records all three, not just the symptom.
+
+| Stage | What | Controlled by | Lossless? |
+|---|---|---|---|
+| 1 | Spotify slider → librespot softvol | `services.spotify` flags (`--volume-ctrl`, `--initial-volume`, `--volume-range`) | No — float gain then S16 quantise, ~1 bit per 6 dB |
+| 2 | PipeWire A2DP sink node | `services.pipewire_volume`, pinned to unity | No — same quantise applies |
+| 3 | Speaker amplifier (AVRCP absolute volume) | `services.avrcp_volume` floor + the speaker's own knob | **Yes** — acts after every digital stage |
+
+Loudness headroom must always be taken from stage 3. Stage 1 at slider 100% is
+already unity and bit-transparent; there is nothing above it to reach without
+clipping.
+
+#### Smoke subset — run on every volume change
+
+The full catalog below is a release gate. These five are the ones worth
+re-running after **any** change to a volume constant, to the floor, or to the
+audio path — roughly ten minutes, three of them fully automatable. They were
+chosen to cover the most distinct failure modes per minute, not to be
+representative: between them they touch all three stages, the one defect that
+shipped silently, and the one contract users feel directly.
+
+| ID | Level | Why this one is in the set | A failure means |
+|---|---|---|---|
+| VOL-20 | A | One command, and it gates everything after it: a sink below unity silently invalidates every subjective judgement that follows. **Run it first.** | INC-2 stage 1 has regressed — `pin_sink_volume`, its wiring, or the WirePlumber override. |
+| VOL-07 | A | Restart companion and watch the floor fire. Exercises the whole stage-3 path — wiring, read, write, log line — against a real reconnect, with no hardware handling. | The floor is not running, or is skipping silently. Historically the most common shape of this bug. |
+| VOL-10 | A | Stale-cache regression. Set the amp to exactly `amp_baseline`, force a reconnect, confirm a write still happens. | The strictly-greater comparison has been "tidied" back to `>=`, re-opening a defect that shipped, was audible, and produced no log line. |
+| VOL-05 | S | Knob above baseline must survive a reconnect. The one behavioural contract an operator notices immediately. | The floor is lowering, and will fight the operator's knob every few minutes as the link re-establishes. |
+| VOL-02 | M | Slider 1% and 100% by ear. The only check of what a person actually experiences; catches taper regressions that every probe will call healthy. | The taper or the baseline is wrong regardless of what the numbers say — trust this over the numbers. |
+
+Before and after any of them, dump all three stages in one go — judging one
+stage without the other two is the single most common way to reach a wrong
+conclusion here:
+
+```bash
+pgrep -a librespot | head -1                                   # stage 1 flags
+XDG_RUNTIME_DIR=/run/user/1000 wpctl get-volume @DEFAULT_AUDIO_SINK@   # stage 2
+sudo -u companion /opt/partybox-companion/bin/python \
+  -m companion.services._a2dp_connect <MAC> volume             # stage 3
+journalctl -u companion --since "-5min" | grep -iE "avrcp|A2DP connection"
+```
+
+#### Calibration (subjective — requires ears)
+
+| ID | Level | Scenario |
+|---|---|---|
+| VOL-01 | M | **Startup level.** Fresh librespot start with the slider at `--initial-volume`: audible level is a comfortable default, neither startling nor apparently broken. *Why:* this value applies on **every** librespot start — crash respawns and service restarts included, not once a day — so too low a value makes every respawn read as a fault. Set to 35 once and reverted the same day for exactly that reason. |
+| VOL-02 | M | **Slider extremes.** 1% is audible but genuinely quiet; 100% is loud enough for the room; 0% is true mute. *Why:* librespot special-cases only exact zero as mute (`mappings.rs`), so the taper's floor is what 1% actually delivers — at `--volume-range 15` that floor was ~17.8%, which made quiet listening impossible. |
+| VOL-03 | M | **Slider sweep is monotonic and useful.** Sweep 0 → 100 in ~10 steps: loudness rises monotonically with no dead zone, and the lower half is usable for quiet listening. *Why:* a compressed range makes most of the slider's travel indistinguishable — the defect behind the range 15 → 30 change. |
+
+#### Amp floor (stage 3)
+
+| ID | Level | Scenario |
+|---|---|---|
+| VOL-04 | S | **Speaker power-cycle, knob below baseline.** Turn the knob well below `amp_baseline`, power-cycle the speaker: on reconnect the floor raises the amplifier to the baseline and logs one INFO line. *Why:* the core INC-2 mechanism. The speaker persists its **knob** position across a full power cycle (verified: knob 20 → power-cycle → reported 20), so without the floor the appliance inherits whatever the last person left. |
+| VOL-05 | S | **Speaker power-cycle, knob above baseline.** Knob clearly above `amp_baseline`, power-cycle: the floor leaves it alone, no write logged, level stays where the operator put it. *Why:* the knob is the operator's way up (ADR-022 last-write-wins). A floor that lowered would fight them on every reconnect, audibly. |
+| VOL-06 | A | **Standby → on (shorter than the Spotify grace).** `POST /power/off` then `/power/on` inside `_AUDIO_GRACE_SECONDS`: amp restored to baseline, librespot **not** restarted, slider position preserved. *Why:* the common case, and it must not silently reset the user's slider. |
+| VOL-07 | A | **`systemctl restart companion` with the link up.** Floor fires on the resulting reconnect; all three stages correct afterwards. |
+| VOL-08 | A | **`systemctl restart bluetooth` / adapter reset.** A2DP drops and re-establishes; the floor fires again on the new transport. *Why:* both are documented operator recovery levers. |
+| VOL-09 | A | **5× consecutive A2DP reconnects.** Floor fires every time, level correct after each, and the time-to-correct does not degrade cycle over cycle. |
+
+#### Untrustworthy reads (regression tests — all three have bitten us)
+
+`MediaTransport1.Volume` is BlueZ's **cache**, updated on the peer's AVRCP
+notification. It is not a query, and it has failed in three distinct ways.
+
+| ID | Level | Scenario |
+|---|---|---|
+| VOL-10 | A | **Stale cache.** Set the amp to exactly `amp_baseline` by hand, force a reconnect, and confirm the floor **still writes** (INFO line present, not a silent skip). *Why:* regression for a live defect — after a reconnect the cache held the previous session's 52 while the speaker had reverted to the knob's 20, so "already at baseline" was indistinguishable from stale and the floor skipped. Hence the strictly-greater comparison. |
+| VOL-11 | A | **Absent property.** On a fresh connect the floor either succeeds or logs its bounded-retry give-up at INFO — it must never skip silently. *Why:* BlueZ creates `Volume` only after the peer's first volume notification, which can lag the AVDTP transport that `_POST_CONNECT_SETTLE` waits for. |
+| VOL-12 | A | **Placeholder read.** Record the value the floor reads on a fresh transport (observed: `8`/127, twice consecutively). Confirm it produces a correct raise, and treat any placeholder reading *above* `amp_baseline` as a FAIL. *Why:* a low placeholder is harmless because it raises; a high one would cause an incorrect skip and is the one unhandled case. |
+
+#### Mid-session stability (negative tests — these justify *not* adding maintenance)
+
+| ID | Level | Scenario |
+|---|---|---|
+| VOL-13 | A | **No time-based drift.** Set the amp above baseline, play continuously for ≥8 min with zero A2DP reconnects, sampling every 15 s: the value must not move. *Why:* a periodic re-assert was implemented and reverted because this test showed no drift across 28 samples. A FAIL here re-opens that design question. |
+| VOL-14 | M | **Stream teardown and restart.** Stop playback until the transport reads `idle` (needs minutes, not a short pause — `node.pause-on-idle = false` keeps the node alive), then resume: the amp value is preserved. *Why:* the "speaker re-asserts on stream transition" hypothesis was tested and disproven. A FAIL means the speaker does re-assert and the floor needs a transport-state hook. |
+| VOL-15 | M | **Knob-down mid-session is not corrected.** Turn the knob below baseline during playback: it stays down until the next reconnect. *Why:* documented intended behaviour, recorded so it is not mistaken for a defect. Nothing polls stage 3. |
+
+#### librespot lifecycle and the slider
+
+| ID | Level | Scenario |
+|---|---|---|
+| VOL-16 | M | **librespot respawn resets the slider.** Force a respawn (`POST /spotify/restart`): librespot returns at `--initial-volume`, while the Spotify app may still *display* its previous position. Confirm by nudging the slider down and back up. *Why:* cost an hour of misdiagnosis — dragging a slider that already reads 100% to 100% sends no event, so the app and librespot silently disagree. |
+| VOL-17 | M | **Speaker away, under the grace period.** librespot survives, slider position preserved, only the amp is restored on return. |
+| VOL-18 | M | **Speaker away, past the grace period.** librespot is torn down and deregisters from Spotify; on return it re-registers at `--initial-volume`. |
+| VOL-19 | M | **Does the Spotify app override `--initial-volume`?** Set a distinctive value, restart librespot, reconnect from an app that previously set a different volume, and determine whether ours or the app's remembered value wins. *Why:* **open question.** Never observed, never ruled out — librespot logs its mixer line only when a client sets volume, and those lines do not reach the journal at the default level. If the app wins, the startup value is not ours to control and VOL-01 is unenforceable. |
+
+#### Quality invariants
+
+| ID | Level | Scenario |
+|---|---|---|
+| VOL-20 | A | **Sink pinned to unity.** `wpctl get-volume @DEFAULT_AUDIO_SINK@` is `1.00` after every fresh A2DP connect. *Why:* INC-2 stage 1 — WirePlumber defaults every new A2DP sink to `0.064` linear (~40% perceived). |
+| VOL-21 | A | **No digital boost anywhere.** `POST /volume` clamps to 0–100 and the sink never exceeds `1.00`. *Why:* above unity clips rather than getting louder. |
+| VOL-22 | A | **Slider 100% is bit-transparent.** With the slider at 100% and the sink at unity, no digital attenuation is applied at any stage. *Why:* the quality guarantee that lets loudness come from the amplifier instead of digital gain. |
+
+#### Robustness and log quality
+
+| ID | Level | Scenario |
+|---|---|---|
+| VOL-23 | A | **Speaker absent.** With the speaker off, the floor skips gracefully, logs at INFO, and does not crash the connect loop or spawn a subprocess storm. |
+| VOL-24 | A | **Volume API still reflects stage 2.** `GET /volume` reports the sink level and source; `POST /volume` changes it. *Why:* the Portal slider and Home Assistant both depend on this, and it drives the sink, *not* AVRCP. |
+| VOL-25 | A | **Floor log wording.** A floor action logs exactly one INFO line, worded as a *request* ("requested … BlueZ accepted, applied asynchronously"), never as a confirmed level; a legitimate skip is DEBUG; a bounded-retry give-up is INFO. *Why:* this line is read while debugging volume complaints and must not assert a level nobody verified. |
+
+#### How not to fool yourself
+
+Hard-won during the 2026-08-12 session, where three separate volume bugs and one
+methodology error were in play simultaneously.
+
+1. **Change one stage at a time and hold the others fixed.** Two subjective
+   judgements made at different slider positions are not comparable. Believing
+   otherwise produced a "too loud at all levels" report that was really a
+   quieter-than-before setting, and cost an hour.
+2. **Record the slider position *and* the amp value beside every subjective
+   judgement.** "It sounds right" without both numbers is unusable later.
+3. **Never trust an AVRCP read-back within ~10 s of a write.** BlueZ echoes the
+   cached write; the speaker applies asynchronously and then re-notifies. A fast
+   read-back once produced a confident, wrong "the speaker ignores AVRCP".
+4. **Prove no reconnect happened** during any observation window
+   (`journalctl -u companion | grep -c "A2DP connection established"`). A
+   reconnect-driven revert is expected and will be mistaken for drift.
+5. **Re-check the slider after any service restart** before judging loudness —
+   librespot came back at `--initial-volume`, whatever the app displays.
+6. **A pause is not a stream teardown.** `node.pause-on-idle = false` keeps the
+   transport `active`; reaching `idle` takes minutes of genuine silence.
+
+Practical traps when scripting on the appliance:
+
+- `busctl --list tree org.bluez` can hang for minutes under load and has killed
+  SSH sessions. Use `python -m companion.services._a2dp_connect <MAC> volume`
+  instead — it finds the transport itself.
+- `pkill -f <script>` over SSH matches the SSH command line too and kills its
+  own session. Match on a bracketed pattern or kill by recorded PID.
+
 ### VAL-FAULT — Fault injection
 
 | ID | Level | Scenario |
@@ -197,12 +353,19 @@ physical relocation).
    any reboot (journald is volatile — a reboot destroys it).
 2. BOOT-02 fresh pairing (unlocks everything audio-related).
 3. Non-destructive state probes: API-01/02, NET-01/02, RES-01, BOOT-06.
-4. Reversible event scenarios: SPKR-01…05, HOST-01…04, API-03, FAULT-01/06.
+4. Reversible event scenarios: SPKR-01…05, HOST-01…04, API-03, FAULT-01/06,
+   VOL-06…12 and VOL-20…25 (the automatable volume set — run VOL-20 early, since
+   a sink that is not at unity invalidates every subjective judgement after it).
 5. Reboot-class scenarios: BOOT-03/04/05, HOST-05, FAULT-02.
 6. Riskier fault injection: FAULT-03/04/05, NET-03.
 7. Long-running: STREAM-01/04, RES-02, SOAK-01, then SOAK-02 overnight.
+7b. VOL-13 (8-min no-drift hold) alongside the other long-running scenarios.
 8. Human-required batch (schedule with the operator in one session):
-   BOOT-01 re-run if needed, BT-01/02/03, STREAM-02/03, FAULT-05.
+   BOOT-01 re-run if needed, BT-01/02/03, STREAM-02/03, FAULT-05, and the
+   volume set VOL-01…05, VOL-14…19 — calibration first, then the physical
+   power-cycle pair, then the librespot-lifecycle ones. Doing them in one
+   sitting matters: the calibration scenarios are only comparable to each
+   other if the amp and the slider are held fixed between them.
 9. LOG-01/02/03 throughout, consolidated at the end.
 
 ## Maintaining this suite
