@@ -27,7 +27,7 @@ class AudioSettings(BaseModel):
     Override with environment variables::
 
         COMPANION_AUDIO__SINK_ADDRESS="50:1B:6A:14:FD:1D"
-        COMPANION_AUDIO__AMP_BASELINE=64
+        COMPANION_AUDIO__AMP_BASELINE=52
 
     Set ``sink_address`` to the Bluetooth Classic (public) MAC address of the
     speaker. When set, the daemon establishes and maintains the A2DP connection

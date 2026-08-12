@@ -199,8 +199,13 @@ async def raise_amp_to_baseline(address: str, baseline: int) -> None:
         )
         return
     if await set_amp_volume(address, baseline):
+        # Deliberately "requested", not "raised": BlueZ accepting the write is not
+        # the speaker having applied it (see set_amp_volume), and this line is read
+        # while debugging volume complaints — it must not assert a level we never
+        # confirmed.
         log.info(
-            "AVRCP volume: raised speaker amplifier %d -> %d of %d (INC-2 stage 3 floor)",
+            "AVRCP volume: requested speaker amplifier %d -> %d of %d "
+            "(INC-2 stage 3 floor; BlueZ accepted, applied asynchronously)",
             current,
             baseline,
             AVRCP_MAX,
