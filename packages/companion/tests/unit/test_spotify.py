@@ -124,13 +124,17 @@ def test_build_command_includes_emit_sink_events() -> None:
     assert "--emit-sink-events" in svc._build_command()
 
 
-def test_build_command_starts_slider_mid_travel() -> None:
-    """INC-2 stage 2: start mid-slider so there is headroom in both directions."""
+def test_build_command_sets_initial_slider_position() -> None:
+    """Startup level only — tuned by ear without touching either end of the slider.
+
+    Lowering this moves the starting position and nothing else; 1% and 100% stay
+    exactly as calibrated, unlike a change to the range or the amp baseline.
+    """
     svc = _service()
     cmd = svc._build_command()
     assert "--initial-volume" in cmd
     idx = cmd.index("--initial-volume")
-    assert cmd[idx + 1] == "50"
+    assert cmd[idx + 1] == "35"
 
 
 def test_build_command_sets_volume_range() -> None:

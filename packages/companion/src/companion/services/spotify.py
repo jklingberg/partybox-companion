@@ -172,15 +172,29 @@ _VOLUME_RE = re.compile(r"volume.*?\((\d+)%\)", re.IGNORECASE)
 # resolution) rather than by shrinking the range here: slider 100% is already
 # unity, so there is nothing above it to reach without clipping.
 #
-# _INITIAL_VOLUME is where the slider starts on each librespot start (there is
-# no volume cache: --disable-audio-cache and no --cache). 50 puts it mid-travel
-# so there is headroom in both directions — the operator's explicit preference
-# (2026-08-11), expressed as a slider *position* rather than a loudness. Note
-# that widening the range therefore made startup quieter (28.5% vs 47.7% before)
-# without the position changing; 68 would restore the old startup loudness if
-# that trade is ever judged the wrong way round.
+# _INITIAL_VOLUME is where the slider starts on each librespot start (there is no
+# volume cache: --disable-audio-cache and no --cache, so this applies fresh every
+# time). 35 was chosen by ear (2026-08-12) once the range and the amplifier were
+# both settled: startup at 50 (28.5% gain) was judged slightly loud, and 35 gives
+# 17.1%. It is the right knob for "startup is too loud" precisely because it moves
+# only the starting position — unlike _VOLUME_RANGE or amp_baseline, it leaves both
+# ends of the slider (1% and 100%) bit-for-bit unchanged.
+#
+# Two things this does NOT control, both of which surprised us on hardware:
+#
+#   - Powering the speaker off and on does not reset the slider. librespot keeps
+#     running across that (the audio gate holds it for _AUDIO_GRACE_SECONDS), so
+#     the slider stays where the user left it and only the amplifier is restored.
+#     This value applies on a fresh *librespot* start: a reboot, a service
+#     restart, a crash respawn, or the speaker being away past the grace period.
+#
+#   - The Spotify app may push its own remembered per-device volume on connect,
+#     which would override this entirely. Never observed, never ruled out —
+#     librespot only logs its mixer line when a client sets volume, and those
+#     lines do not reach the journal at our log level. If a change here appears to
+#     have no effect, suspect this before suspecting the flag.
 _VOLUME_CTRL = "cubic"
-_INITIAL_VOLUME = 50
+_INITIAL_VOLUME = 35
 _VOLUME_RANGE = 30.0
 
 
