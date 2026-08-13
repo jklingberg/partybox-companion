@@ -5,10 +5,12 @@ recording the README GIF/screenshot — not for testing the app.
 
 It serves the Portal's static files locally, opens it in `?mock` mode (the same
 built-in demo mode used for UI development — no daemon, no PartyBox hardware),
-and drives a fixed, human-paced sequence of interactions: dashboard → settings
-(rename the device, save) → diagnostics → back to dashboard. Every run produces
-the same sequence in the same timing — nothing here polls, randomizes, or races
-a real backend.
+and drives a fixed, human-paced sequence of interactions across three chapters:
+Wi-Fi captive-portal setup → speaker pairing → dashboard → settings (rename the
+device, import an SSH key from GitHub, save) → diagnostics → back to dashboard.
+Every run produces the same sequence in the same timing — nothing here polls,
+randomizes, or races a real backend. Pass `--skip-onboarding` to start directly
+on the dashboard and skip the Wi-Fi/pairing chapters.
 
 This is a standalone project on purpose: Playwright and its browser binary are a
 few hundred MB and have nothing to do with running the appliance, so they live
@@ -31,10 +33,10 @@ uv run playwright install chromium
 uv run companion-demo
 ```
 
-A Chromium window opens at phone size and runs through the ~14 second sequence
+A Chromium window opens at phone size and runs through the ~40 second sequence
 listed above, then closes. Start your screen recording (macOS: `Cmd+Shift+5`)
-right before running the command — the initial 2.5s pause on the dashboard gives
-you a buffer to get the recording started.
+right before running the command — the initial pause on the Wi-Fi setup screen
+gives you a buffer to get the recording started.
 
 ### Or skip screen recording entirely
 

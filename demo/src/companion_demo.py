@@ -5,6 +5,13 @@ human-paced sequence of interactions against the Portal's built-in `?mock`
 demo mode, so the result can be screen-recorded into a README GIF. No
 PartyBox hardware or running daemon is required.
 
+Three chapters, one continuous recording: Wi-Fi captive-portal setup
+(`?mock&provision`), speaker pairing (`?mock&state=pair`), then the
+dashboard/Settings/Diagnostics tour (`?mock`). Each chapter is a fresh
+navigation of the same page/context, so Playwright's video recorder — which
+records per context, not per navigation — captures all three back to back
+without a cut.
+
 Run with `companion-demo` (see demo/README.md) or directly:
 
     uv run companion-demo
@@ -77,15 +84,43 @@ _spotify_state = {"running": True, "active": True, "device_name": "Living Room"}
 
 _NEW_DEVICE_NAME = "Backyard"
 
-# A small dot that tracks real cursor position via `mousemove`. Playwright's
-# synthetic mouse events don't reliably paint an OS cursor sprite across
-# platforms, so we draw our own — purely cosmetic, doesn't touch app state.
+# Onboarding chapter fixtures (Wi-Fi provisioning + speaker pairing) — as
+# fake/cosmetic as _NEW_DEVICE_NAME above. Nothing here reaches a real
+# network, GitHub, or speaker; see the new route branches in
+# _handle_api_route and the manual handlePairingProgress() calls in
+# _run_pairing_chapter.
+_WIFI_PASSWORD = "hunter2-guestnet"  # noqa: S105 — fake, never sent to a real network
+_GITHUB_USER = "demo-user"
+_GITHUB_IMPORTED_KEY = (
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDemoOnlyNotARealKeyForTheReadmeGif demo@laptop"
+)
+
+# Height, in CSS px, reserved at the top of every recorded frame for the
+# fake browser-chrome bar below — added on top of the requested viewport
+# height (see main()) so the app itself still gets its full, undiminished
+# height beneath it.
+_CHROME_BAR_HEIGHT = 34
+
+# Persistent "browser chrome": a small address-bar pill reading
+# partybox.local, fixed at the very top of every frame for the whole
+# recording — headless capture has no real OS/browser window to show one,
+# so this fakes just enough of it to frame the walkthrough as "a page open
+# at the appliance's own address" throughout, not just a bare app view.
+#
+# Also draws a dot that tracks real cursor position via `mousemove`.
+# Playwright's synthetic mouse events don't reliably paint an OS cursor
+# sprite across platforms, so we draw our own — purely cosmetic, doesn't
+# touch app state.
 #
 # Also hides the "MOCK MODE" banner: it's correct and useful during UI
 # development, but it would give the game away in a README GIF meant to
 # look like a real, healthy appliance.
-_CURSOR_SCRIPT = """
+_CHROME_SCRIPT = (
+    """
 (() => {
+  const BAR_HEIGHT = """
+    + str(_CHROME_BAR_HEIGHT)
+    + """;
   // add_init_script fires as early as "document created" — sometimes before
   // document.documentElement/head/body exist yet — so every DOM touch here
   // is guarded, and setup runs both immediately and again on
@@ -95,11 +130,33 @@ _CURSOR_SCRIPT = """
     if (!root || root.querySelector('#__demo_style')) return;
     const style = document.createElement('style');
     style.id = '__demo_style';
-    style.textContent = '#mock-banner { display: none !important; }';
+    style.textContent = `
+      #mock-banner { display: none !important; }
+      /* Reserve BAR_HEIGHT at the top of every scene for the address bar
+         below, without shrinking the app's own content area: each of these
+         is a min-height:100dvh floor, so the recorded viewport is enlarged
+         by BAR_HEIGHT (see main()) and this override gives that extra
+         space back to the reserved top padding instead of the scene. */
+      .scene, .center-scene, .on-scene { min-height: calc(100dvh - ${BAR_HEIGHT}px) !important; }
+      body { padding-top: ${BAR_HEIGHT}px; }
+    `;
     root.appendChild(style);
   }
-  function attachCursor() {
-    if (!document.body || document.getElementById('__demo_cursor')) return;
+  function attachChrome() {
+    if (!document.body || document.getElementById('__demo_addressbar')) return;
+    const bar = document.createElement('div');
+    bar.id = '__demo_addressbar';
+    bar.textContent = '\\u{1F512} partybox.local';
+    Object.assign(bar.style, {
+      position: 'fixed', top: '0', left: '0', right: '0', height: BAR_HEIGHT + 'px',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      background: 'rgba(28,28,30,0.92)', color: 'rgba(255,255,255,0.92)',
+      fontFamily: '-apple-system,BlinkMacSystemFont,sans-serif',
+      fontSize: '13px', fontWeight: '500',
+      zIndex: 2147483646, boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
+    });
+    document.body.appendChild(bar);
+
     const dot = document.createElement('div');
     dot.id = '__demo_cursor';
     Object.assign(dot.style, {
@@ -110,7 +167,7 @@ _CURSOR_SCRIPT = """
     });
     document.body.appendChild(dot);
   }
-  const ready = () => { injectStyle(); attachCursor(); };
+  const ready = () => { injectStyle(); attachChrome(); };
   document.addEventListener('DOMContentLoaded', ready);
   ready();
   window.addEventListener('mousemove', (e) => {
@@ -119,6 +176,7 @@ _CURSOR_SCRIPT = """
   });
 })();
 """
+)
 
 
 def _find_static_dir() -> Path:
@@ -164,6 +222,38 @@ def _handle_api_route(route: Route) -> None:
             "spotify_connect_name", _spotify_state["device_name"]
         )
         route.fulfill(status=200, content_type="application/json", body=json.dumps(_config_state))
+        return
+
+    if request.method == "POST" and url.endswith("/api/v1/audio/pair"):
+        # startPairing() only checks the status code, not the body — see
+        # _run_pairing_chapter, which drives the rest of the flow by hand.
+        route.fulfill(status=200, content_type="application/json", body="{}")
+        return
+
+    if request.method == "POST" and url.endswith("/api/v1/ssh/github-import"):
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"keys": [_GITHUB_IMPORTED_KEY]}),
+        )
+        return
+
+    if request.method == "PUT" and url.endswith("/api/v1/ssh/settings"):
+        body = json.loads(request.post_data or "{}")
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "enabled": bool(body.get("authorized_keys")),
+                    "has_key": bool(body.get("authorized_keys")),
+                    "authorized_keys": body.get("authorized_keys", []),
+                    "applied_at": "2026-07-28T12:00:00Z",
+                    "error": None,
+                    "confirmed": True,
+                }
+            ),
+        )
         return
 
     endpoints: dict[str, object] = {
@@ -227,53 +317,114 @@ def _maybe_scroll(page: Page) -> None:
     _scroll_by(page, -overflow, steps=18, step_pause=0.035)
 
 
-def _scroll_sheet_into_view(page: Page, sheet_selector: str) -> None:
-    """Same idea as _maybe_scroll but for a sheet's own internal scroll
-    container (max-height + overflow-y: auto), not the page — used so a
-    tall settings sheet (e.g. the Danger Zone / Factory reset section,
-    which sits below the fold at our deliberately short dashboard-sized
-    viewport) still gets shown rather than silently clipped."""
-    info = page.evaluate(
-        f"""() => {{
-          const el = document.querySelector({sheet_selector!r});
-          return {{overflow: el.scrollHeight - el.clientHeight}};
-        }}"""
-    )
-    overflow = info["overflow"]
-    if overflow <= 4:
-        return
+def _slow_scroll_sheet_to(page: Page, sheet_selector: str, target_selector: str) -> None:
+    """Scroll the settings sheet's own internal scroll container (max-height
+    + overflow-y: auto, not the page) down to *target_selector*, in small,
+    human-paced increments — long enough for a viewer to actually read the
+    fields passing by, rather than an instant `scrollIntoView` jump straight
+    to it."""
     box = page.locator(sheet_selector).bounding_box()
     if box is None:
         return
     page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2, steps=15)
     _pause(page, 0.2)
-    _scroll_by(page, overflow, steps=14, step_pause=0.05)
-    _pause(page, 0.8)
-    _scroll_by(page, -overflow, steps=14, step_pause=0.04)
+    delta = page.evaluate(
+        f"""() => {{
+          const sheet = document.querySelector({sheet_selector!r});
+          const target = document.querySelector({target_selector!r});
+          return target.getBoundingClientRect().top - sheet.getBoundingClientRect().top - 24;
+        }}"""
+    )
+    if delta <= 4:
+        return
+    _scroll_by(page, delta, steps=26, step_pause=0.07)
+
+
+def _run_wifi_chapter(page: Page, base_url: str) -> None:
+    """Captive-portal Wi-Fi setup: scan (pre-seeded), pick a secured
+    network, enter its password, connect. `connectWifi()` does fire a real
+    fetch()/poll against /api/v1/wifi/connect and /api/v1/wifi/status, but
+    those are deliberately left unmocked (see module docstring) — both 404
+    against the demo's static file server, which connectWifi() already
+    tolerates (it only logs and keeps polling), so the "Connecting…"
+    message stays on screen right up until we navigate away to the next
+    chapter, with no error flash and no need to fake the connect/poll
+    round trip."""
+    page.goto(f"{base_url}/index.html?mock&provision", wait_until="load")
+    page.wait_for_selector(".net-row")
+    _pause(page, 1.8)
+
+    _natural_click(page, page.locator(".net-row").first)
+    page.wait_for_selector("#pw-field:not(.hidden)")
+    _pause(page, 0.4)
+
+    _natural_click(page, page.locator("#wifi-pw"))
+    page.keyboard.type(_WIFI_PASSWORD, delay=70)
+    _pause(page, 0.5)
+
+    _natural_click(page, page.locator('[data-action="connect-wifi"]'))
+    page.wait_for_selector("#prov-msg:not(:empty)")
+    _pause(page, 2.2)
+
+
+def _run_pairing_chapter(page: Page, base_url: str) -> None:
+    """Speaker pairing scene. startPairing() itself is real (POST
+    /api/v1/audio/pair, mocked above to 200), but its progress normally
+    streams in over the WebSocket from a real daemon — there is none here,
+    so the "paired" / "connected" beats are played by hand via
+    handlePairingProgress(), the same function the real WS-event handler
+    calls. That function is a plain top-level declaration in the Portal's
+    classic (non-module) script, so it — and the `S` state object it
+    reads — are reachable directly by name from page.evaluate(), which
+    runs in the same page realm."""
+    page.goto(f"{base_url}/index.html?mock&state=pair", wait_until="load")
+    page.wait_for_selector('[data-action="start-pairing"]')
+    _pause(page, 1.4)
+
+    _natural_click(page, page.locator('[data-action="start-pairing"]'))
+    _pause(page, 1.8)
+
+    page.evaluate(
+        "S.audio = {connected: false, address: 'AA:BB:CC:DD:EE:FF', pairing_state: 'idle'};"
+        "handlePairingProgress();"
+    )
+    _pause(page, 1.3)
+
+    page.evaluate("S.audio.connected = true; handlePairingProgress();")
+    page.wait_for_selector("#toast:not(.hidden)")
+    _pause(page, 1.8)
+
+    # Hand off to the Dashboard in-page rather than a fresh page.goto(): the
+    # real app reaches Scene.ON the same way, via a state mutation plus
+    # re-render off a WS event, never a reload. A goto() here would repaint
+    # from a blank frame first, which reads as an unexplained flicker right
+    # after "Paired and connected!".
+    page.evaluate("S.scene = deriveScene(); render();")
+    page.wait_for_selector(".on-scene")
+    _pause(page, 2.0)
+
+
+def _open_dashboard(page: Page, base_url: str) -> None:
+    """Fresh navigation straight to the Dashboard — only used with
+    --skip-onboarding. The onboarding path instead hands off in-page from
+    the pairing chapter (see the tail of _run_pairing_chapter) to avoid a
+    reload flicker."""
+    page.goto(f"{base_url}/index.html?mock", wait_until="load")
+    page.wait_for_selector(".on-scene")
+    _pause(page, 2.5)
 
 
 def _run_demo(page: Page, base_url: str) -> None:
-    # 1. Open the Dashboard
-    page.goto(f"{base_url}/index.html?mock", wait_until="load")
-    page.wait_for_selector(".on-scene")
-    # 2. Pause for ~2 seconds
-    _pause(page, 2.5)
-
-    # 3. Slowly scroll if the page is scrollable
+    # 1. Slowly scroll if the page is scrollable
     _maybe_scroll(page)
 
-    # 4. Open Settings
+    # 2. Open Settings
     _natural_click(page, page.locator('[data-action="open-settings"]'))
     page.wait_for_selector("#settings-overlay:not(.hidden)")
-    # 5. Pause
+    # 3. Pause
     _pause(page, 1.0)
 
-    # 5b. The settings sheet is taller than our dashboard-sized viewport —
-    # scroll down within it to actually show the Danger Zone / Factory
-    # reset section, then back up to where the name field lives.
-    _scroll_sheet_into_view(page, "#settings-overlay .sheet")
-
-    # 6. Change the Spotify Connect device name
+    # 4. Change the Spotify Connect device name
     name_field = page.locator("#set-spotify-name")
     _natural_click(page, name_field)
     # Explicit select-all-then-type, rather than relying on a triple-click
@@ -284,26 +435,42 @@ def _run_demo(page: Page, base_url: str) -> None:
     page.keyboard.press("ControlOrMeta+a")
     _pause(page, 0.15)
     page.keyboard.type(_NEW_DEVICE_NAME, delay=90)
-    _pause(page, 0.5)
+    _pause(page, 0.6)
 
-    # 7. Save
-    _natural_click(page, page.locator('[data-action="save-settings"]'))
+    # 5. Slowly scroll down to the new SSH access section — giving the
+    # viewer time to actually read the Spotify fields passing by — then
+    # import a key from GitHub, the newest addition to the Settings sheet.
+    _slow_scroll_sheet_to(page, "#settings-overlay .sheet", "#ssh-section")
+    _pause(page, 0.6)
+    _natural_click(page, page.locator("#ssh-github-user"))
+    page.keyboard.type(_GITHUB_USER, delay=80)
+    _pause(page, 0.3)
+    _natural_click(page, page.locator('[data-action="ssh-github-import"]'))
+    page.wait_for_selector("#ssh-msg:not(:empty)")
+    _pause(page, 1.4)
+
+    # 6. Slowly scroll the rest of the way down to Save, reading the SSH
+    # section's own fields on the way, then click it.
+    save_btn = page.locator('[data-action="save-settings"]')
+    _slow_scroll_sheet_to(page, "#settings-overlay .sheet", '[data-action="save-settings"]')
+    _pause(page, 0.4)
+    _natural_click(page, save_btn)
     page.wait_for_selector("#settings-overlay.hidden", state="attached")
     page.wait_for_selector("#toast:not(.hidden)")
-    # 8. Return to Dashboard (saveSettings() closes the sheet itself)
+    # 7. Return to Dashboard (saveSettings() closes the sheet itself)
     _pause(page, 1.3)
 
-    # 9. Open Diagnostics
+    # 8. Open Diagnostics
     _natural_click(page, page.locator('[data-action="open-health"]'))
     page.wait_for_selector("#health-overlay:not(.hidden)")
-    # 10. Pause
+    # 9. Pause
     _pause(page, 1.8)
 
-    # 11. Return to Dashboard
+    # 10. Return to Dashboard
     _natural_click(page, page.locator('[data-action="close-health"]'))
     page.wait_for_selector("#health-overlay.hidden", state="attached")
 
-    # 12. Finish on the Dashboard for a few seconds
+    # 11. Finish on the Dashboard for a few seconds
     _pause(page, 2.0)
 
 
@@ -365,20 +532,32 @@ def main() -> None:
     parser.add_argument(
         "--gif-width", type=int, default=390, help="GIF output width in pixels (default: 390)."
     )
+    parser.add_argument(
+        "--skip-onboarding",
+        action="store_true",
+        help="Skip the Wi-Fi setup and pairing chapters, starting directly on the Dashboard.",
+    )
     args = parser.parse_args()
 
     static_dir = _find_static_dir()
     video_dir = Path(tempfile.mkdtemp(prefix="companion-demo-")) if args.gif else None
 
     with _static_server(static_dir) as base_url, sync_playwright() as p:
+        # The recorded viewport is taller than --height by the chrome bar's
+        # height — the bar occupies that extra strip at the top, and the
+        # CSS injected by _CHROME_SCRIPT gives the rest back to the app so
+        # its own content still renders at exactly --height, undiminished.
+        browser_height = args.height + _CHROME_BAR_HEIGHT
         browser = p.chromium.launch(headless=args.headless)
         context = browser.new_context(
-            viewport={"width": args.width, "height": args.height},
+            viewport={"width": args.width, "height": browser_height},
             device_scale_factor=2,
             record_video_dir=video_dir,
-            record_video_size={"width": args.width, "height": args.height} if video_dir else None,
+            record_video_size={"width": args.width, "height": browser_height}
+            if video_dir
+            else None,
         )
-        context.add_init_script(_CURSOR_SCRIPT)
+        context.add_init_script(_CHROME_SCRIPT)
         page = context.new_page()
         # Generous headroom: video encoding on an underpowered/GPU-less host
         # (this is what --gif exercises) can slow down actionability checks
@@ -386,6 +565,11 @@ def main() -> None:
         page.set_default_timeout(90_000)
         page.route("**/api/v1/**", _handle_api_route)
 
+        if not args.skip_onboarding:
+            _run_wifi_chapter(page, base_url)
+            _run_pairing_chapter(page, base_url)
+        else:
+            _open_dashboard(page, base_url)
         _run_demo(page, base_url)
 
         if args.gif:
