@@ -45,16 +45,19 @@ log = logging.getLogger(__name__)
 # fires (e.g. after a bluetoothd restart — see _drain_with_health_check).
 _HEALTH_CHECK_INTERVAL = 15.0
 
-# Relaxed health-check cadence while A2DP audio is actively streaming (see
-# *streaming_fn* below). A speaker that is audibly playing is definitionally
-# not in standby, so the battery/firmware liveness probe this interval gates
-# has nothing new to tell us in that window — but it still costs a GATT
-# write + notification round-trip on the shared BLE/BR-EDR controller every
-# cycle. Confirmed by direct btmon correlation (2026-07-21) as an audible
-# click source on its own, independent of and in addition to the FDDF scan
-# fixed the day before: writes/notifications landed exactly every ~15.2s,
-# matching this interval to the decisecond, with zero relation to any
-# AudioFocusService activity in the same window.
+# Relaxed health-check cadence while *streaming_fn* reports the shared radio
+# busy (see below) — either A2DP audio is actively streaming, or a BR/EDR
+# reconnect page is in flight. A speaker that is audibly playing is
+# definitionally not in standby, so the battery/firmware liveness probe this
+# interval gates has nothing new to tell us in that window — but it still
+# costs a GATT write + notification round-trip on the shared BLE/BR-EDR
+# controller every cycle. Confirmed by direct btmon correlation (2026-07-21)
+# as an audible click source on its own, independent of and in addition to
+# the FDDF scan fixed the day before: writes/notifications landed exactly
+# every ~15.2s, matching this interval to the decisecond, with zero relation
+# to any AudioFocusService activity in the same window. The reconnect-page
+# case instead defers a probe that would otherwise land mid-page and cost
+# stutter on the freshly reconnecting stream, not idle clicks.
 _STREAMING_HEALTH_CHECK_INTERVAL = 60.0
 
 # Upper bound on the probe itself. A wedged Bluetooth stack can hang an
@@ -334,11 +337,17 @@ class DeviceManager:
         callers collapse failures to "not streaming". Called at most once
         every ``_HEALTH_CHECK_INTERVAL``/``_STREAMING_HEALTH_CHECK_INTERVAL``
         seconds (never in a tight loop): companion's implementation
-        (``AudioService.transport_active``) spawns a subprocess and makes a
-        D-Bus round trip rather than a plain in-memory lookup, bounded by
-        that method's own 10s timeout — an implementation must stay in that
+        (``AudioService.radio_busy``) spawns a subprocess and makes a D-Bus
+        round trip rather than a plain in-memory lookup, bounded by that
+        method's own 10s timeout — an implementation must stay in that
         ballpark, or this health-check loop stalls for as long as it takes
-        to return.
+        to return. ``radio_busy`` reports True both while A2DP audio is
+        actively streaming and while a BR/EDR reconnect page is in flight —
+        the latter matters here specifically because a successful liveness
+        probe is what triggers that reconnect (a speaker waking from
+        standby), so without it this health check would otherwise keep
+        probing on the shared radio right through the reconnect it just
+        caused.
         """
         self._settings = settings
         self._snapshot: StatusSnapshot = _DISCONNECTED
