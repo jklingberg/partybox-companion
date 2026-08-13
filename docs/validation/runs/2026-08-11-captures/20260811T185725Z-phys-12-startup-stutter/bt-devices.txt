@@ -1,0 +1,6 @@
+$ bluetoothctl devices; echo '--- connected ---'; bluetoothctl devices Connected
+Device 7F:BD:B7:44:8F:01 JBL PartyBox 520
+Device 50:1B:6A:14:FD:1D JBL PartyBox 520
+--- connected ---
+Device 7F:BD:B7:44:8F:01 JBL PartyBox 520
+Device 50:1B:6A:14:FD:1D JBL PartyBox 520

@@ -1,0 +1,82 @@
+$ journalctl -u companion --since '15 min ago' --no-pager -o short-monotonic
+[624989.983697] partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+[625011.238959] partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+[625032.494275] partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+[625053.749624] partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+[625075.004950] partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+[625096.260178] partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+[625117.515164] partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+[625138.770965] partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+[625160.026293] partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+[625181.281254] partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+[625202.537512] partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+[625223.792729] partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+[625245.048088] partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+[625266.303367] partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+[625287.558899] partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+[625308.814342] partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+[625330.069379] partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+[625351.325089] partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+[625372.580580] partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+[625393.836046] partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+[625415.090510] partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+[625436.345900] partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+[625457.602029] partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+[625478.856970] partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+[625500.112186] partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+[625521.368192] partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+[625542.623297] partybox companion[749]: INFO     partyboxd.device.manager speaker not answering liveness probes (battery/firmware); marking standby
+[625547.481152] partybox systemd[1]: Stopping companion.service - PartyBox Companion...
+[625547.543572] partybox companion[749]: INFO     uvicorn.error Shutting down
+[625547.644050] partybox companion[749]: INFO     uvicorn.error Waiting for application shutdown.
+[625547.644236] partybox companion[749]: INFO     companion.services.audio Audio service stopping
+[625547.644304] partybox companion[749]: INFO     companion.services.provisioning Provisioning service: cancelled -- cleaning up AP
+[625550.008830] partybox companion[749]: INFO     partyboxd.device.manager device manager stopping
+[625550.008830] partybox companion[749]: INFO     uvicorn.error Application shutdown complete.
+[625550.008830] partybox companion[749]: INFO     uvicorn.error Finished server process [749]
+[625550.011493] partybox systemd[1]: companion.service: Deactivated successfully.
+[625550.012347] partybox systemd[1]: Stopped companion.service - PartyBox Companion.
+[625550.012447] partybox systemd[1]: companion.service: Consumed 1h 30min 24.200s CPU time.
+[625550.040801] partybox systemd[1]: Starting companion.service - PartyBox Companion...
+[625556.433307] partybox systemd[1]: Started companion.service - PartyBox Companion.
+[625557.055364] partybox companion[57018]: INFO     uvicorn.error Started server process [57018]
+[625557.055771] partybox companion[57018]: INFO     uvicorn.error Waiting for application startup.
+[625557.056207] partybox companion[57018]: INFO     partyboxd.device.manager device manager started
+[625557.056299] partybox companion[57018]: INFO     partyboxd.device.manager scan attempt 1
+[625557.056376] partybox companion[57018]: INFO     partyboxd.device.manager scanning for speaker
+[625557.061318] partybox companion[57018]: INFO     companion.services.audio Audio service starting (sink=50:1B:6A:14:FD:1D)
+[625557.064362] partybox companion[57018]: INFO     uvicorn.error Application startup complete.
+[625557.066018] partybox companion[57018]: INFO     uvicorn.error Uvicorn running on http://0.0.0.0:80 (Press CTRL+C to quit)
+[625557.083097] partybox companion[57018]: INFO     companion.services.provisioning Provisioning service: checking WiFi state
+[625557.100346] partybox companion[57018]: INFO     companion.services.provisioning WiFi already connected -- provisioning not needed
+[625557.265066] partybox companion[57018]: INFO     companion.services.audio A2DP sink not connected, connecting to 50:1B:6A:14:FD:1D (retry in 10s)
+[625558.279166] partybox companion[57018]: WARNING  companion.services.audio A2DP connect failed for 50:1B:6A:14:FD:1D: err:'br-connection-unknown'
+[625570.921889] partybox companion[57018]: INFO     companion.services.audio A2DP sink not connected, connecting to 50:1B:6A:14:FD:1D (retry in 20s)
+[625572.782190] partybox companion[57018]: WARNING  companion.services.audio A2DP connect failed for 50:1B:6A:14:FD:1D: err:'br-connection-unknown'
+[625578.349363] partybox companion[57018]: INFO     partyboxd.device.manager connected to 72:60:29:A3:8A:D3 (attempt 1)
+[625581.420237] partybox companion[57018]: WARNING  partyboxd.device.manager could not read firmware version: timed out waiting for firmware version response
+[625587.404600] partybox companion[57018]: INFO     companion.services.audio_focus audio focus: unknown -> exclusive (source_count=0x04 connection_bits=0x01 payload=202101d7e4000028040000501b6a14fd1d00010000000000)
+[625594.834918] partybox companion[57018]: INFO     companion.services.audio A2DP: speaker in standby — holding off connect attempts (re-evaluating every 300s until it wakes)
+[625620.931214] partybox companion[57018]: INFO     companion.services.audio A2DP: speaker woke up — retrying immediately
+[625621.146586] partybox companion[57018]: INFO     companion.services.audio A2DP: speaker no longer in standby (on) — resuming connect attempts
+[625621.146714] partybox companion[57018]: INFO     companion.services.audio A2DP sink not connected, connecting to 50:1B:6A:14:FD:1D (retry in 10s)
+[625622.025191] partybox companion[57018]: INFO     companion.services.audio A2DP connection established to 50:1B:6A:14:FD:1D
+[625622.025505] partybox companion[57018]: INFO     companion.__main__ audio gate: audio ready — starting Spotify Connect
+[625622.025505] partybox companion[57018]: INFO     companion.services.spotify Spotify service starting (device_name='PartyBox')
+[625622.156212] partybox companion[57018]: INFO     companion.services.spotify Spotify service started (pid=57084, device='PartyBox')
+[625636.287976] partybox companion[57018]: INFO     partyboxd.device.manager battery recovered on re-probe: 100%
+[625682.363616] partybox companion[57018]: WARNING  partyboxd.device.manager connection lost, will reconnect (72:60:29:A3:8A:D3)
+[625682.364483] partybox companion[57018]: INFO     partyboxd.device.manager scan attempt 2
+[625682.364532] partybox companion[57018]: INFO     partyboxd.device.manager scanning for speaker
+[625695.378254] partybox companion[57018]: INFO     partyboxd.device.manager scan attempt 3
+[625695.378575] partybox companion[57018]: INFO     partyboxd.device.manager scanning for speaker
+[625713.391631] partybox companion[57018]: INFO     partyboxd.device.manager scan attempt 4
+[625713.392014] partybox companion[57018]: INFO     partyboxd.device.manager scanning for speaker
+[625741.606724] partybox companion[57018]: INFO     partyboxd.device.manager scan attempt 5
+[625741.607124] partybox companion[57018]: INFO     partyboxd.device.manager scanning for speaker
+[625760.830477] partybox companion[57018]: WARNING  companion.services.spotify librespot: [2026-08-11T18:55:30Z WARN  librespot_connect::state::context] couldn't load context info because: context is not available. type: Default
+[625789.620949] partybox companion[57018]: INFO     partyboxd.device.manager scan attempt 6
+[625789.621395] partybox companion[57018]: INFO     partyboxd.device.manager scanning for speaker
+[625806.472508] partybox companion[57018]: INFO     partyboxd.device.manager connected to 7F:BD:B7:44:8F:01 (attempt 6)
+[625806.680900] partybox companion[57018]: INFO     partyboxd.device.manager firmware version: 26.2.10
+[625806.891505] partybox companion[57018]: INFO     partyboxd.device.manager battery: 100% (full)

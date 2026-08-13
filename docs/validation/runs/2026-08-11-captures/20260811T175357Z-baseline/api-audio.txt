@@ -1,0 +1,2 @@
+$ curl -s --max-time 5 http://localhost/api/v1/audio
+{"connected":false,"address":"50:1B:6A:14:FD:1D","pairing_state":"idle","error":null}
