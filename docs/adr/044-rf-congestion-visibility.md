@@ -131,20 +131,100 @@ interference* when viewed from userspace — a marginal PSU (`voltage`) and a
 throttling SoC (`throttl`, `thermal`) both produce dropouts while every
 service reports healthy.
 
-### 7. The Portal row
+### 7. Two graded halves, not one boolean
 
-A `warn` row, shown once a speaker is paired (connected or not — a crowded
-band explains both audio breaking up and a link struggling to hold), naming
-the channels and the occupancy percentage, and saying what to do:
+The survey answers "is the environment hostile". It cannot answer "is the
+link actually suffering", and those come apart in both directions: a crowded
+band with a quiet link needs no action, while a link failing on a clear band
+means the cause is something a WiFi scan cannot see. Reporting only the first
+would produce both false alarms and false silence.
 
-> **2.4 GHz Band — crowded.** 9 nearby WiFi networks on channels 1, 6, 11 are
-> using 55% of the 2.4 GHz band, which Bluetooth shares. This can make audio
-> stutter — setting your WiFi to a single 2.4 GHz channel usually helps.
+So `GET /api/v1/rf` returns two independently graded halves plus a headline:
 
-This follows the `audio_focus === 'contested'` row precedent: a condition
-where every ordinary signal reads healthy, surfaced in plain language with
-the action that resolves it. As with that row, no button is offered — the fix
-is on the user's router, not on the appliance.
+- `band` — environmental risk, from the WiFi survey
+- `link` — faults actually observed, from `link_health`
+- `level` — the worst of whichever halves were readable, `"unknown"` if
+  neither was
+
+**`link` deliberately does not use PipeWire xruns.** During the incident they
+read **zero** throughout continuous audible stutter, because frames were
+handed to the kernel on time and lost on the air afterwards. An "audio
+health" built on the obvious metric would have shown green for the entire
+fault. What did track it, from the same capture:
+
+| Window | L2CAP errors | Rate |
+|---|---|---|
+| 14:05:33-14:09:30 (faulty) | 6 | ~90/hour |
+| 14:09:30-17:07 (recovered) | 3 | ~1/hour |
+
+with near-instant correlation to A2DP failures — a `br-connection-unknown`
+at 14:09:07 and a kernel L2CAP error in the same second. Both counters are
+read from the journal the service can already see; nothing is put on the air
+to measure them, and the sample is memoised for 25 s so the Portal's 30 s
+reconcile does not spawn processes continuously.
+
+Thresholds (`_L2CAP_WARN`/`_L2CAP_ERR` = 5/30 per hour, `_A2DP_WARN`/`_ERR`
+= 2/6) sit in the wide gap between those two measured rates. The honest claim
+they support is "quiet" versus "clearly faulty", not a fine-grained quality
+score, and they have seen exactly one RF environment.
+
+Band occupancy grades green below 0.35, amber to 0.5, red above. One 22 MHz
+WiFi channel is ~27% of the band and unavoidable wherever 2.4 GHz WiFi exists
+at all, so a single channel must not warn. Note the scale is effectively
+**quantised**: real APs cluster on channels 1, 6 and 11, so a typical
+environment steps 0.28 → 0.55 → 0.83 and skips amber entirely. Amber is
+reached only by APs on overlapping, non-standard channels. That is how WiFi
+is deployed, not a gap in the thresholds.
+
+### 8. The Portal row
+
+Always present once a reading exists — like the Speaker/Bluetooth Audio/
+Spotify rows either side of it. A green "checked, and it's fine" is itself
+useful on a sheet whose whole job is to answer "is anything wrong?", and an
+only-on-failure row is inconsistent with every sibling.
+
+Link faults lead both the colour and the copy; the band is only ever the
+*explanation*. The other order would headline a crowded band doing no harm
+and bury a link failing for a reason the scan cannot see.
+
+> **Signal — link errors.** 90 Bluetooth link errors and 7 dropped
+> connections in the last hour — audio may break up. 9 nearby WiFi networks
+> on channels 1, 6, 11 using 55% of the 2.4 GHz band is the likely cause —
+> setting your WiFi to a single 2.4 GHz channel usually helps.
+
+When the band is clear the copy says so plainly rather than implying WiFi
+anyway, since microwaves, Zigbee hubs and plain distance are all invisible
+here. No button either way: the fix is on the user's router or in the room,
+not on the appliance.
+
+### 9. `SPEAKER_UNREACHABLE` must not lead with a Bluetooth reset
+
+`deriveScene()` routes to `BLOCKED` — which carries the correct "disconnect
+the speaker on that phone" copy — only when `audio_focus` is *confirmed*
+`contested`. Everything else with the control link down falls through to
+`SPEAKER_UNREACHABLE`, whose copy offered a **Reset Bluetooth** button as the
+next step.
+
+That fall-through includes the case where a phone genuinely holds the
+speaker but the FDDF watcher has not classified it yet, and that gap is not
+small. On 2026-09-01 the user pressed Reset Bluetooth at 14:05:55; focus only
+resolved to `contested` at 14:07:14, **79 seconds later**. The reset could not
+have helped — it power-cycles the appliance's own adapter and cannot evict a
+phone from the speaker — and cost about a minute of reconnection, visible in
+the journal as scan/connect churn through 14:09.
+
+Three changes, none of which require knowing the answer sooner:
+
+1. The body is now derived from `audio_focus`. While it is `unknown` the copy
+   leads with the phone check — both the cheaper action and the commoner
+   cause — and says outright that Companion is still determining which case
+   this is. Once focus is `exclusive`, we know no other device holds the
+   speaker and the copy narrows to the appliance-and-speaker case.
+2. Reset moves behind a "More options" disclosure instead of sitting as the
+   obvious next step.
+3. That disclosure states what the reset *cannot* do: "It can't disconnect
+   another device from the speaker — that has to be done on the device
+   itself."
 
 ## Explicitly out of scope
 
@@ -164,3 +244,14 @@ is on the user's router, not on the appliance.
 - **Acting on the survey.** No automatic codec downgrade or A2DP
   reconfiguration. SBC is already the most loss-tolerant codec available,
   and the fault is off-appliance.
+- **Classifying `audio_focus` faster.** The obvious fix for §9's 79-second
+  gap is to scan for the FDDF beacon when the control link first drops.
+  `AudioFocusService` deliberately skips scanning outright while
+  `ble_connected_fn` is False, because an investigation on 2026-07-18
+  correlated this service's scan windows with `DeviceManager` connect
+  failures — including a live ADR-039 adapter wedge triggered moments after
+  one. Scanning during exactly the window the gate exists to protect would
+  reinstate a documented incident to save a caption, so the copy carries the
+  uncertainty instead. Closing the gap properly means coordinating the two
+  scanners (the scan/connect mutex that parameter's docstring already
+  considered and rejected on cost), which is a larger change than this ADR.

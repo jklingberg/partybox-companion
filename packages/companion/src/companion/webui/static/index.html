@@ -735,8 +735,9 @@ const S = {
   health: null, speaker: null, battery: null, spotify: null, audio: null,
   healthDetails: null,
   wifi: null,
-  //: 2.4 GHz congestion survey ({available, ap_count, channels, occupancy,
-  //: congested} | null) from GET /api/v1/rf -- see ADR-044.
+  //: Radio health ({level, band, link} | null) from GET /api/v1/rf --
+  //: `band` is environmental risk, `link` is faults actually observed.
+  //: See ADR-044.
   rf: null,
   config: { spotify_connect_name: 'PartyBox', spotify_bitrate: 320 },
   //: SSH access status ({enabled, has_key, authorized_keys, applied_at,
@@ -792,11 +793,15 @@ const MOCK_BATTERY = { level: 87, power_source: 'battery', charging: false,
 const MOCK_CONFIG  = { spotify_connect_name: 'Living Room', spotify_bitrate: 320 };
 const MOCK_SPOTIFY = { running: true, state: 'playing', device_name: 'Living Room' };
 const MOCK_AUDIO   = { connected: true, address: '50:1B:6A:14:FD:1D', pairing_state: 'idle' };
-// A quiet band: one WiFi channel in use, so the 2.4 GHz row stays hidden in
+// A quiet band and a quiet link: the Signal row is present but green in
 // every mock except ?state=rf-congested below.
-const MOCK_RF = { available: true, ap_count: 4, strong_ap_count: 1,
-  channels: [{ channel: 6, ap_count: 4, strongest_signal: 92 }],
-  occupied_mhz: 23, occupancy: 0.277, congested: false };
+const MOCK_RF = {
+  level: 'ok',
+  band: { available: true, ap_count: 4, strong_ap_count: 1,
+    channels: [{ channel: 6, ap_count: 4, strongest_signal: 92 }],
+    occupied_mhz: 23, occupancy: 0.277, congested: false, level: 'ok' },
+  link: { available: true, l2cap_errors: 0, a2dp_drops: 0, window_hours: 1, level: 'ok' },
+};
 const MOCK_NETWORKS = [
   { ssid: 'Home Network', signal: 85, security: 'WPA2' },
   { ssid: 'Neighbour WiFi', signal: 52, security: 'WPA2' },
@@ -896,11 +901,16 @@ function bootMock() {
   // APs across channels 1, 6 and 11 left the speaker's AFH map pinned at the
   // 20-of-79-channel spec floor.
   if (MOCK_STATE === 'rf-congested') {
-    S.rf = { available: true, ap_count: 9, strong_ap_count: 6, channels: [
-      { channel: 1,  ap_count: 3, strongest_signal: 72 },
-      { channel: 6,  ap_count: 2, strongest_signal: 64 },
-      { channel: 11, ap_count: 4, strongest_signal: 85 },
-    ], occupied_mhz: 46, occupancy: 0.554, congested: true };
+    S.rf = {
+      level: 'err',
+      band: { available: true, ap_count: 9, strong_ap_count: 6, channels: [
+        { channel: 1,  ap_count: 3, strongest_signal: 72 },
+        { channel: 6,  ap_count: 2, strongest_signal: 64 },
+        { channel: 11, ap_count: 4, strongest_signal: 85 },
+      ], occupied_mhz: 46, occupancy: 0.554, congested: true, level: 'err' },
+      // ~90 L2CAP errors/hour is the rate measured during the incident.
+      link: { available: true, l2cap_errors: 90, a2dp_drops: 7, window_hours: 1, level: 'err' },
+    };
   }
   if (MOCK_STATE === 'degraded') {
     S.healthDetails = { tasks: [
@@ -1142,8 +1152,10 @@ const CENTER_COPY = {
     body: 'The speaker is powered and audio is connected, but its Bluetooth control channel is busy — usually another device, like a phone, is connected to it. On that phone, disconnect the speaker in its Bluetooth settings (or turn Bluetooth off entirely) — closing an app like JBL Portable isn’t enough, since the connection lives at the phone’s system level, not the app. This page will reconnect automatically once it’s free. Still stuck after a few minutes? Unplug the speaker’s power cable for 10 seconds and plug it back in — its Bluetooth can get stuck in a way only a full power cycle clears (the power button alone isn’t enough, standby keeps its Bluetooth running).',
   },
   'speaker-unreachable': {
+    // Body is set dynamically below from audio_focus — see
+    // speakerUnreachableBody() for why this scene must not lead with a reset.
     icon: 'i-bluetooth', title: 'Speaker seems to be on, but not responding',
-    body: "The speaker is on, but its Bluetooth link is down — often just deep standby. Try the speaker's power button first. Still stuck? Reset Bluetooth below, or unplug the speaker for 10 seconds as a last resort.",
+    body: '',
     resetAction: true,
   },
   contested: {
@@ -1172,6 +1184,26 @@ const CENTER_COPY = {
   },
 };
 
+// This scene is reached whenever the control link is down and audio_focus is
+// not *confirmed* 'contested' (deriveScene, ~L1025) — which includes the case
+// where a phone genuinely holds the speaker but the FDDF watcher has not
+// classified it yet. That gap is real and can last minutes: on 2026-09-01 the
+// user hit "Reset Bluetooth" at 14:05:55 and focus only resolved to
+// 'contested' at 14:07:14, 79 seconds later. The reset could not have helped
+// — it power-cycles the appliance's own adapter and cannot evict a phone from
+// the speaker — and cost about a minute of reconnection.
+//
+// So the copy leads with the cheap check that is also the commoner cause, and
+// says outright when we do not yet know. Reset stays available, but demoted
+// (see centerSceneHTML) rather than presented as the obvious next step.
+function speakerUnreachableBody() {
+  const focus = S.health && S.health.audio_focus;
+  if (focus === 'exclusive') {
+    return "The speaker is on, but its Bluetooth control link is down. No other device is holding the speaker, so this is between Companion and the speaker — often just deep standby. Try the speaker's power button first, then unplug it for 10 seconds if that doesn't help.";
+  }
+  return "The speaker is on, but its Bluetooth control link is down. The commonest cause is another device — usually a phone — connected to the speaker and holding it: on that phone, disconnect the speaker in its Bluetooth settings, or turn Bluetooth off entirely. Closing an app like JBL Portable isn't enough, since the connection lives at the phone's system level. If no phone is connected, try the speaker's power button — it may be in deep standby. Companion is still checking which of the two it is.";
+}
+
 function btReconnectingTitle() {
   const elapsedSec = Math.max(0, Math.round((Date.now() - S.btResetStartedAt) / 1000));
   return `Reconnecting… ${elapsedSec}s`;
@@ -1183,6 +1215,7 @@ function centerSceneHTML(kind) {
     ? (S.powerPending === 'on' ? 'Turning speaker on…' : 'Turning speaker off…')
     : kind === 'bt-reconnecting' ? btReconnectingTitle()
     : c.title;
+  const body = kind === 'speaker-unreachable' ? speakerUnreachableBody() : c.body;
   // Standby/powering/contested breathe (alive, working). Off is unlit (dead
   // — no power, nothing to wait for). Unreachable/boot are neutral and static.
   const ringClass = kind === 'standby' || kind === 'powering' || kind === 'contested'
@@ -1197,10 +1230,14 @@ function centerSceneHTML(kind) {
         </div>
         <div>
           <div class="center-title" id="center-title">${title}</div>
-          <p class="center-body" style="margin-top:8px">${c.body}</p>
+          <p class="center-body" style="margin-top:8px">${body}</p>
         </div>
         ${c.action ? `<button class="btn btn-heat" id="standby-power-btn" data-action="power-on">Turn speaker on</button>` : ''}
-        ${c.resetAction ? `<button class="btn btn-ghost" id="bt-reset-btn" data-action="reset-bluetooth">Reset Bluetooth</button>` : ''}
+        ${c.resetAction ? `<details class="scene-more">
+          <summary class="btn-link">More options</summary>
+          <p class="center-body" style="margin-top:8px">Resetting restarts Companion's own Bluetooth adapter and takes about a minute to reconnect. It can't disconnect another device from the speaker — that has to be done on the device itself.</p>
+          <button class="btn btn-ghost" id="bt-reset-btn" data-action="reset-bluetooth">Reset Bluetooth</button>
+        </details>` : ''}
         ${(kind === 'off' || kind === 'blocked' || kind === 'speaker-unreachable' || kind === 'contested' || kind === 'standby' || kind === 'bt-reconnecting') ? `<div class="scene-footer-link"><span class="btn-link" data-action="open-health">Health &amp; settings</span></div>` : ''}
       </div>
     </div>`;
@@ -1422,6 +1459,67 @@ function patchOnScene() {
 }
 
 // -- Health model (shared by strip + sheet) --------------------------------
+// Radio health, graded rather than binary (ADR-044). Always present when a
+// reading exists, like the Speaker/Bluetooth Audio/Spotify rows either side
+// of it — a green "checked, and it's fine" is itself useful on a sheet whose
+// job is to answer "is anything wrong?".
+//
+// Link faults lead the copy and the colour. They are what the user is
+// actually hearing; the band is only ever the *explanation*. Ordering it the
+// other way round would headline a crowded band that is doing no harm, and
+// bury a link failing for a reason the WiFi scan cannot see.
+//
+// A `level` of 'unknown' means neither half could be read — no row at all,
+// rather than a green one the appliance never earned.
+function signalRow() {
+  const rf = S.rf;
+  if (!rf || rf.level === 'unknown') return null;
+  const band = rf.band || {};
+  const link = rf.link || {};
+  const pct = Math.round((band.occupancy || 0) * 100);
+  const chans = (band.channels || []).map(c => c.channel).join(', ');
+  const chanWord = (band.channels || []).length === 1 ? 'channel' : 'channels';
+  const nets = band.ap_count === 1 ? 'network' : 'networks';
+  const bandPhrase = `${band.ap_count} nearby WiFi ${nets} on ${chanWord} ${chans} ` +
+                     `using ${pct}% of the 2.4 GHz band`;
+
+  if (link.available && link.level !== 'ok') {
+    // Name whichever counters are actually non-zero. Reporting only the
+    // L2CAP figure would describe a grade that dropped links had driven —
+    // "1 Bluetooth link error" next to an amber row reads as a bug.
+    const parts = [];
+    if (link.l2cap_errors > 0) {
+      parts.push(link.l2cap_errors === 1
+        ? '1 Bluetooth link error' : `${link.l2cap_errors} Bluetooth link errors`);
+    }
+    if (link.a2dp_drops > 0) {
+      parts.push(link.a2dp_drops === 1
+        ? '1 dropped connection' : `${link.a2dp_drops} dropped connections`);
+    }
+    const errs = parts.length ? parts.join(' and ') : 'Bluetooth link faults';
+    // When the band is also bad it is the likely cause and the fix is known.
+    // When it is clear, say so plainly rather than implying WiFi anyway —
+    // microwaves, Zigbee hubs and plain distance are all invisible here.
+    const cause = (band.available && band.level !== 'ok')
+      ? ` ${bandPhrase} is the likely cause — setting your WiFi to a single 2.4 GHz channel usually helps.`
+      : ' The 2.4 GHz band looks clear, so the cause is something a WiFi scan cannot see — a microwave, a Zigbee hub, or simply distance between the appliance and the speaker.';
+    return { name: 'Signal', icon: 'i-wifi', state: link.level, shortIssue: 'link errors',
+      text: `${errs} in the last hour — audio may break up.${cause}` };
+  }
+
+  if (band.available && band.level !== 'ok') {
+    return { name: 'Signal', icon: 'i-wifi', state: band.level, shortIssue: 'crowded',
+      text: `${bandPhrase}, which Bluetooth shares. No link errors in the last hour yet, ` +
+            `but audio may start to break up — setting your WiFi to a single 2.4 GHz ` +
+            `channel usually helps.` };
+  }
+
+  const clear = band.available
+    ? `${bandPhrase}. No Bluetooth link errors in the last hour.`
+    : 'No Bluetooth link errors in the last hour.';
+  return { name: 'Signal', icon: 'i-wifi', state: 'ok', shortIssue: '', text: clear };
+}
+
 function healthItems() {
   const items = [];
 
@@ -1453,29 +1551,8 @@ function healthItems() {
       text: 'Connecting…' });
   }
 
-  // 2.4 GHz congestion. Bluetooth shares this band with WiFi, and a link
-  // degraded by a crowded band still reports itself healthy everywhere else
-  // on this sheet — connected, streaming, no underruns — so without this row
-  // the Portal has nothing to say about the most common cause of stutter
-  // (ADR-044). Shown once a speaker is paired, connected or not: a crowded
-  // band explains both audio breaking up and the link struggling to hold.
-  // `available: false` means no scan list was readable, which is not the
-  // same as a clear band, so that case shows nothing rather than an
-  // all-clear the appliance never actually observed.
-  const rf = S.rf;
-  if (rf && rf.available && rf.congested && au && au.address) {
-    const chans = (rf.channels || []).map(c => c.channel).join(', ');
-    const pct = Math.round((rf.occupancy || 0) * 100);
-    const nets = rf.ap_count === 1 ? 'network' : 'networks';
-    const verb = rf.ap_count === 1 ? 'is' : 'are';
-    const chanWord = (rf.channels || []).length === 1 ? 'channel' : 'channels';
-    items.push({
-      name: '2.4 GHz Band', icon: 'i-wifi', state: 'warn', shortIssue: 'crowded',
-      text: `${rf.ap_count} nearby WiFi ${nets} on ${chanWord} ${chans} ${verb} using ` +
-            `${pct}% of the 2.4 GHz band, which Bluetooth shares. This can make audio ` +
-            `stutter — setting your WiFi to a single 2.4 GHz channel usually helps.`,
-    });
-  }
+  const sig = signalRow();
+  if (sig) items.push(sig);
 
   const sp = S.spotify;
   const audioUp = S.audio && S.audio.connected;

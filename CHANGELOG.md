@@ -38,19 +38,29 @@ development.) Milestone references in parentheses; see
 - **Distribution** — Raspberry Pi image build pipeline (`install.sh` +
   arm-runner), systemd service unit, and Avahi mDNS (`partybox.local`). (M13)
 - **Appliance validation suite** and the RC13 hardware run report. (M18)
-- **2.4 GHz congestion diagnostics** — `GET /api/v1/rf` reports how much of
-  the band neighbouring WiFi occupies, and the Portal health sheet warns when
-  a crowded band is likely to be breaking up Bluetooth audio. Debug bundles
-  now include `kernel.txt` (Bluetooth, WiFi-driver, voltage and thermal
-  kernel lines), where RF-level link corruption is visible — the companion
-  unit's own journal reports such a link as healthy. Reads NetworkManager's
-  existing scan cache, so it never triggers a scan of its own, and exposes no
-  SSIDs. ([ADR-044](docs/adr/044-rf-congestion-visibility.md))
+- **Radio health diagnostics** — `GET /api/v1/rf` grades two halves: how much
+  of the 2.4 GHz band neighbouring WiFi occupies, and Bluetooth link faults
+  actually observed (kernel L2CAP errors, dropped links). The Portal health
+  sheet gains a green/amber/red **Signal** row explaining stutter that every
+  other signal reports as healthy — notably including PipeWire xruns, which
+  read zero throughout a real incident of continuous audible stutter. Debug
+  bundles now include `kernel.txt`, where RF-level corruption is visible.
+  Nothing is put on the air to measure any of it: the scan reads
+  NetworkManager's existing cache, the counters read the journal, and no SSIDs
+  are exposed. ([ADR-044](docs/adr/044-rf-congestion-visibility.md))
 - Repository scaffold: workspace `pyproject.toml`, CI (lint, type-check, test),
   pre-commit hooks, contributing guide, and example scripts.
 
 ### Changed
 
+- **Portal no longer offers a Bluetooth reset as the first remedy when the
+  speaker is unreachable.** The reset restarts the appliance's own adapter and
+  cannot disconnect another device from the speaker, but it was the visible
+  next step even when a phone was holding the speaker and Companion had not
+  yet classified that. The copy now leads with the phone check while the cause
+  is still unknown, and the reset moves behind a "More options" disclosure that
+  says what it can't do.
+  ([ADR-044](docs/adr/044-rf-congestion-visibility.md))
 - Standardized on Python 3.14 across all packages. (#36)
 - Restricted Avahi to IPv4. (#38)
 

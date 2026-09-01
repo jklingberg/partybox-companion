@@ -22,7 +22,8 @@ bugs. Two things keep that fragility in check:
   internal reformatting/reordering as long as the function's name and
   observable behavior don't change, which is exactly what these tests care
   about. ``power_toggle_command()``, ``deriveScene()`` and ``healthItems()``
-  (plus its ``companionHealthItem()``/``humanizeTaskName()`` dependencies) are
+  (plus its ``companionHealthItem()``/``humanizeTaskName()``/``signalRow()``
+  dependencies) are
   all pure functions of ``S`` for this reason.
 - Line-based extraction is a last resort, used only for the two hero-caption
   expressions in ``patchOnScene()`` that can't be extracted as a standalone
@@ -216,6 +217,7 @@ def test_health_sheet_spotify_row_reflects_audio_connected(portal_src: str) -> N
     task_name_acronyms = _extract_line(portal_src, "const TASK_NAME_ACRONYMS =")
     humanize_fn = _extract_braced(portal_src, "function humanizeTaskName(name) {")
     companion_item_fn = _extract_braced(portal_src, "function companionHealthItem() {")
+    signal_row_fn = _extract_braced(portal_src, "function signalRow() {")
     health_items_fn = _extract_braced(portal_src, "function healthItems() {")
 
     def spotify_row(*, audio_connected: bool, spotify_state: str) -> dict[str, str]:
@@ -229,6 +231,7 @@ def test_health_sheet_spotify_row_reflects_audio_connected(portal_src: str) -> N
         {task_name_acronyms}
         {humanize_fn}
         {companion_item_fn}
+        {signal_row_fn}
         {health_items_fn}
         const row = healthItems().find(i => i.name === 'Spotify Connect');
         console.log(JSON.stringify({{ state: row.state, text: row.text }}));

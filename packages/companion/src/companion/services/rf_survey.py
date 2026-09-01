@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
+from typing import Literal
 
 log = logging.getLogger(__name__)
 
@@ -57,6 +58,25 @@ _BAND_END_MHZ = 2483
 #: its floor and stutter becomes likely.
 _CONGESTED_OCCUPANCY = 0.5
 
+#: Occupancy at which the band goes from "fine" to "worth mentioning". One
+#: 22 MHz WiFi channel is ~27% of the band and is unavoidable wherever 2.4
+#: GHz WiFi exists at all, so the green threshold sits just above it: a
+#: single channel is not a problem and must not be reported as one. Past
+#: ~35% a second channel group is in play, and the hop space starts
+#: shrinking meaningfully.
+#:
+#: Both figures are corroborated by the 2026-09-01 capture: 0.554 (channels
+#: 1, 6 and 11 occupied) with the AFH map pinned at its 20-of-79 floor and
+#: audio stuttering, versus 0.277 (channel 6 alone) with the map recovered
+#: to 48 of 79 and the stutter gone.
+#:
+#: Note the scale is effectively quantised: real APs cluster on the three
+#: non-overlapping channels, each ~27 points of occupancy, so a typical
+#: environment steps 0.28 -> 0.55 -> 0.83 and skips the amber band entirely.
+#: Amber is reached only by APs on overlapping, non-standard channels. That
+#: is a property of how WiFi is deployed, not a gap in the thresholds.
+_BAND_WARN_OCCUPANCY = 0.35
+
 
 @dataclass(frozen=True)
 class ChannelUsage:
@@ -65,6 +85,9 @@ class ChannelUsage:
     channel: int
     ap_count: int
     strongest_signal: int
+
+
+Level = Literal["ok", "warn", "err"]
 
 
 @dataclass(frozen=True)
@@ -84,6 +107,7 @@ class RfSurvey:
     occupied_mhz: int
     occupancy: float
     congested: bool
+    level: Level
 
 
 @dataclass(frozen=True)
@@ -239,6 +263,11 @@ def _analyse(aps: list[_Ap]) -> RfSurvey:
 
     band_width = _BAND_END_MHZ - _BAND_START_MHZ + 1
     occupancy = len(occupied) / band_width
+    level: Level = "ok"
+    if occupancy >= _CONGESTED_OCCUPANCY:
+        level = "err"
+    elif occupancy >= _BAND_WARN_OCCUPANCY:
+        level = "warn"
     return RfSurvey(
         ap_count=len(aps),
         strong_ap_count=sum(1 for a in aps if a.signal >= _STRONG_SIGNAL),
@@ -246,4 +275,5 @@ def _analyse(aps: list[_Ap]) -> RfSurvey:
         occupied_mhz=len(occupied),
         occupancy=round(occupancy, 3),
         congested=occupancy >= _CONGESTED_OCCUPANCY,
+        level=level,
     )

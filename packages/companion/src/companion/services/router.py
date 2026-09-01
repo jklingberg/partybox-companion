@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 
 from companion.config import SpotifySettings
 from companion.config_store import ConfigStore
-from companion.services import pipewire_volume, rf_survey
+from companion.services import link_health, pipewire_volume, rf_survey
 from companion.services.audio import AudioService
 from companion.services.pairing import PairingService, PairingState
 from companion.services.spotify import SpotifyService
@@ -110,13 +110,13 @@ class RfChannelModel(BaseModel):
     strongest_signal: int
 
 
-class RfSurveyResponse(BaseModel):
-    """Response body for GET /api/v1/rf.
+class RfBandModel(BaseModel):
+    """2.4 GHz environment around the appliance — the risk of interference.
 
-    ``available`` is false when the appliance could not read a scan list at
-    all (no nmcli, radio busy in AP mode during provisioning, empty cache).
-    Every other field is then zero/empty and means nothing — the Portal
-    shows no row rather than reporting a clear band it never observed.
+    ``available`` is false when no scan list could be read at all (no nmcli,
+    radio busy in AP mode during provisioning, empty cache). Every other
+    field is then zero/empty and means nothing — a caller must not render a
+    clear band from a reading that never happened.
 
     Carries no SSIDs or BSSIDs; see ``rf_survey.RfSurvey``.
     """
@@ -128,6 +128,37 @@ class RfSurveyResponse(BaseModel):
     occupied_mhz: int = 0
     occupancy: float = 0.0
     congested: bool = False
+    level: Literal["ok", "warn", "err"] = "ok"
+
+
+class RfLinkModel(BaseModel):
+    """Faults actually observed on the Bluetooth link, from the journal.
+
+    Distinct from ``RfBandModel`` in kind, and that distinction is the whole
+    point: the band figure is an environmental *risk*, while these are
+    symptoms the appliance has already suffered. Notably absent are PipeWire
+    xruns, which read zero throughout an incident of continuous audible
+    stutter — see ``link_health``.
+    """
+
+    available: bool
+    l2cap_errors: int = 0
+    a2dp_drops: int = 0
+    window_hours: float = 1.0
+    level: Literal["ok", "warn", "err"] = "ok"
+
+
+class RfResponse(BaseModel):
+    """Response body for GET /api/v1/rf.
+
+    ``level`` is the worst of whichever halves could be read, or
+    ``"unknown"`` when neither could — again so an unreadable appliance is
+    never mistaken for a healthy one.
+    """
+
+    level: Literal["ok", "warn", "err", "unknown"]
+    band: RfBandModel
+    link: RfLinkModel
 
 
 async def _collect_journal_logs() -> str:
@@ -151,6 +182,25 @@ async def _collect_journal_logs() -> str:
         return output if output.strip() else "(no journal entries found)\n"
     except OSError, TimeoutError:
         return "(journalctl not available)\n"
+
+
+_LEVEL_ORDER: dict[str, int] = {"ok": 0, "warn": 1, "err": 2}
+
+
+def _worst_level(
+    band: RfBandModel, link: link_health.LinkHealth
+) -> Literal["ok", "warn", "err", "unknown"]:
+    """Combine the two halves into one headline level.
+
+    Only halves that were actually readable count. With neither readable the
+    answer is ``"unknown"`` rather than ``"ok"`` — the recurring rule in this
+    module: never let a reading that did not happen present as a healthy one.
+    """
+    levels = [lvl for ok, lvl in ((band.available, band.level), (link.available, link.level)) if ok]
+    if not levels:
+        return "unknown"
+    worst = max(levels, key=lambda lv: _LEVEL_ORDER[lv])
+    return "ok" if worst == "ok" else "warn" if worst == "warn" else "err"
 
 
 async def _collect_kernel_logs() -> str:
@@ -237,6 +287,7 @@ def make_services_router(
     pipewire_get_volume: Callable[[], Awaitable[int | None]] = pipewire_volume.get_volume,
     pipewire_set_volume: Callable[[int], Awaitable[bool]] = pipewire_volume.set_volume,
     rf_survey_fn: Callable[[], Awaitable[rf_survey.RfSurvey | None]] = rf_survey.survey_24ghz,
+    link_health_fn: Callable[[], Awaitable[link_health.LinkHealth]] = link_health.sample,
 ) -> APIRouter:
     """Return an APIRouter with service-status and diagnostics endpoints.
 
@@ -526,44 +577,66 @@ def make_services_router(
 
     @router.get(
         "/rf",
-        response_model=RfSurveyResponse,
-        summary="2.4 GHz RF congestion survey",
+        response_model=RfResponse,
+        summary="Radio health — 2.4 GHz congestion and observed link faults",
     )
-    async def get_rf_survey() -> RfSurveyResponse:
-        """Report how congested the 2.4 GHz band around the appliance is.
+    async def get_rf_survey() -> RfResponse:
+        """Report 2.4 GHz congestion and Bluetooth link faults.
 
-        Unauthenticated, like the other read-only status routes: the response
-        is AP counts and channel numbers with no SSIDs, so it identifies
-        neither the neighbours nor the appliance's location.
+        Two halves that answer different questions. ``band`` is the
+        environment — how much of the spectrum neighbouring WiFi occupies,
+        i.e. the *risk* of interference. ``link`` is what the appliance has
+        actually suffered: kernel L2CAP errors and dropped links. A crowded
+        band with a quiet link needs no action; a faulty link with a clear
+        band means the cause is something a WiFi scan cannot see.
 
-        Reads NetworkManager's existing scan cache and never triggers a scan
-        of its own, so polling this is free and — importantly — cannot itself
-        disturb the Bluetooth audio it is reporting on.
+        Unauthenticated, like the other read-only status routes: AP counts
+        and channel numbers with no SSIDs, so the response identifies neither
+        the neighbours nor the appliance's location.
+
+        Neither half puts anything on the air. The scan reads
+        NetworkManager's existing cache; the counters read the journal.
 
         **Responses:**
 
         | Code | Meaning |
         |------|---------|
-        | 200  | Survey returned (``available: false`` if no scan list) |
+        | 200  | Reported (``level: "unknown"`` if neither half was readable) |
         """
         survey = await rf_survey_fn()
-        if survey is None:
-            return RfSurveyResponse(available=False)
-        return RfSurveyResponse(
-            available=True,
-            ap_count=survey.ap_count,
-            strong_ap_count=survey.strong_ap_count,
-            channels=[
-                RfChannelModel(
-                    channel=c.channel,
-                    ap_count=c.ap_count,
-                    strongest_signal=c.strongest_signal,
-                )
-                for c in survey.channels
-            ],
-            occupied_mhz=survey.occupied_mhz,
-            occupancy=survey.occupancy,
-            congested=survey.congested,
+        link = await link_health_fn()
+
+        band = (
+            RfBandModel(available=False)
+            if survey is None
+            else RfBandModel(
+                available=True,
+                ap_count=survey.ap_count,
+                strong_ap_count=survey.strong_ap_count,
+                channels=[
+                    RfChannelModel(
+                        channel=c.channel,
+                        ap_count=c.ap_count,
+                        strongest_signal=c.strongest_signal,
+                    )
+                    for c in survey.channels
+                ],
+                occupied_mhz=survey.occupied_mhz,
+                occupancy=survey.occupancy,
+                congested=survey.congested,
+                level=survey.level,
+            )
+        )
+        return RfResponse(
+            level=_worst_level(band, link),
+            band=band,
+            link=RfLinkModel(
+                available=link.available,
+                l2cap_errors=link.l2cap_errors,
+                a2dp_drops=link.a2dp_drops,
+                window_hours=link.window_hours,
+                level=link.level,
+            ),
         )
 
     # ------------------------------------------------------------------

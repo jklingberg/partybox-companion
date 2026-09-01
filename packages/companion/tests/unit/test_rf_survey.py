@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock
 import pytest
 from companion.config import SpotifySettings
 from companion.config_store import ConfigStore
-from companion.services import rf_survey
+from companion.services import link_health, rf_survey
 from companion.services.rf_survey import RfSurvey, _analyse, _parse_int, _parse_scan
 from companion.services.router import make_services_router
 from companion.services.spotify import SpotifyStatus
@@ -100,6 +100,7 @@ def test_parse_scan_skips_incomplete_records() -> None:
 def test_congested_band_is_flagged() -> None:
     survey = _analyse(_parse_scan(_BEFORE))
     assert survey.congested is True
+    assert survey.level == "err"
     assert survey.ap_count == 9
     assert [c.channel for c in survey.channels] == [1, 6, 11]
 
@@ -107,7 +108,42 @@ def test_congested_band_is_flagged() -> None:
 def test_consolidated_band_is_not_flagged() -> None:
     survey = _analyse(_parse_scan(_AFTER))
     assert survey.congested is False
+    assert survey.level == "ok"
     assert survey.ap_count == 4
+
+
+def test_one_wifi_channel_grades_green() -> None:
+    """A single 2.4 GHz channel is unavoidable and must not be warned about.
+
+    One 22 MHz channel is ~27% of the band. Anywhere 2.4 GHz WiFi exists at
+    all this is the floor, so grading it amber would mean a permanent warning
+    nobody can act on.
+    """
+    assert _analyse(_parse_scan(_scan((92, 2437, 6)))).level == "ok"
+
+
+def test_two_standard_channel_groups_grade_red() -> None:
+    """Channels 1 and 6 together already exceed half the band.
+
+    Two 22 MHz footprints are ~55% of 83 MHz, so the common 1/6/11 layouts
+    jump from green straight past amber. That is the physics, not a tuning
+    miss — real APs cluster on the three non-overlapping channels, so the
+    scale is effectively quantised in ~27-point steps.
+    """
+    survey = _analyse(_parse_scan(_scan((85, 2412, 1), (85, 2437, 6))))
+    assert survey.level == "err"
+    assert survey.congested is True
+
+
+def test_overlapping_channels_grade_amber() -> None:
+    """The amber band is reached by APs on overlapping, non-standard channels.
+
+    Channels 1 and 4 overlap, so their union is ~38 MHz (46%) rather than the
+    full 46 MHz two separated channels would take.
+    """
+    survey = _analyse(_parse_scan(_scan((85, 2412, 1), (85, 2427, 4))))
+    assert survey.level == "warn"
+    assert survey.congested is False
 
 
 def test_occupancy_is_a_union_not_a_sum() -> None:
@@ -201,7 +237,17 @@ def test_survey_carries_no_ssids() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _make_client(survey: RfSurvey | None, *, with_auth: bool = False) -> AsyncClient:
+_QUIET_LINK = link_health.LinkHealth(
+    available=True, l2cap_errors=0, a2dp_drops=0, window_hours=1.0, level="ok"
+)
+
+
+def _make_client(
+    survey: RfSurvey | None,
+    link: link_health.LinkHealth | None = None,
+    *,
+    with_auth: bool = False,
+) -> AsyncClient:
     import tempfile
 
     spotify = MagicMock()
@@ -225,6 +271,7 @@ def _make_client(survey: RfSurvey | None, *, with_auth: bool = False) -> AsyncCl
             ConfigStore(Path(tempfile.mkdtemp()) / "config.json"),
             auth=make_auth_dependency(settings) if with_auth else None,
             rf_survey_fn=AsyncMock(return_value=survey),
+            link_health_fn=AsyncMock(return_value=link or _QUIET_LINK),
         )
     )
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
@@ -235,25 +282,27 @@ async def test_rf_endpoint_reports_congestion() -> None:
         r = await client.get("/api/v1/rf")
     assert r.status_code == 200
     body = r.json()
-    assert body["available"] is True
-    assert body["congested"] is True
-    assert body["ap_count"] == 9
-    assert [c["channel"] for c in body["channels"]] == [1, 6, 11]
+    assert body["band"]["available"] is True
+    assert body["band"]["congested"] is True
+    assert body["band"]["ap_count"] == 9
+    assert [c["channel"] for c in body["band"]["channels"]] == [1, 6, 11]
+    assert body["level"] == "err"
 
 
 async def test_rf_endpoint_reports_quiet_band() -> None:
     async with _make_client(_analyse(_parse_scan(_AFTER))) as client:
         r = await client.get("/api/v1/rf")
     body = r.json()
-    assert body["available"] is True
-    assert body["congested"] is False
+    assert body["band"]["available"] is True
+    assert body["band"]["congested"] is False
+    assert body["level"] == "ok"
 
 
 async def test_rf_endpoint_unavailable_is_not_an_all_clear() -> None:
     async with _make_client(None) as client:
         r = await client.get("/api/v1/rf")
     assert r.status_code == 200
-    assert r.json()["available"] is False
+    assert r.json()["band"]["available"] is False
 
 
 async def test_rf_endpoint_is_unauthenticated() -> None:
@@ -261,3 +310,40 @@ async def test_rf_endpoint_is_unauthenticated() -> None:
     async with _make_client(_analyse(_parse_scan(_AFTER)), with_auth=True) as client:
         r = await client.get("/api/v1/rf")
     assert r.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Combining the two halves
+# ---------------------------------------------------------------------------
+
+
+async def test_link_faults_outrank_a_clear_band() -> None:
+    """A failing link on a clear band must still read as bad.
+
+    The band is only ever the explanation; it must never grade the headline
+    down when the appliance is demonstrably dropping packets.
+    """
+    faulty = link_health.LinkHealth(
+        available=True, l2cap_errors=90, a2dp_drops=7, window_hours=1.0, level="err"
+    )
+    async with _make_client(_analyse(_parse_scan(_AFTER)), faulty) as client:
+        body = (await client.get("/api/v1/rf")).json()
+    assert body["band"]["level"] == "ok"
+    assert body["link"]["level"] == "err"
+    assert body["level"] == "err"
+
+
+async def test_unreadable_halves_report_unknown_not_ok() -> None:
+    """Neither half readable is 'unknown' — never a green bill of health."""
+    blind = link_health.LinkHealth(
+        available=False, l2cap_errors=0, a2dp_drops=0, window_hours=1.0, level="ok"
+    )
+    async with _make_client(None, blind) as client:
+        body = (await client.get("/api/v1/rf")).json()
+    assert body["level"] == "unknown"
+
+
+async def test_one_readable_half_still_grades() -> None:
+    async with _make_client(_analyse(_parse_scan(_BEFORE)), _QUIET_LINK) as client:
+        body = (await client.get("/api/v1/rf")).json()
+    assert body["level"] == "err"
