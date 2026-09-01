@@ -38,6 +38,14 @@ development.) Milestone references in parentheses; see
 - **Distribution** — Raspberry Pi image build pipeline (`install.sh` +
   arm-runner), systemd service unit, and Avahi mDNS (`partybox.local`). (M13)
 - **Appliance validation suite** and the RC13 hardware run report. (M18)
+- **2.4 GHz congestion diagnostics** — `GET /api/v1/rf` reports how much of
+  the band neighbouring WiFi occupies, and the Portal health sheet warns when
+  a crowded band is likely to be breaking up Bluetooth audio. Debug bundles
+  now include `kernel.txt` (Bluetooth, WiFi-driver, voltage and thermal
+  kernel lines), where RF-level link corruption is visible — the companion
+  unit's own journal reports such a link as healthy. Reads NetworkManager's
+  existing scan cache, so it never triggers a scan of its own, and exposes no
+  SSIDs. ([ADR-044](docs/adr/044-rf-congestion-visibility.md))
 - Repository scaffold: workspace `pyproject.toml`, CI (lint, type-check, test),
   pre-commit hooks, contributing guide, and example scripts.
 

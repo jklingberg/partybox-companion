@@ -735,6 +735,9 @@ const S = {
   health: null, speaker: null, battery: null, spotify: null, audio: null,
   healthDetails: null,
   wifi: null,
+  //: 2.4 GHz congestion survey ({available, ap_count, channels, occupancy,
+  //: congested} | null) from GET /api/v1/rf -- see ADR-044.
+  rf: null,
   config: { spotify_connect_name: 'PartyBox', spotify_bitrate: 320 },
   //: SSH access status ({enabled, has_key, authorized_keys, applied_at,
   //: error, confirmed} | null) -- fetched on demand when the Settings sheet
@@ -775,7 +778,7 @@ const timers = {};
 
 const MOCK = location.search.includes('mock');
 const MOCK_PROVISION = location.search.includes('provision');
-const MOCK_STATE = new URLSearchParams(location.search).get('state'); // off|standby|pair|on|mains-only|audio-degraded|blocked|speaker-unreachable|contested|powering|bt-reconnecting|degraded
+const MOCK_STATE = new URLSearchParams(location.search).get('state'); // off|standby|pair|on|mains-only|audio-degraded|blocked|speaker-unreachable|contested|powering|bt-reconnecting|degraded|rf-congested
 
 const MOCK_HEALTH  = { status: 'ok', version: '0.2.0-dev', ble_connected: true, audio_ready: true, speaker_state: 'on', audio_focus: 'exclusive' };
 const MOCK_HEALTH_DETAILS = { tasks: [
@@ -789,6 +792,11 @@ const MOCK_BATTERY = { level: 87, power_source: 'battery', charging: false,
 const MOCK_CONFIG  = { spotify_connect_name: 'Living Room', spotify_bitrate: 320 };
 const MOCK_SPOTIFY = { running: true, state: 'playing', device_name: 'Living Room' };
 const MOCK_AUDIO   = { connected: true, address: '50:1B:6A:14:FD:1D', pairing_state: 'idle' };
+// A quiet band: one WiFi channel in use, so the 2.4 GHz row stays hidden in
+// every mock except ?state=rf-congested below.
+const MOCK_RF = { available: true, ap_count: 4, strong_ap_count: 1,
+  channels: [{ channel: 6, ap_count: 4, strongest_signal: 92 }],
+  occupied_mhz: 23, occupancy: 0.277, congested: false };
 const MOCK_NETWORKS = [
   { ssid: 'Home Network', signal: 85, security: 'WPA2' },
   { ssid: 'Neighbour WiFi', signal: 52, security: 'WPA2' },
@@ -846,6 +854,7 @@ function bootMock() {
   S.config  = MOCK_CONFIG;
   S.battery = MOCK_BATTERY;
   S.healthDetails = MOCK_HEALTH_DETAILS;
+  S.rf = MOCK_RF;
   S.ssh = {
     enabled: false, has_key: false, authorized_keys: [], applied_at: null, error: null,
     confirmed: true,
@@ -883,6 +892,16 @@ function bootMock() {
   // coverage for #76 (UX-02): the ON scene must not claim "Ready to play"
   // while audio.connected is false.
   if (MOCK_STATE === 'audio-degraded') { S.audio = { ...MOCK_AUDIO, connected: false }; }
+  // Numbers taken from the hardware capture that motivated ADR-044: nine
+  // APs across channels 1, 6 and 11 left the speaker's AFH map pinned at the
+  // 20-of-79-channel spec floor.
+  if (MOCK_STATE === 'rf-congested') {
+    S.rf = { available: true, ap_count: 9, strong_ap_count: 6, channels: [
+      { channel: 1,  ap_count: 3, strongest_signal: 72 },
+      { channel: 6,  ap_count: 2, strongest_signal: 64 },
+      { channel: 11, ap_count: 4, strongest_signal: 85 },
+    ], occupied_mhz: 46, occupancy: 0.554, congested: true };
+  }
   if (MOCK_STATE === 'degraded') {
     S.healthDetails = { tasks: [
       ...MOCK_HEALTH_DETAILS.tasks.slice(0, -1),
@@ -900,12 +919,13 @@ function bootMock() {
 // ==========================================================================
 async function refresh() {
   try {
-    const [hRes, cRes, spRes, aRes, hdRes] = await Promise.all([
+    const [hRes, cRes, spRes, aRes, hdRes, rfRes] = await Promise.all([
       get('/api/v1/health'),
       get('/api/v1/config'),
       get('/api/v1/spotify'),
       get('/api/v1/audio'),
       get('/api/v1/health/details', true),
+      get('/api/v1/rf'),
     ]);
     S.fetchFailed = !hRes;
     if (hRes  && hRes.ok)  S.health  = await hRes.json();
@@ -913,6 +933,7 @@ async function refresh() {
     if (spRes && spRes.ok) S.spotify = await spRes.json();
     if (aRes  && aRes.ok)  S.audio   = await aRes.json();
     if (hdRes && hdRes.ok) S.healthDetails = await hdRes.json();
+    if (rfRes && rfRes.ok) S.rf = await rfRes.json();
   } catch (_) {
     S.fetchFailed = true;
   }
@@ -1430,6 +1451,30 @@ function healthItems() {
   } else {
     items.push({ name: 'Bluetooth Audio', icon: 'i-bluetooth', state: 'pending', shortIssue: 'connecting',
       text: 'Connecting…' });
+  }
+
+  // 2.4 GHz congestion. Bluetooth shares this band with WiFi, and a link
+  // degraded by a crowded band still reports itself healthy everywhere else
+  // on this sheet — connected, streaming, no underruns — so without this row
+  // the Portal has nothing to say about the most common cause of stutter
+  // (ADR-044). Shown once a speaker is paired, connected or not: a crowded
+  // band explains both audio breaking up and the link struggling to hold.
+  // `available: false` means no scan list was readable, which is not the
+  // same as a clear band, so that case shows nothing rather than an
+  // all-clear the appliance never actually observed.
+  const rf = S.rf;
+  if (rf && rf.available && rf.congested && au && au.address) {
+    const chans = (rf.channels || []).map(c => c.channel).join(', ');
+    const pct = Math.round((rf.occupancy || 0) * 100);
+    const nets = rf.ap_count === 1 ? 'network' : 'networks';
+    const verb = rf.ap_count === 1 ? 'is' : 'are';
+    const chanWord = (rf.channels || []).length === 1 ? 'channel' : 'channels';
+    items.push({
+      name: '2.4 GHz Band', icon: 'i-wifi', state: 'warn', shortIssue: 'crowded',
+      text: `${rf.ap_count} nearby WiFi ${nets} on ${chanWord} ${chans} ${verb} using ` +
+            `${pct}% of the 2.4 GHz band, which Bluetooth shares. This can make audio ` +
+            `stutter — setting your WiFi to a single 2.4 GHz channel usually helps.`,
+    });
   }
 
   const sp = S.spotify;
