@@ -792,9 +792,10 @@ class DeviceManager:
         if not awake:
             self._liveness_misses += 1
             if self._liveness_misses >= _LIVENESS_MISS_LIMIT:
-                log.info(
-                    "speaker not answering liveness probes (battery/firmware); marking standby"
-                )
+                if self._liveness_misses == _LIVENESS_MISS_LIMIT:
+                    log.info(
+                        "speaker not answering liveness probes (battery/firmware); marking standby"
+                    )
                 self._set_snapshot(
                     replace(self._snapshot, speaker_awake=False, battery=None, battery_status=None)
                 )
