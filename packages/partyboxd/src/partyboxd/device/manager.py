@@ -57,6 +57,23 @@ _HEALTH_CHECK_INTERVAL = 15.0
 # AudioFocusService activity in the same window.
 _STREAMING_HEALTH_CHECK_INTERVAL = 60.0
 
+# Relaxed cadence for the battery/firmware liveness probe specifically (not
+# verify_connection(), which keeps running every _HEALTH_CHECK_INTERVAL so a
+# dead link is still caught quickly — see _drain_with_health_check) once the
+# speaker is confirmed asleep (_liveness_misses >= _LIVENESS_MISS_LIMIT). A
+# speaker that hasn't answered in _LIVENESS_MISS_LIMIT tries has nothing new
+# to report every 15s either — same reasoning as
+# _STREAMING_HEALTH_CHECK_INTERVAL, applied to the opposite end of the
+# awake/asleep spectrum. Left running at the full cadence indefinitely, the
+# probe keeps waking the speaker's BLE radio for an ATT round-trip that never
+# gets answered, for as long as the speaker sits in standby (observed: days),
+# which costs battery for no diagnostic benefit — standby is already known.
+# Not raised all the way to something like 5 minutes: that would also delay
+# noticing the speaker waking back up (e.g. a physical power-button press) by
+# up to that long, since this probe is what flips speaker_state back to
+# "on" and unblocks AudioService's A2DP reconnect. 120s is a middle ground.
+_STANDBY_LIVENESS_POLL_INTERVAL = 120.0
+
 # Upper bound on the probe itself. A wedged Bluetooth stack can hang an
 # ATT write instead of failing it; an unbounded probe would then hang the
 # health check that exists to detect exactly that state.
@@ -660,6 +677,11 @@ class DeviceManager:
         ``_HEALTH_CHECK_INTERVAL`` while *streaming_fn* reports True — see
         that constant's docstring and ``__init__``'s *streaming_fn* section.
 
+        ``verify_connection()`` itself always runs on this cadence — it's
+        what catches a dead link promptly. ``_poll_liveness()`` is throttled
+        separately once the speaker is confirmed in standby, backing off to
+        ``_STANDBY_LIVENESS_POLL_INTERVAL`` — see that constant's docstring.
+
         A cycle that fails with ``ConnectionLostError``/``TimeoutError`` is
         retried up to ``_HEALTH_CHECK_FAILURE_LIMIT`` times before actually
         disconnecting — see that constant's docstring. ``NotConnectedError``
@@ -673,6 +695,10 @@ class DeviceManager:
         its callers are refactored later.
         """
         failures = 0
+        #: Wall-clock seconds since _poll_liveness() last actually ran.
+        #: Local, not self. — same reasoning as *failures*: scoped to one
+        #: connection's health-checking, reset by construction on reconnect.
+        time_since_liveness_poll = 0.0
         while True:
             interval = _HEALTH_CHECK_INTERVAL
             if self._streaming_fn is not None and await self._streaming_fn():
@@ -702,7 +728,14 @@ class DeviceManager:
             await asyncio.gather(drain, return_exceptions=True)
             try:
                 await asyncio.wait_for(device.verify_connection(), timeout=_PROBE_TIMEOUT)
-                await self._poll_liveness(device)
+                time_since_liveness_poll += interval
+                standby_confirmed = self._liveness_misses >= _LIVENESS_MISS_LIMIT
+                if (
+                    not standby_confirmed
+                    or time_since_liveness_poll >= _STANDBY_LIVENESS_POLL_INTERVAL
+                ):
+                    time_since_liveness_poll = 0.0
+                    await self._poll_liveness(device)
             except NotConnectedError, ConfirmedDisconnectError:
                 # Neither is worth retrying: NotConnectedError means the
                 # transport already knows there's nothing to probe;
