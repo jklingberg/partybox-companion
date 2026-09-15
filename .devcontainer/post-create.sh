@@ -17,8 +17,11 @@ uv tool install pre-commit
 pre-commit install
 
 # Install the no-direct-push-to-main hook. The source lives in .githooks/ so
-# it is tracked in the repo; post-create copies it into .git/hooks/ at setup.
-install -m 755 .githooks/pre-push .git/hooks/pre-push
+# it is tracked in the repo; post-create copies it into the hooks dir at setup.
+# Ask git for the hooks dir instead of hardcoding .git/hooks: in a worktree
+# (e.g. cdesktop workspaces) .git is a file pointing at the main repo, and the
+# hooks dir lives in the main repo's .git and is shared by all worktrees.
+install -m 755 .githooks/pre-push "$(git rev-parse --git-path hooks)/pre-push"
 
 # Install Claude Code globally.
 npm install -g @anthropic-ai/claude-code
