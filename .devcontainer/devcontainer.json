@@ -98,5 +98,16 @@
   // Codex CLI).
   "postCreateCommand": "./.devcontainer/post-create.sh",
 
-  "remoteUser": "vscode"
+  "remoteUser": "vscode",
+
+  // The workspace is bind-mounted from the host's ~/projects, which is shared
+  // with agent-platform's agent-canvas container (uid 10001). Everything
+  // there is group-owned by openhands-shared (gid 2000, setgid dirs) and a
+  // default ACL keeps new entries group-writable whatever the writer's umask
+  // is. vscode is uid 1000 like the host user, so it already owns most files,
+  // but anything the agent created (e.g. .git/objects/xx directories) it can
+  // only write through that group. --group-add applies to `docker exec` too,
+  // which is how both VS Code and cdesktop enter the container. Requires a
+  // container rebuild to take effect.
+  "runArgs": ["--group-add=2000"]
 }
