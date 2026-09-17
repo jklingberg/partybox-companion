@@ -27,8 +27,12 @@
   // sessions survive container rebuilds.
   //
   // GH_TOKEN is sourced from the host so the gh CLI can reach the GitHub API
-  // (the forwarded SSH agent only covers git-over-SSH, not the API). Set it on
-  // the host with: export GH_TOKEN=$(gh auth token). Empty if unset on host.
+  // (the forwarded SSH agent only covers git-over-SSH, not the API). From a
+  // host shell: export GH_TOKEN=$(gh auth token). Under cdesktop the wrapper
+  // answers it with the host's own `gh auth login` (see the secrets list
+  // below) and, with it, gives git a credential helper and the host's commit
+  // identity, so a container session is the same GitHub user as a host one.
+  // Empty if the host has neither.
   //
   // OPENAI_API_KEY is likewise sourced from the host for Codex CLI, in case
   // API-key auth is used instead of the browser-based ChatGPT OAuth login.
@@ -49,6 +53,14 @@
   ],
 
   "customizations": {
+    // Which host secrets agent-platform's cdesktop wrapper may hand the agent
+    // (see remoteEnv above); it forwards only names listed here. GH_TOKEN is
+    // the one name it does not read from its secrets file: it asks git on the
+    // host for the github.com credential instead, i.e. the host's
+    // `gh auth login`.
+    "agent-platform": {
+      "secrets": ["GH_TOKEN"]
+    },
     "vscode": {
       "extensions": [
         "ms-python.python",
