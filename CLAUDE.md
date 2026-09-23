@@ -105,3 +105,7 @@ Adding a new BLE protocol command or working on the appliance Raspberry Pi (SSH 
 ## Commit messages
 
 Conventional Commits with these scopes: `bluetooth`, `protocol`, `device`, `capabilities`, `api`, `services`, `config`, `webui`, `docs`, `ci`
+
+## GitHub references
+
+When referencing a GitHub pull request or issue in chat, write it as a clickable markdown link (`[owner/repo#123](https://github.com/owner/repo/pull/123)`, or `[#123](...)` when the repo is already clear from context) rather than plain text — cdesktop's chat renderer supports `[text](url)` and even auto-links bare PR URLs to a short `#123` label.
