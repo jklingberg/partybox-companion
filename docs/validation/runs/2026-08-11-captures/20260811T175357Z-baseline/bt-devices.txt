@@ -1,0 +1,17 @@
+$ bluetoothctl devices; echo '--- connected ---'; bluetoothctl devices Connected
+Device 63:76:0D:95:66:00 63-76-0D-95-66-00
+Device D1:28:34:C4:4A:37 DoorLocker
+Device 52:D0:4F:5F:E7:D7 52-D0-4F-5F-E7-D7
+Device 73:51:63:31:0B:B2 73-51-63-31-0B-B2
+Device 44:B5:AB:9E:2A:58 44-B5-AB-9E-2A-58
+Device 6D:C5:CD:58:24:84 6D-C5-CD-58-24-84
+Device F7:D2:E3:14:93:78 P mesh
+Device 23:7A:DF:67:BB:0C 23-7A-DF-67-BB-0C
+Device 70:25:A2:1D:84:51 70-25-A2-1D-84-51
+Device 6F:5A:01:57:59:F2 6F-5A-01-57-59-F2
+Device 55:5C:30:46:89:C4 55-5C-30-46-89-C4
+Device C8:69:CD:6D:C0:78 C8-69-CD-6D-C0-78
+Device 51:0F:1E:9A:0E:C8 JBL PartyBox 520
+Device 50:1B:6A:14:FD:1D JBL PartyBox 520
+--- connected ---
+Device 51:0F:1E:9A:0E:C8 JBL PartyBox 520

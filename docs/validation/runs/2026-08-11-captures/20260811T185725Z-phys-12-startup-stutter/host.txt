@@ -1,0 +1,13 @@
+$ uptime; echo '--- ntp ---'; timedatectl | head -20; echo '--- failed units ---'; systemctl --failed --no-pager
+ 19:57:37 up 7 days,  5:51,  0 user,  load average: 0.09, 0.07, 0.03
+--- ntp ---
+               Local time: Tue 2026-08-11 19:57:37 BST
+           Universal time: Tue 2026-08-11 18:57:37 UTC
+                 RTC time: Tue 2026-08-11 18:57:37
+                Time zone: Europe/London (BST, +0100)
+System clock synchronized: yes
+              NTP service: active
+          RTC in local TZ: no
+--- failed units ---
+  UNIT LOAD ACTIVE SUB DESCRIPTION
+0 loaded units listed.

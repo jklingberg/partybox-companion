@@ -1,0 +1,56 @@
+$ XDG_RUNTIME_DIR=/run/user/1000 wpctl status
+PipeWire 'pipewire-0' [1.2.7, pi@partybox, cookie:1541369529]
+ └─ Clients:
+        33. WirePlumber (main-embedded)         [1.2.7, pi@partybox, pid:56999]
+        40. WirePlumber (main-embedded) [export] [1.2.7, pi@partybox, pid:56999]
+        72. librespot - PartyBox                [1.2.7, companion@partybox, pid:57084]
+        78. wpctl                               [1.2.7, pi@partybox, pid:57275]
+
+Audio
+ ├─ Devices:
+ │      41. Built-in Audio                      [alsa]
+ │      42. Built-in Audio                      [alsa]
+ │      66. JBL PartyBox 520                    [bluez5]
+ │
+ ├─ Sinks:
+ │  *   67. JBL PartyBox 520                    [vol: 1.00]
+ │
+ ├─ Sources:
+ │
+ ├─ Filters:
+ │
+ └─ Streams:
+        73. librespot - PartyBox
+             74. output_FL       > JBL PartyBox 520:playback_FL	[active]
+             75. output_FR       > JBL PartyBox 520:playback_FR	[active]
+
+Video
+ ├─ Devices:
+ │      49. rpivid                              [v4l2]
+ │      50. pispbe                              [v4l2]
+ │      51. pispbe                              [v4l2]
+ │      52. pispbe                              [v4l2]
+ │      53. pispbe                              [v4l2]
+ │      54. pispbe                              [v4l2]
+ │      55. pispbe                              [v4l2]
+ │      56. pispbe                              [v4l2]
+ │      57. pispbe                              [v4l2]
+ │      58. pispbe                              [v4l2]
+ │      59. pispbe                              [v4l2]
+ │      60. pispbe                              [v4l2]
+ │      61. pispbe                              [v4l2]
+ │      62. pispbe                              [v4l2]
+ │      63. pispbe                              [v4l2]
+ │      64. pispbe                              [v4l2]
+ │      65. pispbe                              [v4l2]
+ │
+ ├─ Sinks:
+ │
+ ├─ Sources:
+ │
+ ├─ Filters:
+ │
+ └─ Streams:
+
+Settings
+ └─ Default Configured Devices:

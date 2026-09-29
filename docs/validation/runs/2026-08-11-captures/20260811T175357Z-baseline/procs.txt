@@ -1,0 +1,2 @@
+$ ps -eo pid,etime,rss,pcpu,args | grep -E 'librespot|companion|shairport' | grep -v grep
+    749  7-04:47:35 80720  0.0 /opt/partybox-companion/bin/python /opt/partybox-companion/bin/partybox-companion

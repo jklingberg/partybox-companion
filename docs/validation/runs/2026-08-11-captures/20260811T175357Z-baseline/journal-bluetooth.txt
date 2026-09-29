@@ -1,0 +1,2 @@
+$ journalctl -u bluetooth --since '10 min ago' --no-pager -o short-precise
+-- No entries --

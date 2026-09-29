@@ -1,0 +1,41 @@
+$ journalctl -u bluetooth --since '15 min ago' --no-pager -o short-precise
+Aug 11 19:51:59.721807 partybox bluetoothd[520]: No matching connection for device
+Aug 11 19:52:04.989168 partybox bluetoothd[520]: Endpoint unregistered: sender=:1.27 path=/MediaEndpoint/A2DPSource/ldac
+Aug 11 19:52:04.989552 partybox bluetoothd[520]: Endpoint unregistered: sender=:1.27 path=/MediaEndpoint/A2DPSink/aptx_hd
+Aug 11 19:52:04.989802 partybox bluetoothd[520]: Endpoint unregistered: sender=:1.27 path=/MediaEndpoint/A2DPSource/aptx_hd
+Aug 11 19:52:04.990008 partybox bluetoothd[520]: Endpoint unregistered: sender=:1.27 path=/MediaEndpoint/A2DPSink/aptx
+Aug 11 19:52:04.990206 partybox bluetoothd[520]: Endpoint unregistered: sender=:1.27 path=/MediaEndpoint/A2DPSource/aptx
+Aug 11 19:52:04.990402 partybox bluetoothd[520]: Endpoint unregistered: sender=:1.27 path=/MediaEndpoint/A2DPSink/opus_g
+Aug 11 19:52:04.990595 partybox bluetoothd[520]: Endpoint unregistered: sender=:1.27 path=/MediaEndpoint/A2DPSource/opus_g
+Aug 11 19:52:04.990790 partybox bluetoothd[520]: Endpoint unregistered: sender=:1.27 path=/MediaEndpoint/A2DPSink/sbc
+Aug 11 19:52:04.990982 partybox bluetoothd[520]: Endpoint unregistered: sender=:1.27 path=/MediaEndpoint/A2DPSource/sbc
+Aug 11 19:52:04.991176 partybox bluetoothd[520]: Endpoint unregistered: sender=:1.27 path=/MediaEndpoint/A2DPSource/aptx_ll_1
+Aug 11 19:52:04.991368 partybox bluetoothd[520]: Endpoint unregistered: sender=:1.27 path=/MediaEndpoint/A2DPSource/aptx_ll_0
+Aug 11 19:52:04.991560 partybox bluetoothd[520]: Endpoint unregistered: sender=:1.27 path=/MediaEndpoint/A2DPSource/aptx_ll_duplex_1
+Aug 11 19:52:04.991753 partybox bluetoothd[520]: Endpoint unregistered: sender=:1.27 path=/MediaEndpoint/A2DPSource/aptx_ll_duplex_0
+Aug 11 19:52:04.991945 partybox bluetoothd[520]: Endpoint unregistered: sender=:1.27 path=/MediaEndpoint/A2DPSource/faststream
+Aug 11 19:52:04.992137 partybox bluetoothd[520]: Endpoint unregistered: sender=:1.27 path=/MediaEndpoint/A2DPSource/faststream_duplex
+Aug 11 19:52:04.992330 partybox bluetoothd[520]: Endpoint unregistered: sender=:1.27 path=/MediaEndpoint/A2DPSink/opus_05
+Aug 11 19:52:04.992522 partybox bluetoothd[520]: Endpoint unregistered: sender=:1.27 path=/MediaEndpoint/A2DPSource/opus_05
+Aug 11 19:52:04.992723 partybox bluetoothd[520]: Endpoint unregistered: sender=:1.27 path=/MediaEndpoint/A2DPSink/opus_05_duplex
+Aug 11 19:52:04.992919 partybox bluetoothd[520]: Endpoint unregistered: sender=:1.27 path=/MediaEndpoint/A2DPSource/opus_05_duplex
+Aug 11 19:52:05.188345 partybox bluetoothd[520]: Endpoint registered: sender=:1.23115 path=/MediaEndpoint/A2DPSource/ldac
+Aug 11 19:52:05.188380 partybox bluetoothd[520]: Endpoint registered: sender=:1.23115 path=/MediaEndpoint/A2DPSink/aptx_hd
+Aug 11 19:52:05.188391 partybox bluetoothd[520]: Endpoint registered: sender=:1.23115 path=/MediaEndpoint/A2DPSource/aptx_hd
+Aug 11 19:52:05.188401 partybox bluetoothd[520]: Endpoint registered: sender=:1.23115 path=/MediaEndpoint/A2DPSink/aptx
+Aug 11 19:52:05.188411 partybox bluetoothd[520]: Endpoint registered: sender=:1.23115 path=/MediaEndpoint/A2DPSource/aptx
+Aug 11 19:52:05.188420 partybox bluetoothd[520]: Endpoint registered: sender=:1.23115 path=/MediaEndpoint/A2DPSink/opus_g
+Aug 11 19:52:05.188431 partybox bluetoothd[520]: Endpoint registered: sender=:1.23115 path=/MediaEndpoint/A2DPSource/opus_g
+Aug 11 19:52:05.188440 partybox bluetoothd[520]: Endpoint registered: sender=:1.23115 path=/MediaEndpoint/A2DPSink/sbc
+Aug 11 19:52:05.188449 partybox bluetoothd[520]: Endpoint registered: sender=:1.23115 path=/MediaEndpoint/A2DPSource/sbc
+Aug 11 19:52:05.188457 partybox bluetoothd[520]: Endpoint registered: sender=:1.23115 path=/MediaEndpoint/A2DPSource/aptx_ll_1
+Aug 11 19:52:05.188466 partybox bluetoothd[520]: Endpoint registered: sender=:1.23115 path=/MediaEndpoint/A2DPSource/aptx_ll_0
+Aug 11 19:52:05.188474 partybox bluetoothd[520]: Endpoint registered: sender=:1.23115 path=/MediaEndpoint/A2DPSource/aptx_ll_duplex_1
+Aug 11 19:52:05.188482 partybox bluetoothd[520]: Endpoint registered: sender=:1.23115 path=/MediaEndpoint/A2DPSource/aptx_ll_duplex_0
+Aug 11 19:52:05.188489 partybox bluetoothd[520]: Endpoint registered: sender=:1.23115 path=/MediaEndpoint/A2DPSource/faststream
+Aug 11 19:52:05.188498 partybox bluetoothd[520]: Endpoint registered: sender=:1.23115 path=/MediaEndpoint/A2DPSource/faststream_duplex
+Aug 11 19:52:05.188506 partybox bluetoothd[520]: Endpoint registered: sender=:1.23115 path=/MediaEndpoint/A2DPSink/opus_05
+Aug 11 19:52:05.188515 partybox bluetoothd[520]: Endpoint registered: sender=:1.23115 path=/MediaEndpoint/A2DPSource/opus_05
+Aug 11 19:52:05.188522 partybox bluetoothd[520]: Endpoint registered: sender=:1.23115 path=/MediaEndpoint/A2DPSink/opus_05_duplex
+Aug 11 19:52:05.188530 partybox bluetoothd[520]: Endpoint registered: sender=:1.23115 path=/MediaEndpoint/A2DPSource/opus_05_duplex
+Aug 11 19:55:33.802885 partybox bluetoothd[520]: /org/bluez/hci0/dev_50_1B_6A_14_FD_1D/sep5/fd11: fd(29) ready

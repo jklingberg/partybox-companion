@@ -1,0 +1,38 @@
+$ bluetoothctl info 50:1B:6A:14:FD:1D
+Device 50:1B:6A:14:FD:1D (public)
+	Name: JBL PartyBox 520
+	Alias: JBL PartyBox 520
+	Class: 0x00242428
+	Icon: audio-card
+	Paired: yes
+	Bonded: yes
+	Trusted: yes
+	Blocked: no
+	Connected: no
+	LegacyPairing: no
+	UUID: Vendor specific           (00001100-d102-11e1-9b23-00025b00a5a5)
+	UUID: Serial Port               (00001101-0000-1000-8000-00805f9b34fb)
+	UUID: Audio Source              (0000110a-0000-1000-8000-00805f9b34fb)
+	UUID: Audio Sink                (0000110b-0000-1000-8000-00805f9b34fb)
+	UUID: A/V Remote Control Target (0000110c-0000-1000-8000-00805f9b34fb)
+	UUID: Advanced Audio Distribu.. (0000110d-0000-1000-8000-00805f9b34fb)
+	UUID: A/V Remote Control        (0000110e-0000-1000-8000-00805f9b34fb)
+	UUID: PnP Information           (00001200-0000-1000-8000-00805f9b34fb)
+	UUID: Generic Access Profile    (00001800-0000-1000-8000-00805f9b34fb)
+	UUID: Generic Attribute Profile (00001801-0000-1000-8000-00805f9b34fb)
+	UUID: Volume Control            (00001844-0000-1000-8000-00805f9b34fb)
+	UUID: Microphone Control        (0000184d-0000-1000-8000-00805f9b34fb)
+	UUID: Published Audio Capabil.. (00001850-0000-1000-8000-00805f9b34fb)
+	UUID: Vendor specific           (0000eb10-d102-11e1-9b23-00025b00a5a5)
+	UUID: Qualcomm Technologies I.. (0000fd92-0000-1000-8000-00805f9b34fb)
+	UUID: Google                    (0000fe2c-0000-1000-8000-00805f9b34fb)
+	UUID: Vendor specific           (65786365-6c70-6f69-6e74-2e636f6d0000)
+	UUID: Vendor specific           (df21fe2c-2515-4fdb-8886-f12c4d67927c)
+	Modalias: bluetooth:v0ECBp1F5Dd2120
+	ServiceData Key: 0000fddf-0000-1000-8000-00805f9b34fb
+	ServiceData Value:
+  20 21 01 d0 e4 58 6b 28 05 2a 59 50 1b 6a 14 fd   !...Xk(.*YP.j..
+  1d 00 09 00 00 00 00 00                          ........
+	ServiceData Key: 0000fe2c-0000-1000-8000-00805f9b34fb
+	ServiceData Value:
+  ac bd f1                                         ...
