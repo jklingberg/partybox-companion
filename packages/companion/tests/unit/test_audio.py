@@ -439,6 +439,86 @@ async def test_transport_active_short_circuits_when_not_ready() -> None:
 
 
 # ---------------------------------------------------------------------------
+# connecting / radio_busy()
+# ---------------------------------------------------------------------------
+
+
+def test_connecting_initially_false() -> None:
+    svc = _service()
+    assert svc.connecting is False
+
+
+async def test_connecting_true_only_during_connect_call() -> None:
+    """`connecting` is set for the BR/EDR page and cleared once it returns."""
+    svc = _service()
+    observed_during: list[bool] = []
+
+    async def fake_connect() -> bool:
+        observed_during.append(svc.connecting)
+        return False
+
+    async def fake_wait_retry(delay: float, *, interrupt_on_recheck: bool = False) -> bool:
+        raise asyncio.CancelledError
+
+    with (
+        patch.object(svc, "_connect", side_effect=fake_connect),
+        patch.object(svc, "_is_connected", AsyncMock(return_value=False)),
+        patch.object(svc, "_wait_retry", side_effect=fake_wait_retry),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await svc.run()
+
+    assert observed_during == [True]  # True while _connect() was running
+    assert svc.connecting is False  # cleared afterwards
+
+
+async def test_connecting_cleared_even_if_connect_raises() -> None:
+    svc = _service()
+
+    async def failing_connect() -> bool:
+        raise RuntimeError("boom")
+
+    with (
+        patch.object(svc, "_connect", side_effect=failing_connect),
+        patch.object(svc, "_is_connected", AsyncMock(return_value=False)),
+    ):
+        with pytest.raises(RuntimeError):
+            await svc.run()
+
+    assert svc.connecting is False
+
+
+async def test_radio_busy_true_while_connecting() -> None:
+    svc = _service()
+    svc._connecting = True
+    assert await svc.radio_busy() is True
+
+
+async def test_radio_busy_true_while_streaming() -> None:
+    svc = _service()
+    svc._audio_ready = True
+    with patch(
+        "companion.services.audio.asyncio.create_subprocess_exec",
+        return_value=_mock_proc(b"active"),
+    ):
+        assert await svc.radio_busy() is True
+
+
+async def test_radio_busy_false_when_idle_and_not_connecting() -> None:
+    svc = _service()
+    assert await svc.radio_busy() is False
+
+
+async def test_radio_busy_short_circuits_transport_active_when_connecting() -> None:
+    """connecting=True skips transport_active()'s subprocess round trip."""
+    svc = _service()
+    svc._connecting = True
+    with patch("companion.services.audio.asyncio.create_subprocess_exec") as exec_mock:
+        assert await svc.radio_busy() is True
+    exec_mock.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # _connect()
 # ---------------------------------------------------------------------------
 

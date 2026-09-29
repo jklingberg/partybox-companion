@@ -405,7 +405,7 @@ async def _run(
         pairing_active_fn=lambda: (
             pairing.status.state in (PairingState.SCANNING, PairingState.PAIRING)
         ),
-        streaming_fn=audio.transport_active,
+        streaming_fn=audio.radio_busy,
         # `manager` is assigned below — safe: this closure is only called
         # from audio_focus.run(), well after _run() finishes constructing
         # everything and hands off to the supervisor.
@@ -421,7 +421,7 @@ async def _run(
         daemon_settings.speaker,
         adapter_recover_fn=reset_adapter,
         stale_reclaim_fn=disconnect_stale_speaker_links,
-        streaming_fn=audio.transport_active,
+        streaming_fn=audio.radio_busy,
     )
 
     provisioning = ProvisioningService(companion_settings.wifi.interface)
