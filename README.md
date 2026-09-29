@@ -12,7 +12,7 @@ No cloud · No subscriptions · No proprietary app
 
 ---
 
-![Companion Portal walkthrough: dashboard, renaming the Spotify Connect device in Settings, and the System health screen](docs/images/portal-demo.gif)
+![Companion Portal walkthrough: Wi-Fi captive-portal setup, speaker pairing, the dashboard, renaming the Spotify Connect device and importing an SSH key in Settings, and the System health screen](docs/images/portal-demo.gif)
 
 ## Why
 
