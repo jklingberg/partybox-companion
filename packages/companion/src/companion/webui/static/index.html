@@ -767,6 +767,23 @@ const S = {
   //: update the pairing flow's message (see docs/adr/035-state-ownership-
   //: and-signal-pipeline.md's "local-only state" rule).
   pairingActive: false,
+  //: True while the user is deliberately in the pairing flow — set when they
+  //: open it from the health sheet's "Pair speaker" action and for the
+  //: duration of a startPairing() attempt. The third client-only "bridge the
+  //: gap" flag anticipated by btResetStartedAt's TODO above, and it exists
+  //: for the same reason as powerPending: pairing is exactly the activity
+  //: that makes the BLE control link flap (LE discovery, BR/EDR inquiry, and
+  //: the user holding the speaker's Bluetooth button), so speaker_state is
+  //: not trustworthy evidence of a fault while it runs.
+  //:
+  //: deriveScene() consults this instead of relying on `!audio.address` as a
+  //: proxy for "not paired yet". That proxy only held for a never-paired
+  //: appliance: re-pairing, and even the tail of a *first* pairing (the bond
+  //: completes and persists an address seconds before A2DP connects), both
+  //: leave an address set while the flow is still running — and the scene
+  //: fell straight through to SPEAKER_UNREACHABLE's "seems to be on, but not
+  //: responding" mid-flow. Reported 2026-07-30.
+  pairIntent: false,
 };
 
 let mountedScene = null;
@@ -967,6 +984,15 @@ function deriveScene() {
   // SPEAKER_UNREACHABLE meanwhile would read as the action having failed.
   // See S.btResetStartedAt's doc comment.
   if (S.btResetStartedAt !== null) return Scene.BT_RECONNECTING;
+  // An explicitly-entered or actively-running pairing flow outranks every
+  // speaker_state scene below, for the same reason btResetStartedAt does:
+  // the flow itself disturbs the BLE control link, so a flap during it is
+  // expected noise rather than evidence of a fault. Checked separately from
+  // the `!audio.address` test below because that test stops holding the
+  // moment the bond persists an address — which happens seconds *before*
+  // A2DP connects, while handlePairingProgress() is still showing "Paired!
+  // Establishing audio connection — almost there…". See S.pairIntent.
+  if (S.pairIntent || S.pairingActive) return Scene.PAIR;
   // Checked ahead of the speaker_state block below: per the documented scene
   // hierarchy (docs/design/portal-redesign.md §2), PAIR precedes OFF. Until
   // A2DP pairing has ever completed, DeviceManager's independent BLE control
@@ -1529,7 +1555,13 @@ document.addEventListener('click', e => {
     'factory-reset-confirm': factoryResetConfirm,
     'open-health': openHealth,
     'close-health': closeHealth,
-    'open-pair': () => { closeHealth(); S.audio = S.audio || {}; S.audio.address = null; S.scene = Scene.PAIR; render(); },
+    // Records the intent rather than faking `audio.address = null` to satisfy
+    // deriveScene()'s old pairing-incomplete test. That local lie was
+    // overwritten by the very next refresh() or audio_changed event (both
+    // assign address straight from the server), which is what bounced the
+    // user out of the pairing flow mid-attempt; it also made the health
+    // sheet report a genuinely-paired speaker as "Not paired".
+    'open-pair': () => { closeHealth(); S.pairIntent = true; S.scene = Scene.PAIR; render(); },
     'spotify-restart': spotifyRestart,
     'reset-bluetooth': resetBluetooth,
     'scan-networks': scanNetworks,
@@ -2030,6 +2062,11 @@ function closeHealth() { document.getElementById('health-overlay').classList.add
 // Pairing flow
 // ==========================================================================
 async function startPairing() {
+  // Set before the await below, not alongside S.pairingActive after it: the
+  // POST and its response are an open window in which a refresh() triggered
+  // by the pairing activity's own BLE flap could otherwise re-derive the
+  // scene and yank the flow out from under the user.
+  S.pairIntent = true;
   const btn = document.getElementById('pair-start-btn');
   btn.disabled = true;
   btn.textContent = 'Scanning…';
@@ -2042,11 +2079,13 @@ async function startPairing() {
     } else if (!r.ok) {
       setFlowMsg('pair-msg', 'err', 'Could not start pairing. Please try again.');
       btn.disabled = false; btn.textContent = 'Start Pairing';
+      S.pairIntent = false;
       return;
     }
   } catch (_) {
     setFlowMsg('pair-msg', 'err', 'Could not reach the appliance. Please try again.');
     btn.disabled = false; btn.textContent = 'Start Pairing';
+    S.pairIntent = false;
     return;
   }
 
@@ -2059,6 +2098,7 @@ async function startPairing() {
   timers.pairingTimeout = setTimeout(() => {
     if (!S.pairingActive) return;
     S.pairingActive = false;
+    S.pairIntent = false;
     setFlowMsg('pair-msg', 'err', 'Timed out waiting for audio connection. Try playing music to reconnect.');
     const b = document.getElementById('pair-start-btn');
     if (b) { b.disabled = false; b.textContent = 'Done'; }
@@ -2073,6 +2113,7 @@ function handlePairingProgress() {
   if (a.pairing_state === 'idle' && a.address) {
     if (a.connected) {
       S.pairingActive = false;
+      S.pairIntent = false;
       clearTimeout(timers.pairingTimeout);
       setFlowMsg('pair-msg', 'ok', 'Paired and connected! You can now play music.');
       toast('Speaker connected.');
@@ -2083,7 +2124,14 @@ function handlePairingProgress() {
   }
   if (a.pairing_state === 'failed') {
     S.pairingActive = false;
+    // Terminal, so the scene goes back to reflecting reality. A never-paired
+    // appliance stays on PAIR anyway (no address), keeping "Try Again" in
+    // front of the user; a re-pair attempt returns to the real speaker scene
+    // rather than stranding them on a pairing screen with no way out. The
+    // toast carries the outcome across that scene change.
+    S.pairIntent = false;
     clearTimeout(timers.pairingTimeout);
+    toast('Pairing failed.');
     setFlowMsg('pair-msg', 'err', a.error || 'Pairing failed. Make sure the speaker is in pairing mode and try again.');
     const btn = document.getElementById('pair-start-btn');
     if (btn) { btn.disabled = false; btn.textContent = 'Try Again'; }
