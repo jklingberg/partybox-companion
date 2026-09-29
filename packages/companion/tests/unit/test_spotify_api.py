@@ -259,6 +259,10 @@ async def test_debug_bundle_contains_expected_files(tmp_path: Path) -> None:
         "services.json",
         "system.json",
         "device.json",
+        "logs.txt",
+        # Kernel lines are the only place RF-level link corruption shows up;
+        # the companion unit journal reports such a link as healthy (ADR-044).
+        "kernel.txt",
     } <= names
 
 

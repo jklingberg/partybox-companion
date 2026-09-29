@@ -51,3 +51,6 @@ New ADRs should be added when a significant design decision is made. Superseded 
 | [039](039-ble-controller-wedge-self-heal.md) | Runtime Self-Heal of a Wedged Bluetooth Controller | Accepted |
 | [040](040-health-check-probe-tolerance.md) | Health-Check Probe Tolerance and Confirmed-vs-Transient Disconnects | Accepted |
 | [041](041-host-origin-allowlist.md) | Host/Origin Allowlist for CSRF and DNS-Rebinding Defense | Accepted |
+| [042](042-ble-link-establishment-failure-storms.md) | BLE Link-Establishment Failure Storms and Elapsed-Time Wedge Escalation | Accepted |
+| [043](043-ssh-hardening.md) | SSH Hardening — No Shared Default Credentials | Accepted |
+| [044](044-rf-congestion-visibility.md) | Surfacing 2.4 GHz Congestion as a Diagnosable Condition | Accepted |

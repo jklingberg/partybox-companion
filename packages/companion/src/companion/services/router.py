@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 
 from companion.config import SpotifySettings
 from companion.config_store import ConfigStore
-from companion.services import pipewire_volume
+from companion.services import link_health, pipewire_volume, rf_survey
 from companion.services.audio import AudioService
 from companion.services.pairing import PairingService, PairingState
 from companion.services.spotify import SpotifyService
@@ -32,6 +32,20 @@ from companion.volume import VolumeState
 log = logging.getLogger(__name__)
 
 _JOURNAL_LINES = 500
+
+# Kernel-log lines captured alongside the unit journal. Kept to a filtered
+# subset (see _KERNEL_MATCH) rather than the whole ring: a Pi's boot-time
+# kernel spew alone runs well past this budget, so an unfiltered tail would
+# reliably push out the recent Bluetooth lines the bundle is collected for.
+_KERNEL_LINES = 500
+
+# What counts as kernel output worth carrying in a bundle. Bluetooth and hci
+# cover link-layer corruption (e.g. "Unexpected continuation frame", which is
+# L2CAP reassembly failing under RF interference); brcmfmac is the combined
+# WiFi/BT chip's driver; the voltage and thermal patterns catch a
+# marginal PSU or a throttling SoC, which produce audio dropouts that look
+# identical to interference from userspace. Matched case-insensitively.
+_KERNEL_MATCH = "Bluetooth|hci|brcmfmac|voltage|throttl|thermal"
 
 
 class AudioStatusResponse(BaseModel):
@@ -88,6 +102,65 @@ class HealthDetailsResponse(BaseModel):
     tasks: list[TaskHealthResponse]
 
 
+class RfChannelModel(BaseModel):
+    """One occupied 2.4 GHz WiFi channel."""
+
+    channel: int
+    ap_count: int
+    strongest_signal: int
+
+
+class RfBandModel(BaseModel):
+    """2.4 GHz environment around the appliance — the risk of interference.
+
+    ``available`` is false when no scan list could be read at all (no nmcli,
+    radio busy in AP mode during provisioning, empty cache). Every other
+    field is then zero/empty and means nothing — a caller must not render a
+    clear band from a reading that never happened.
+
+    Carries no SSIDs or BSSIDs; see ``rf_survey.RfSurvey``.
+    """
+
+    available: bool
+    ap_count: int = 0
+    strong_ap_count: int = 0
+    channels: list[RfChannelModel] = []
+    occupied_mhz: int = 0
+    occupancy: float = 0.0
+    congested: bool = False
+    level: Literal["ok", "warn", "err"] = "ok"
+
+
+class RfLinkModel(BaseModel):
+    """Faults actually observed on the Bluetooth link, from the journal.
+
+    Distinct from ``RfBandModel`` in kind, and that distinction is the whole
+    point: the band figure is an environmental *risk*, while these are
+    symptoms the appliance has already suffered. Notably absent are PipeWire
+    xruns, which read zero throughout an incident of continuous audible
+    stutter — see ``link_health``.
+    """
+
+    available: bool
+    l2cap_errors: int = 0
+    a2dp_drops: int = 0
+    window_hours: float = 1.0
+    level: Literal["ok", "warn", "err"] = "ok"
+
+
+class RfResponse(BaseModel):
+    """Response body for GET /api/v1/rf.
+
+    ``level`` is the worst of whichever halves could be read, or
+    ``"unknown"`` when neither could — again so an unreadable appliance is
+    never mistaken for a healthy one.
+    """
+
+    level: Literal["ok", "warn", "err", "unknown"]
+    band: RfBandModel
+    link: RfLinkModel
+
+
 async def _collect_journal_logs() -> str:
     """Return recent journal entries for the companion unit, or a fallback message.
 
@@ -107,6 +180,59 @@ async def _collect_journal_logs() -> str:
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10.0)
         output = stdout.decode(errors="replace")
         return output if output.strip() else "(no journal entries found)\n"
+    except OSError, TimeoutError:
+        return "(journalctl not available)\n"
+
+
+_LEVEL_ORDER: dict[str, int] = {"ok": 0, "warn": 1, "err": 2}
+
+
+def _worst_level(
+    band: RfBandModel, link: link_health.LinkHealth
+) -> Literal["ok", "warn", "err", "unknown"]:
+    """Combine the two halves into one headline level.
+
+    Only halves that were actually readable count. With neither readable the
+    answer is ``"unknown"`` rather than ``"ok"`` — the recurring rule in this
+    module: never let a reading that did not happen present as a healthy one.
+    """
+    levels = [lvl for ok, lvl in ((band.available, band.level), (link.available, link.level)) if ok]
+    if not levels:
+        return "unknown"
+    worst = max(levels, key=lambda lv: _LEVEL_ORDER[lv])
+    return "ok" if worst == "ok" else "warn" if worst == "warn" else "err"
+
+
+async def _collect_kernel_logs() -> str:
+    """Return recent Bluetooth/RF-relevant kernel log lines, or a fallback.
+
+    Reads the kernel ring via the journal (``-k``), which the service user
+    can already do through the same ``SupplementaryGroups=systemd-journal``
+    grant ``_collect_journal_logs`` relies on — no new privileges.
+
+    This is the half of the picture ``--unit=companion`` cannot show. A
+    Bluetooth link degraded by 2.4 GHz interference reports itself as
+    perfectly healthy from userspace: connected, streaming, no PipeWire
+    underruns. The corruption is only visible as kernel L2CAP errors, so
+    without these lines a bundle records the symptom (BLE reconnect churn)
+    with nothing to distinguish its cause. See ADR-044.
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "journalctl",
+            "--dmesg",
+            f"--lines={_KERNEL_LINES}",
+            "--grep",
+            _KERNEL_MATCH,
+            "--case-sensitive=no",
+            "--no-pager",
+            "--output=short",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10.0)
+        output = stdout.decode(errors="replace")
+        return output if output.strip() else "(no matching kernel entries found)\n"
     except OSError, TimeoutError:
         return "(journalctl not available)\n"
 
@@ -160,6 +286,8 @@ def make_services_router(
     auth: Callable[..., Awaitable[None]] | None = None,
     pipewire_get_volume: Callable[[], Awaitable[int | None]] = pipewire_volume.get_volume,
     pipewire_set_volume: Callable[[int], Awaitable[bool]] = pipewire_volume.set_volume,
+    rf_survey_fn: Callable[[], Awaitable[rf_survey.RfSurvey | None]] = rf_survey.survey_24ghz,
+    link_health_fn: Callable[[], Awaitable[link_health.LinkHealth]] = link_health.sample,
 ) -> APIRouter:
     """Return an APIRouter with service-status and diagnostics endpoints.
 
@@ -444,6 +572,74 @@ def make_services_router(
         log.info("Factory reset complete — appliance returned to defaults")
 
     # ------------------------------------------------------------------
+    # GET /api/v1/rf — unauthenticated
+    # ------------------------------------------------------------------
+
+    @router.get(
+        "/rf",
+        response_model=RfResponse,
+        summary="Radio health — 2.4 GHz congestion and observed link faults",
+    )
+    async def get_rf_survey() -> RfResponse:
+        """Report 2.4 GHz congestion and Bluetooth link faults.
+
+        Two halves that answer different questions. ``band`` is the
+        environment — how much of the spectrum neighbouring WiFi occupies,
+        i.e. the *risk* of interference. ``link`` is what the appliance has
+        actually suffered: kernel L2CAP errors and dropped links. A crowded
+        band with a quiet link needs no action; a faulty link with a clear
+        band means the cause is something a WiFi scan cannot see.
+
+        Unauthenticated, like the other read-only status routes: AP counts
+        and channel numbers with no SSIDs, so the response identifies neither
+        the neighbours nor the appliance's location.
+
+        Neither half puts anything on the air. The scan reads
+        NetworkManager's existing cache; the counters read the journal.
+
+        **Responses:**
+
+        | Code | Meaning |
+        |------|---------|
+        | 200  | Reported (``level: "unknown"`` if neither half was readable) |
+        """
+        survey = await rf_survey_fn()
+        link = await link_health_fn()
+
+        band = (
+            RfBandModel(available=False)
+            if survey is None
+            else RfBandModel(
+                available=True,
+                ap_count=survey.ap_count,
+                strong_ap_count=survey.strong_ap_count,
+                channels=[
+                    RfChannelModel(
+                        channel=c.channel,
+                        ap_count=c.ap_count,
+                        strongest_signal=c.strongest_signal,
+                    )
+                    for c in survey.channels
+                ],
+                occupied_mhz=survey.occupied_mhz,
+                occupancy=survey.occupancy,
+                congested=survey.congested,
+                level=survey.level,
+            )
+        )
+        return RfResponse(
+            level=_worst_level(band, link),
+            band=band,
+            link=RfLinkModel(
+                available=link.available,
+                l2cap_errors=link.l2cap_errors,
+                a2dp_drops=link.a2dp_drops,
+                window_hours=link.window_hours,
+                level=link.level,
+            ),
+        )
+
+    # ------------------------------------------------------------------
     # GET /api/v1/debug/bundle — authenticated when an API key is configured
     # ------------------------------------------------------------------
 
@@ -458,9 +654,11 @@ def make_services_router(
 
         The bundle contains appliance version, configuration (Spotify name,
         speaker MAC), a full device snapshot (BLE address, firmware, battery
-        serial/health), system platform info, and ~500 lines of journal
-        output — strictly more sensitive than ``/health/details``, so it
-        requires the same auth (SEC-04) rather than less.
+        serial/health), system platform info, ~500 lines of journal
+        output, and matching kernel log lines (``kernel.txt`` — Bluetooth,
+        WiFi-driver, voltage and thermal events; see ``_collect_kernel_logs``)
+        — strictly more sensitive than ``/health/details``, so it requires
+        the same auth (SEC-04) rather than less.
 
         **Responses:**
 
@@ -475,6 +673,7 @@ def make_services_router(
         snapshot = manager.snapshot if manager is not None else None
         ts = datetime.now(tz=UTC)
         logs = await _collect_journal_logs()
+        kernel_logs = await _collect_kernel_logs()
 
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
@@ -523,6 +722,7 @@ def make_services_router(
                 ),
             )
             zf.writestr("logs.txt", logs)
+            zf.writestr("kernel.txt", kernel_logs)
 
         buf.seek(0)
         filename = f"partybox-debug-{ts.strftime('%Y%m%d-%H%M%S')}.zip"
